@@ -41,8 +41,8 @@ var swalignCmd = &cobra.Command{
 		} else {
 			sw = align.NewLocalAligner(opts)
 		}
-		aln1 := sw.Align(args[0], args[1])
-		aln2 := sw.Align(sequtils.ReverseCompliment(args[0]), args[1])
+		aln1 := sw.Align(args[0], args[1], "query", "target")
+		aln2 := sw.Align(sequtils.ReverseCompliment(args[0]), args[1], "query", "target")
 		if aln1.Score >= aln2.Score {
 			fmt.Println(aln1.String())
 		} else {
@@ -75,11 +75,11 @@ func init() {
 	swalignCmd.Flags().IntVar(&swalignMatchScore, "match", 1, "Match score")
 	swalignCmd.Flags().IntVar(&swalignMismatchPenalty, "mismatch", 2, "Mismatch penalty")
 
-	swalignCmd.Flags().Float32Var(&swalignGapOpenIns, "gap-open-ins", 5, "Insertion gap open penalty")
-	swalignCmd.Flags().Float32Var(&swalignGapExtendIns, "gap-extend-ins", 2, "Insertion gap extension penalty")
+	swalignCmd.Flags().Float32Var(&swalignGapOpenIns, "gap-open-ins", 6, "Insertion gap open penalty")
+	swalignCmd.Flags().Float32Var(&swalignGapExtendIns, "gap-extend-ins", 1, "Insertion gap extension penalty")
 
-	swalignCmd.Flags().Float32Var(&swalignGapOpenDel, "gap-open-del", 5, "Deletion gap open penalty")
-	swalignCmd.Flags().Float32Var(&swalignGapExtendDel, "gap-extend-del", 2, "Deletion gap extension penalty")
+	swalignCmd.Flags().Float32Var(&swalignGapOpenDel, "gap-open-del", 6, "Deletion gap open penalty")
+	swalignCmd.Flags().Float32Var(&swalignGapExtendDel, "gap-extend-del", 1, "Deletion gap extension penalty")
 
 	swalignCmd.Flags().BoolVar(&swalignUseClipping, "clip", false, "Enable clipping penalties")
 	swalignCmd.Flags().Float32Var(&swalignClipOpen, "clip-open", 5, "Clipping gap open penalty (used only when --clip is set)")
@@ -90,7 +90,7 @@ func init() {
 	swalignCmd.Flags().Float32Var(&swalignHPExtendScale, "hp-extend-scale", 0, "Homopolymer gap-extension discount scale")
 	swalignCmd.Flags().Float32Var(&swalignHPExtendCap, "hp-extend-cap", 0, "Homopolymer gap-extension discount cap")
 	swalignCmd.Flags().BoolVarP(&swalignVerbose, "verbose", "v", false, "Enable verbose aligner debug output")
-	swalignCmd.Flags().BoolVarP(&swalignGlobal, "global", "g", false, "Enable global alignment")
+	swalignCmd.Flags().BoolVar(&swalignGlobal, "global", false, "Enable global alignment (default local)")
 
 	rootCmd.AddCommand(swalignCmd)
 }
