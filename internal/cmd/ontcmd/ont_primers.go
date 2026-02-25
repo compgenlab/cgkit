@@ -154,5 +154,5 @@ func init() {
 	ontPrimersCmd.Flags().StringVar(&ontPrimersFilename, "fasta", "", "FASTA file with primers (default use included primers)")
 	ontPrimersCmd.Flags().BoolVar(&ontPrimersUMI, "umi", false, "Use UMI SSP primer (SSPII)")
 	ontPrimersCmd.Flags().BoolVar(&ontPrimersBC, "barcode", false, "Identify the barcode used (upstream of VNP)")
-	ontPrimersCmd.Flags().IntVarP(&ontThreads, "threads", "t", 0, "Threads to use (1 per proc)")
+	ontPrimersCmd.Flags().IntVarP(&ontThreads, "threads", "t", 0, "Threads to use (default: CPU count)")
 }
