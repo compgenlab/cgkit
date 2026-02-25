@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/compgen-io/cgltk/internal/cmd/fastacmd"
+	"github.com/compgen-io/cgltk/internal/cmd/fastqcmd"
+	"github.com/compgen-io/cgltk/internal/cmd/ontcmd"
+	"github.com/compgen-io/cgltk/internal/cmd/seqcmd"
 	"github.com/spf13/cobra"
 )
 
@@ -28,4 +32,9 @@ func init() {
 	// SilenceUsage prevents Cobra from printing usage on errors after argument parsing.
 	rootCmd.SilenceUsage = true
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
+
+	ontcmd.InitCmd(rootCmd)
+	fastacmd.InitCmd(rootCmd)
+	fastqcmd.InitCmd(rootCmd)
+	seqcmd.InitCmd(rootCmd)
 }

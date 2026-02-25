@@ -1,17 +1,18 @@
-package cmd
+package fastqcmd
 
 import (
 	"io"
 
+	seqanalysis "github.com/compgen-io/cgltk/analysis/seq"
 	"github.com/compgen-io/cgltk/seqio"
-	"github.com/compgen-io/cgltk/sequtils"
 	"github.com/spf13/cobra"
 )
 
 // fastagcCmd implements the initial counting entrypoint.
 var fastqGCCmd = &cobra.Command{
-	Use:   "fastq-gc <input.fasta>",
-	Short: "Return the GC content of sequences in a FASTQ file",
+	GroupID: "fastqcmd",
+	Use:     "fastq-gc <input.fasta>",
+	Short:   "Return the GC content of sequences in a FASTQ file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -30,13 +31,9 @@ var fastqGCCmd = &cobra.Command{
 			if rec == nil {
 				break
 			}
-			pct := sequtils.CalcGC(rec)
+			pct := seqanalysis.CalcGC(rec)
 			cmd.Printf("%s\t%.4f\n", rec.Name(), pct)
 		}
 		return nil
 	},
-}
-
-func init() {
-	rootCmd.AddCommand(fastqGCCmd)
 }

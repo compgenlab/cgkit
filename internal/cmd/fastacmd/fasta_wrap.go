@@ -1,4 +1,4 @@
-package cmd
+package fastacmd
 
 import (
 	"fmt"
@@ -10,8 +10,9 @@ import (
 
 // fastagcCmd implements the initial counting entrypoint.
 var fastaWrapCmd = &cobra.Command{
-	Use:   "fasta-wrap <input.fasta>",
-	Short: "Reformat the sequences in a FASTA file to a specified line width",
+	GroupID: "fastacmd",
+	Use:     "fasta-wrap <input.fasta>",
+	Short:   "Reformat the sequences in a FASTA file to a specified line width",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -74,5 +75,4 @@ var wrapWidth int
 
 func init() {
 	fastaWrapCmd.Flags().IntVarP(&wrapWidth, "width", "w", 70, "Line width to wrap sequences to (-1 for no wrapping)")
-	rootCmd.AddCommand(fastaWrapCmd)
 }
