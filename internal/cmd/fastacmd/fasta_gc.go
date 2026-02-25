@@ -1,18 +1,18 @@
-package cmd
+package fastacmd
 
 import (
-	"fmt"
 	"io"
 
+	seqanalysis "github.com/compgen-io/cgltk/analysis/seq"
 	"github.com/compgen-io/cgltk/seqio"
 	"github.com/spf13/cobra"
 )
 
 // fastagcCmd implements the initial counting entrypoint.
-var fastaCatCmd = &cobra.Command{
-	Use:    "fasta-cat <input.fasta>",
-	Short:  "Write the sequences in a FASTA file without any wrapping",
-	Hidden: true,
+var fastaGCCmd = &cobra.Command{
+	GroupID: "fastacmd",
+	Use:     "fasta-gc <input.fasta>",
+	Short:   "Return the GC content of sequences in a FASTA file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -25,29 +25,15 @@ var fastaCatCmd = &cobra.Command{
 		defer reader.Close()
 
 		for rec, err := reader.NextSeq(); ; rec, err = reader.NextSeq() {
-			if err != nil {
-				if err != io.EOF {
-					return err
-				}
-				break
+			if err != nil && err != io.EOF {
+				return err
 			}
 			if rec == nil {
 				break
 			}
-
-			fmt.Printf(">%s", rec.Name())
-
-			if rec.Comment() != "" {
-				fmt.Printf(" %s\n", rec.Comment())
-			} else {
-				fmt.Printf("\n")
-			}
-			fmt.Printf("%s\n", rec.FullSeq().Seq())
+			pct := seqanalysis.CalcGC(rec)
+			cmd.Printf("%s\t%.4f\n", rec.Name(), pct)
 		}
 		return nil
 	},
-}
-
-func init() {
-	rootCmd.AddCommand(fastaCatCmd)
 }
