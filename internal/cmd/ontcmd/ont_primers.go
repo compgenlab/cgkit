@@ -39,7 +39,7 @@ var ontPrimersCmd = &cobra.Command{
 		}
 		var vnpseq, sspseq seqio.SeqQual
 		var barcodeSeqs = make([]seqio.SeqQual, 0)
-		umiSeq := seqio.NewStringSeqQual("TTVVVVTTVVVVTTVVVVTTVVVVTTTGGG", "", "UMI").FullSeq()
+		umiSeq := seqio.NewStringSeq("TTVVVVTTVVVVTTVVVVTTVVVVTTTGGG", "UMI").FullSeq()
 
 		for seq, err := ontPrimers.NextSeq(); err == nil && seq != nil; seq, err = ontPrimers.NextSeq() {
 			switch seq.Name() {
