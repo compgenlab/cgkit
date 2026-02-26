@@ -63,12 +63,12 @@ var ontPrimersCmd = &cobra.Command{
 		opts := align.OntAlignmentDefaults().ClippingDisable()
 		aligner := align.NewLocalAligner(opts)
 
-		fmt.Printf("read\tlength\tVNP_score\tVNP_start_end\t%s\tVNP_strand\tSSP_score\tSSP_start_end\t%s\tSSP_strand", vnpseq.Seq(), sspseq.Seq())
+		fmt.Printf("read\tlength\tVNP_score\tVNP_matches\tVNP_start\tVNP_end\t%s\tVNP_strand\tSSP_score\tSSP_matches\tSSP_start\tSSP_end\t%s\tSSP_strand", vnpseq.Seq(), sspseq.Seq())
 		if ontPrimersUMI {
 			fmt.Print("\tUMI\tUMI_code\tUMI_score")
 		}
 		if ontPrimersBC {
-			fmt.Print("\tbarcode\tbarcode_seq\tbarcode_score")
+			fmt.Print("\tbarcode\tbarcode_seq\tbarcode_score\tbarcode_matches")
 		}
 		fmt.Println()
 
@@ -82,10 +82,22 @@ var ontPrimersCmd = &cobra.Command{
 			vnpAln := vnpAlnPromise.Result()
 			sspAln := sspAlnPromise.Result()
 
-			fmt.Printf("@%s\t%d\t%.2g\t%d-%d\t%s\t%s\t%.2g\t%d-%d\t%s\t%s", seq.Name(), len(seq.FullSeq().Seq()),
-				vnpAln.Score, vnpAln.TargetStart, vnpAln.TargetEnd,
+			vnpStart, vnpEnd, sspStart, sspEnd := vnpAln.TargetStart, vnpAln.TargetEnd, sspAln.TargetStart, sspAln.TargetEnd
+			if vnpAln.Target.IsRevComp() {
+				vnpStart = len(seq.FullSeq().Seq()) - vnpStart
+				vnpEnd = len(seq.FullSeq().Seq()) - vnpEnd
+				vnpStart, vnpEnd = vnpEnd, vnpStart
+			}
+			if sspAln.Target.IsRevComp() {
+				sspStart = len(seq.FullSeq().Seq()) - sspStart
+				sspEnd = len(seq.FullSeq().Seq()) - sspEnd
+				sspStart, sspEnd = sspEnd, sspStart
+			}
+
+			fmt.Printf("@%s\t%d\t%.2g\t%d\t%d\t%d\t%s\t%s\t%.2g\t%d\t%d\t%d\t%s\t%s", seq.Name(), len(seq.FullSeq().Seq()),
+				vnpAln.Score, vnpAln.Matches(), vnpStart, vnpEnd,
 				vnpAln.TargetStr(), vnpAln.Target.Strand(),
-				sspAln.Score, sspAln.TargetStart, sspAln.TargetEnd, sspAln.TargetStr(), sspAln.Target.Strand())
+				sspAln.Score, sspAln.Matches(), sspStart, sspEnd, sspAln.TargetStr(), sspAln.Target.Strand())
 
 			if ontPrimersUMI {
 				umiCode := ""
@@ -103,7 +115,7 @@ var ontPrimersCmd = &cobra.Command{
 					vMax = i
 				}
 
-				inT := false
+				inT := true
 				for i := vMin + 1; i < vMax; i++ {
 					switch tStr[i] {
 					case 'T':
@@ -128,9 +140,9 @@ var ontPrimersCmd = &cobra.Command{
 
 				bestBC := align.AlignBatch(aligner, sem, barcodeSeqs, []seqio.SeqQual{flankseq}).Result()
 				if bestBC.Score > 0 {
-					fmt.Printf("\t%s\t%s\t%.2g", bestBC.Query.Name(), bestBC.TargetStr(), bestBC.Score)
+					fmt.Printf("\t%s\t%s\t%.2g\t%d", bestBC.Query.Name(), bestBC.TargetStr(), bestBC.Score, bestBC.Matches())
 				} else {
-					fmt.Print("\t\t\t")
+					fmt.Print("\t\t\t\t")
 				}
 			}
 
@@ -142,8 +154,18 @@ var ontPrimersCmd = &cobra.Command{
 }
 
 var ontPrimersFilename string
+var ontPassingFQFilename string
+var ontFilteredFQFilename string
 var ontPrimersUMI bool
 var ontPrimersBC bool
+
+var ontFilterVNPScore int
+var ontFilterSSPScore int
+var ontFilterBarcodeScore int
+var ontFilterVNPSSPPair bool
+
+var ontWriteBarcode bool
+var ontWriteUMI bool
 
 var ontThreads int
 
@@ -151,7 +173,18 @@ var ontThreads int
 var ontPrimersDefault string
 
 func init() {
+	ontPrimersCmd.Flags().StringVar(&ontPassingFQFilename, "passing", "", "Write passing FASTQ records to this file (gzipped)")
+	ontPrimersCmd.Flags().StringVar(&ontFilteredFQFilename, "filtered", "", "Write removed FASTQ records to this file (gzipped)")
 	ontPrimersCmd.Flags().StringVar(&ontPrimersFilename, "fasta", "", "FASTA file with primers (default use included primers)")
+
+	ontPrimersCmd.Flags().BoolVar(&ontWriteBarcode, "add-barcode", false, "Add barcode as FASTQ comment")
+	ontPrimersCmd.Flags().BoolVar(&ontWriteUMI, "add-umi", false, "Add UMI as FASTQ comment")
+
+	ontPrimersCmd.Flags().BoolVar(&ontFilterVNPSSPPair, "filter-pair", false, "Require paired VNP/SSP (flanking on opposite strands)")
+	ontPrimersCmd.Flags().IntVar(&ontFilterVNPScore, "filter-vnp-score", -1, "Require minimum VNP alignment score")
+	ontPrimersCmd.Flags().IntVar(&ontFilterSSPScore, "filter-ssp-score", -1, "Require minimum SSP alignment score")
+	ontPrimersCmd.Flags().IntVar(&ontFilterBarcodeScore, "filter-barcode-score", -1, "Require minimum barcode alignment score")
+
 	ontPrimersCmd.Flags().BoolVar(&ontPrimersUMI, "umi", false, "Use UMI SSP primer (SSPII)")
 	ontPrimersCmd.Flags().BoolVar(&ontPrimersBC, "barcode", false, "Identify the barcode used (upstream of VNP)")
 	ontPrimersCmd.Flags().IntVarP(&ontThreads, "threads", "t", 0, "Threads to use (default: CPU count)")
