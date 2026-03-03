@@ -66,9 +66,12 @@ var ontPrimersCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		// --add-umi implies --umi
+		// --add-umi implies --detect-umi; --add-barcode implies --detect-barcode
 		if ontWriteUMI {
 			ontPrimersUMI = true
+		}
+		if ontWriteBarcode {
+			ontDetectBC = true
 		}
 
 		var vnpseq, sspseq seqio.SeqQual
@@ -152,6 +155,10 @@ var ontPrimersCmd = &cobra.Command{
 					fmt.Fprintf(os.Stderr, "error closing failed-fastq: %v\n", err)
 				}
 			}()
+		}
+
+		if reportWriter == nil && passingWriter == nil && failedWriter == nil {
+			return fmt.Errorf("no output specified: at least one of --report, --passing-fastq, or --failed-fastq is required")
 		}
 
 		if passingWriter == nil && failedWriter == nil {
