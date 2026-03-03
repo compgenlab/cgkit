@@ -133,9 +133,9 @@ var ontPrimersCmd = &cobra.Command{
 			}
 
 			if ontPrimersBC {
-				// the vnpAln.Target will always be relative to the VNP seq, so we should look 30bp upstream always
-				// if this is on the revcomp strand, we still look 30bp up.
-				start := max(0, vnpAln.TargetStart-30)
+				// the vnpAln.Target will always be relative to the VNP seq, so we should look 32bp upstream always
+				// if this is on the revcomp strand, we still look 32bp up. (barcodes are ~24bp)
+				start := max(0, vnpAln.TargetStart-32)
 				flankseq := vnpAln.Target.Sub(start, vnpAln.TargetStart)
 
 				bestBC := align.AlignBatch(aligner, sem, barcodeSeqs, []seqio.SeqQual{flankseq}).Result()
