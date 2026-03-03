@@ -431,7 +431,7 @@ func init() {
 	ontPrimersCmd.Flags().StringVar(&ontPassingFQFilename, "passing-fastq", "", "Write passing reads to this file (gzipped if .gz)")
 	ontPrimersCmd.Flags().StringVar(&ontFailedFQFilename, "failed-fastq", "", "Write failed reads to this file (gzipped if .gz)")
 	ontPrimersCmd.Flags().StringVar(&ontReportFilename, "report", "", "Write tab-delimited report to this file (use '-' for stdout; gzipped if .gz)")
-	ontPrimersCmd.Flags().StringVar(&ontPrimersFilename, "fasta", "", "FASTA file with primers (default: use included primers)")
+	ontPrimersCmd.Flags().StringVar(&ontPrimersFilename, "primers-fasta", "", "FASTA file with primers (default: use included primers)")
 
 	ontPrimersCmd.Flags().BoolVar(&ontWriteBarcode, "add-barcode", false, "Add BC= tag to FASTQ comment when writing output")
 	ontPrimersCmd.Flags().BoolVar(&ontWriteUMI, "add-umi", false, "Add UMI= tag to FASTQ comment when writing output")
@@ -442,13 +442,13 @@ func init() {
 	ontPrimersCmd.Flags().Float32Var(&ontFilterSSPScore, "filter-ssp-score", -1, "Require minimum SSP alignment score")
 	ontPrimersCmd.Flags().Float32Var(&ontFilterBarcodeScore, "filter-barcode-score", -1, "Require minimum barcode alignment score")
 
-	ontPrimersCmd.Flags().IntVar(&ontFilterVNPMatches, "vnp-match", -1, "Require minimum VNP match count")
-	ontPrimersCmd.Flags().IntVar(&ontFilterSSPMatches, "ssp-match", -1, "Require minimum SSP match count")
-	ontPrimersCmd.Flags().IntVar(&ontFilterBarcodeMatches, "barcode-match", -1, "Require minimum barcode match count")
+	ontPrimersCmd.Flags().IntVar(&ontFilterVNPMatches, "filter-vnp-match", -1, "Require minimum VNP match count")
+	ontPrimersCmd.Flags().IntVar(&ontFilterSSPMatches, "filter-ssp-match", -1, "Require minimum SSP match count")
+	ontPrimersCmd.Flags().IntVar(&ontFilterBarcodeMatches, "filter-barcode-match", -1, "Require minimum barcode match count")
 
-	ontPrimersCmd.Flags().StringVar(&ontFilterBarcodes, "barcode", "", "Comma-separated list of acceptable barcode names (also enables barcode detection)")
-	ontPrimersCmd.Flags().BoolVar(&ontDetectBC, "find-barcode", false, "Detect barcode upstream of VNP and include in report (no name filtering)")
+	ontPrimersCmd.Flags().StringVar(&ontFilterBarcodes, "filter-allowed-barcodes", "", "Comma-separated list of acceptable barcode names (also enables barcode detection)")
+	ontPrimersCmd.Flags().BoolVar(&ontDetectBC, "detect-barcode", false, "Detect barcode upstream of VNP and include in report (no name filtering)")
 
-	ontPrimersCmd.Flags().BoolVar(&ontPrimersUMI, "umi", false, "Use UMI SSP primer (SSPII)")
+	ontPrimersCmd.Flags().BoolVar(&ontPrimersUMI, "detect-umi", false, "Use UMI SSP primer (SSPII)")
 	ontPrimersCmd.Flags().IntVarP(&ontThreads, "threads", "t", 0, "Threads to use (default: CPU count)")
 }
