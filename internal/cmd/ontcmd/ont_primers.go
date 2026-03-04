@@ -8,10 +8,10 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/compgen-io/cgltk/align"
 	"github.com/compgen-io/cgltk/seqio"
-	"github.com/compgen-io/cgltk/support/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -191,105 +191,164 @@ var ontPrimersCmd = &cobra.Command{
 			if needsBarcode {
 				fmt.Fprint(reportWriter, "\tbarcode\tbarcode_seq\tbarcode_score\tbarcode_matches")
 			}
+			fmt.Fprint(reportWriter, "\tstatus")
 			fmt.Fprintln(reportWriter)
 		}
 
-		sem := utils.NewSemaphore(ontThreads)
+		// Per-read result type, computed by workers.
+		type readResult struct {
+			seq           *seqio.FastqSeqRecord
+			seqFull       seqio.SeqQual
+			seqLen        int
+			vnpAln        *align.PairwiseAlignment
+			sspAln        *align.PairwiseAlignment
+			vnpStart      int
+			vnpEnd        int
+			sspStart      int
+			sspEnd        int
+			umiTargetStr  string
+			umiCode       string
+			umiScore      float32
+			bestBCName    string
+			bestBCSeq     string
+			bestBCScore   float32
+			bestBCMatches int
+		}
 
-		for seq, err := fqReader.NextFastqSeq(); err == nil && seq != nil; seq, err = fqReader.NextFastqSeq() {
-			seqFull := seq.FullSeq()
-			seqLen := len(seqFull.Seq())
-			seqRevComp := seqFull.RevComp()
-			vnpAlnPromise := align.AlignBatch(aligner, sem, []seqio.SeqQual{vnpseq}, []seqio.SeqQual{seqFull, seqRevComp})
-			sspAlnPromise := align.AlignBatch(aligner, sem, []seqio.SeqQual{sspseq}, []seqio.SeqQual{seqFull, seqRevComp})
+		type workItem struct {
+			seq      *seqio.FastqSeqRecord
+			resultCh chan *readResult
+		}
 
-			vnpAln := vnpAlnPromise.Result()
-			sspAln := sspAlnPromise.Result()
+		workCh := make(chan workItem, ontThreads)
+		orderCh := make(chan chan *readResult, ontThreads)
 
-			vnpStart, vnpEnd := vnpAln.TargetStart, vnpAln.TargetEnd
-			if vnpAln.Target.IsRevComp() {
-				vnpStart = seqLen - vnpStart
-				vnpEnd = seqLen - vnpEnd
-				vnpStart, vnpEnd = vnpEnd, vnpStart
-			}
-			sspStart, sspEnd := sspAln.TargetStart, sspAln.TargetEnd
-			if sspAln.Target.IsRevComp() {
-				sspStart = seqLen - sspStart
-				sspEnd = seqLen - sspEnd
-				sspStart, sspEnd = sspEnd, sspStart
-			}
+		// Start worker goroutines. The aligner is thread-safe (all mutable state
+		// is stack-local per Align() call), so workers share a single instance.
+		var workerWg sync.WaitGroup
+		for range ontThreads {
+			workerWg.Add(1)
+			go func() {
+				defer workerWg.Done()
+				for item := range workCh {
+					seq := item.seq
+					seqFull := seq.FullSeq()
+					seqLen := len(seqFull.Seq())
+					seqRevComp := seqFull.RevComp()
 
-			if reportWriter != nil {
-				fmt.Fprintf(reportWriter, "@%s\t%d\t%.2g\t%d\t%d\t%d\t%s\t%s\t%.2g\t%d\t%d\t%d\t%s\t%s",
-					seq.Name(), seqLen,
-					vnpAln.Score, vnpAln.Matches(), vnpStart, vnpEnd,
-					vnpAln.TargetStr(), vnpAln.Target.Strand(),
-					sspAln.Score, sspAln.Matches(), sspStart, sspEnd,
-					sspAln.TargetStr(), sspAln.Target.Strand())
-			}
+					// VNP: align against both strands, keep best.
+					vnpAlnPlus := aligner.Align(vnpseq, seqFull)
+					vnpAlnMinus := aligner.Align(vnpseq, seqRevComp)
+					vnpAln := vnpAlnPlus
+					if vnpAlnMinus.Score > vnpAlnPlus.Score {
+						vnpAln = vnpAlnMinus
+					}
 
-			// UMI processing.
-			var umiCode string
-			if ontPrimersUMI {
-				umiAln := aligner.Align(umiSeq, sspAln.TargetSub())
-				qStr := umiAln.QueryAlignedStr()
-				tStr := umiAln.TargetAlignedStr()
+					// SSP: align against both strands, keep best.
+					sspAlnPlus := aligner.Align(sspseq, seqFull)
+					sspAlnMinus := aligner.Align(sspseq, seqRevComp)
+					sspAln := sspAlnPlus
+					if sspAlnMinus.Score > sspAlnPlus.Score {
+						sspAln = sspAlnMinus
+					}
 
-				vMin := 0
-				vMax := len(qStr)
+					// Convert RevComp target positions to plus-strand coordinates.
+					vnpStart, vnpEnd := vnpAln.TargetStart, vnpAln.TargetEnd
+					if vnpAln.Target.IsRevComp() {
+						vnpStart = seqLen - vnpAln.TargetEnd
+						vnpEnd = seqLen - vnpAln.TargetStart
+					}
+					sspStart, sspEnd := sspAln.TargetStart, sspAln.TargetEnd
+					if sspAln.Target.IsRevComp() {
+						sspStart = seqLen - sspAln.TargetEnd
+						sspEnd = seqLen - sspAln.TargetStart
+					}
 
-				for i := 0; i < len(qStr) && qStr[i] != 'V'; i++ {
-					vMin = i
-				}
-				for i := len(qStr) - 1; i >= 0 && qStr[i] != 'V'; i-- {
-					vMax = i
-				}
+					result := &readResult{
+						seq:      seq,
+						seqFull:  seqFull,
+						seqLen:   seqLen,
+						vnpAln:   vnpAln,
+						sspAln:   sspAln,
+						vnpStart: vnpStart,
+						vnpEnd:   vnpEnd,
+						sspStart: sspStart,
+						sspEnd:   sspEnd,
+					}
 
-				inT := true
-				for i := vMin + 1; i < vMax; i++ {
-					switch tStr[i] {
-					case 'T':
-						if !inT {
-							umiCode += "-"
+					// UMI processing.
+					if ontPrimersUMI {
+						umiAln := aligner.Align(umiSeq, sspAln.TargetSub())
+						qStr := umiAln.QueryAlignedStr()
+						tStr := umiAln.TargetAlignedStr()
+
+						vMin := 0
+						vMax := len(qStr)
+						for i := 0; i < len(qStr) && qStr[i] != 'V'; i++ {
+							vMin = i
 						}
-						inT = true
-					case '-':
-					default:
-						inT = false
-						umiCode += string(tStr[i])
-					}
-				}
-				if reportWriter != nil {
-					fmt.Fprintf(reportWriter, "\t%s\t%s\t%.2g", umiAln.TargetStr(), umiCode, umiAln.Score)
-				}
-			}
+						for i := len(qStr) - 1; i >= 0 && qStr[i] != 'V'; i-- {
+							vMax = i
+						}
 
-			// Barcode processing.
-			var bestBCName, bestBCSeq string
-			var bestBCScore float32
-			var bestBCMatches int
-			if needsBarcode {
-				start := max(0, vnpAln.TargetStart-32)
-				flankseq := vnpAln.Target.Sub(start, vnpAln.TargetStart)
-				bestBC := align.AlignBatch(aligner, sem, barcodeSeqs, []seqio.SeqQual{flankseq}).Result()
-				if bestBC.Score > 0 {
-					bestBCName = bestBC.Query.Name()
-					bestBCSeq = bestBC.TargetStr()
-					bestBCScore = bestBC.Score
-					bestBCMatches = bestBC.Matches()
-					if reportWriter != nil {
-						fmt.Fprintf(reportWriter, "\t%s\t%s\t%.2g\t%d", bestBCName, bestBCSeq, bestBCScore, bestBCMatches)
+						inT := true
+						for i := vMin + 1; i < vMax; i++ {
+							switch tStr[i] {
+							case 'T':
+								if !inT {
+									result.umiCode += "-"
+								}
+								inT = true
+							case '-':
+							default:
+								inT = false
+								result.umiCode += string(tStr[i])
+							}
+						}
+						result.umiTargetStr = umiAln.TargetStr()
+						result.umiScore = umiAln.Score
 					}
-				} else if reportWriter != nil {
-					fmt.Fprint(reportWriter, "\t\t\t\t")
-				}
-			}
-			if reportWriter != nil {
-				fmt.Fprintln(reportWriter)
-			}
 
-			// Write to passing or failed FASTQ if requested.
-			if passingWriter != nil || failedWriter != nil {
+					// Barcode processing.
+					if needsBarcode {
+						start := max(0, vnpAln.TargetStart-32)
+						flankseq := vnpAln.Target.Sub(start, vnpAln.TargetStart)
+						var bestBC *align.PairwiseAlignment
+						for _, bc := range barcodeSeqs {
+							aln := aligner.Align(bc, flankseq)
+							if bestBC == nil || aln.Score > bestBC.Score {
+								bestBC = aln
+							}
+						}
+						if bestBC != nil && bestBC.Score > 0 {
+							result.bestBCName = bestBC.Query.Name()
+							result.bestBCSeq = bestBC.TargetStr()
+							result.bestBCScore = bestBC.Score
+							result.bestBCMatches = bestBC.Matches()
+						}
+					}
+
+					item.resultCh <- result
+				}
+			}()
+		}
+
+		// Writer goroutine: ranges over orderCh in submission order, blocking on
+		// each resultCh so output order matches input order.
+		writerErrCh := make(chan error, 1)
+		go func() {
+			var writeErr error
+			for resultCh := range orderCh {
+				result := <-resultCh
+				if writeErr != nil {
+					continue // drain remaining results but skip writing
+				}
+
+				seq := result.seq
+				vnpAln := result.vnpAln
+				sspAln := result.sspAln
+
+				// Compute pass/fail status (shared by report and FASTQ output).
 				passing := true
 				var failReasons []string
 
@@ -313,98 +372,146 @@ var ontPrimersCmd = &cobra.Command{
 					passing = false // valid pairs flank on opposite strands
 					failReasons = append(failReasons, "unpaired")
 				}
-				if len(acceptedBarcodes) > 0 && !acceptedBarcodes[bestBCName] {
+				if len(acceptedBarcodes) > 0 && !acceptedBarcodes[result.bestBCName] {
 					passing = false
 					failReasons = append(failReasons, "barcode_mismatch")
 				}
-				if ontFilterBarcodeScore >= 0 && bestBCScore < ontFilterBarcodeScore {
+				if ontFilterBarcodeScore >= 0 && result.bestBCScore < ontFilterBarcodeScore {
 					passing = false
 					failReasons = append(failReasons, "low_barcode_score")
 				}
-				if ontFilterBarcodeMatches >= 0 && bestBCMatches < ontFilterBarcodeMatches {
+				if ontFilterBarcodeMatches >= 0 && result.bestBCMatches < ontFilterBarcodeMatches {
 					passing = false
 					failReasons = append(failReasons, "low_barcode_match")
 				}
 
-				// Annotate FASTQ comment with SAM-style tags.
-				if passing {
-					if ontWriteUMI && umiCode != "" {
-						seq.AddCommentTSV("RX:Z:" + umiCode)
-					}
-					if ontWriteBarcode && bestBCName != "" {
-						seq.AddCommentTSV("BC:Z:" + bestBCSeq)
-						seq.AddCommentTSV("ZB:Z:" + bestBCName)
-					}
-				} else {
-					seq.AddCommentTSV("CO:Z:" + strings.Join(failReasons, ";"))
+				statusStr := "PASS"
+				if !passing {
+					statusStr = strings.Join(failReasons, ";")
 				}
 
-				writer := failedWriter
-				if passing {
-					writer = passingWriter
-				}
-				if writer != nil {
-					if passing && ontTrimFlanking {
-						vnpValid := vnpAln.Score > 0 &&
-							(ontFilterVNPScore < 0 || vnpAln.Score >= ontFilterVNPScore) &&
-							(ontFilterVNPMatches < 0 || vnpAln.Matches() >= ontFilterVNPMatches)
-						sspValid := sspAln.Score > 0 &&
-							(ontFilterSSPScore < 0 || sspAln.Score >= ontFilterSSPScore) &&
-							(ontFilterSSPMatches < 0 || sspAln.Matches() >= ontFilterSSPMatches)
+				if reportWriter != nil {
+					fmt.Fprintf(reportWriter, "@%s\t%d\t%.2g\t%d\t%d\t%d\t%s\t%s\t%.2g\t%d\t%d\t%d\t%s\t%s",
+						seq.Name(), result.seqLen,
+						vnpAln.Score, vnpAln.Matches(), result.vnpStart, result.vnpEnd,
+						vnpAln.TargetStr(), vnpAln.Target.Strand(),
+						sspAln.Score, sspAln.Matches(), result.sspStart, result.sspEnd,
+						sspAln.TargetStr(), sspAln.Target.Strand())
 
-						trimStart := 0
-						trimEnd := seqLen
+					if ontPrimersUMI {
+						fmt.Fprintf(reportWriter, "\t%s\t%s\t%.2g", result.umiTargetStr, result.umiCode, result.umiScore)
+					}
 
-						vnpPlus := !vnpAln.Target.IsRevComp()
-						sspPlus := !sspAln.Target.IsRevComp()
-
-						if vnpValid && sspValid && vnpPlus != sspPlus {
-							// Both found on opposite strands — trim both ends.
-							if vnpPlus {
-								trimStart = vnpEnd
-								trimEnd = sspStart
-							} else {
-								trimStart = sspEnd
-								trimEnd = vnpStart
-							}
-						} else if vnpValid && !sspValid {
-							// Only VNP found.
-							if vnpPlus {
-								trimStart = vnpEnd
-							} else {
-								trimEnd = vnpStart
-							}
-						} else if sspValid && !vnpValid {
-							// Only SSP found.
-							if sspPlus {
-								trimStart = sspEnd
-							} else {
-								trimEnd = sspStart
-							}
-						}
-						// Both on same strand: no trimming (trimStart/trimEnd unchanged).
-
-						if trimStart < trimEnd {
-							trimmed := seqFull.Sub(trimStart, trimEnd)
-							if err := writer.WriteRecord(seq.Name(), seq.Comment(), trimmed.Seq(), trimmed.Qual()); err != nil {
-								return err
-							}
+					if needsBarcode {
+						if result.bestBCName != "" {
+							fmt.Fprintf(reportWriter, "\t%s\t%s\t%.2g\t%d", result.bestBCName, result.bestBCSeq, result.bestBCScore, result.bestBCMatches)
 						} else {
-							// Trimming produced empty or inverted range — write as-is.
-							if err := writer.Write(seq); err != nil {
-								return err
-							}
+							fmt.Fprint(reportWriter, "\t\t\t\t")
+						}
+					}
+					fmt.Fprintf(reportWriter, "\t%s\n", statusStr)
+				}
+
+				// Write to passing or failed FASTQ if requested.
+				if passingWriter != nil || failedWriter != nil {
+					// Annotate FASTQ comment with SAM-style tags.
+					if passing {
+						if ontWriteUMI && result.umiCode != "" {
+							seq.AddCommentTSV("RX:Z:" + result.umiCode)
+						}
+						if ontWriteBarcode && result.bestBCName != "" {
+							seq.AddCommentTSV("BC:Z:" + result.bestBCSeq)
+							seq.AddCommentTSV("ZB:Z:" + result.bestBCName)
 						}
 					} else {
-						if err := writer.Write(seq); err != nil {
-							return err
+						seq.AddCommentTSV("CO:Z:" + statusStr)
+					}
+
+					writer := failedWriter
+					if passing {
+						writer = passingWriter
+					}
+					if writer != nil {
+						if passing && ontTrimFlanking {
+							vnpValid := vnpAln.Score > 0 &&
+								(ontFilterVNPScore < 0 || vnpAln.Score >= ontFilterVNPScore) &&
+								(ontFilterVNPMatches < 0 || vnpAln.Matches() >= ontFilterVNPMatches)
+							sspValid := sspAln.Score > 0 &&
+								(ontFilterSSPScore < 0 || sspAln.Score >= ontFilterSSPScore) &&
+								(ontFilterSSPMatches < 0 || sspAln.Matches() >= ontFilterSSPMatches)
+
+							trimStart := 0
+							trimEnd := result.seqLen
+
+							vnpPlus := !vnpAln.Target.IsRevComp()
+							sspPlus := !sspAln.Target.IsRevComp()
+
+							if vnpValid && sspValid && vnpPlus != sspPlus {
+								// Both found on opposite strands — trim both ends.
+								if vnpPlus {
+									trimStart = result.vnpEnd
+									trimEnd = result.sspStart
+								} else {
+									trimStart = result.sspEnd
+									trimEnd = result.vnpStart
+								}
+							} else if vnpValid && !sspValid {
+								// Only VNP found.
+								if vnpPlus {
+									trimStart = result.vnpEnd
+								} else {
+									trimEnd = result.vnpStart
+								}
+							} else if sspValid && !vnpValid {
+								// Only SSP found.
+								if sspPlus {
+									trimStart = result.sspEnd
+								} else {
+									trimEnd = result.sspStart
+								}
+							}
+							// Both on same strand: no trimming (trimStart/trimEnd unchanged).
+
+							if trimStart < trimEnd {
+								trimmed := result.seqFull.Sub(trimStart, trimEnd)
+								writeErr = writer.WriteRecord(seq.Name(), seq.Comment(), trimmed.Seq(), trimmed.Qual())
+							} else {
+								// Trimming produced empty or inverted range — write as-is.
+								writeErr = writer.Write(seq)
+							}
+						} else {
+							writeErr = writer.Write(seq)
 						}
 					}
 				}
 			}
-		}
+			writerErrCh <- writeErr
+		}()
 
-		return nil
+		// Reader: send each read to orderCh (for ordering) then workCh (for processing).
+		// orderCh is sent first so the writer always sees results in input order.
+		var readErr error
+		for {
+			seq, err := fqReader.NextFastqSeq()
+			if err != nil {
+				if err != io.EOF {
+					readErr = err
+				}
+				break
+			}
+			resultCh := make(chan *readResult, 1)
+			orderCh <- resultCh
+			workCh <- workItem{seq: seq, resultCh: resultCh}
+		}
+		close(workCh)
+		workerWg.Wait()
+		close(orderCh)
+
+		writeErr := <-writerErrCh
+		if readErr != nil {
+			return readErr
+		}
+		return writeErr
 	},
 }
 
