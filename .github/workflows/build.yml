@@ -1,0 +1,56 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: GOCACHE=/tmp/go-build-cache go test ./...
+
+      - name: Build binaries
+        run: |
+          mkdir -p bin
+          GOOS=darwin  GOARCH=arm64                go build -buildvcs=false -o bin/cgltk.darwin_arm64  .
+          GOOS=linux   GOARCH=arm64 CGO_ENABLED=0  go build -buildvcs=false -o bin/cgltk.linux_arm64   .
+          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0  go build -buildvcs=false -o bin/cgltk.linux_amd64   .
+
+      - name: Upload cgltk.linux_amd64
+        uses: actions/upload-artifact@v4
+        with:
+          name: cgltk.linux_amd64
+          path: bin/cgltk.linux_amd64
+
+      - name: Upload cgltk.linux_arm64
+        uses: actions/upload-artifact@v4
+        with:
+          name: cgltk.linux_arm64
+          path: bin/cgltk.linux_arm64
+
+      - name: Upload cgltk.darwin_arm64
+        uses: actions/upload-artifact@v4
+        with:
+          name: cgltk.darwin_arm64
+          path: bin/cgltk.darwin_arm64
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bin/cgltk.darwin_arm64
+            bin/cgltk.linux_arm64
+            bin/cgltk.linux_amd64
