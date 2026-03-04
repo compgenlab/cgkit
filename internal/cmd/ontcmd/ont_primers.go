@@ -191,26 +191,27 @@ var ontPrimersCmd = &cobra.Command{
 			if needsBarcode {
 				fmt.Fprint(reportWriter, "\tbarcode\tbarcode_seq\tbarcode_score\tbarcode_matches")
 			}
+			fmt.Fprint(reportWriter, "\tstatus")
 			fmt.Fprintln(reportWriter)
 		}
 
 		// Per-read result type, computed by workers.
 		type readResult struct {
-			seq          *seqio.FastqSeqRecord
-			seqFull      seqio.SeqQual
-			seqLen       int
-			vnpAln       *align.PairwiseAlignment
-			sspAln       *align.PairwiseAlignment
-			vnpStart     int
-			vnpEnd       int
-			sspStart     int
-			sspEnd       int
-			umiTargetStr string
-			umiCode      string
-			umiScore     float32
-			bestBCName   string
-			bestBCSeq    string
-			bestBCScore  float32
+			seq           *seqio.FastqSeqRecord
+			seqFull       seqio.SeqQual
+			seqLen        int
+			vnpAln        *align.PairwiseAlignment
+			sspAln        *align.PairwiseAlignment
+			vnpStart      int
+			vnpEnd        int
+			sspStart      int
+			sspEnd        int
+			umiTargetStr  string
+			umiCode       string
+			umiScore      float32
+			bestBCName    string
+			bestBCSeq     string
+			bestBCScore   float32
 			bestBCMatches int
 		}
 
@@ -347,6 +348,48 @@ var ontPrimersCmd = &cobra.Command{
 				vnpAln := result.vnpAln
 				sspAln := result.sspAln
 
+				// Compute pass/fail status (shared by report and FASTQ output).
+				passing := true
+				var failReasons []string
+
+				if ontFilterVNPMatches >= 0 && vnpAln.Matches() < ontFilterVNPMatches {
+					passing = false
+					failReasons = append(failReasons, "low_vnp_match")
+				}
+				if ontFilterSSPMatches >= 0 && sspAln.Matches() < ontFilterSSPMatches {
+					passing = false
+					failReasons = append(failReasons, "low_ssp_match")
+				}
+				if ontFilterVNPScore >= 0 && vnpAln.Score < ontFilterVNPScore {
+					passing = false
+					failReasons = append(failReasons, "low_vnp_score")
+				}
+				if ontFilterSSPScore >= 0 && sspAln.Score < ontFilterSSPScore {
+					passing = false
+					failReasons = append(failReasons, "low_ssp_score")
+				}
+				if ontFilterVNPSSPPair && vnpAln.Target.Strand() == sspAln.Target.Strand() {
+					passing = false // valid pairs flank on opposite strands
+					failReasons = append(failReasons, "unpaired")
+				}
+				if len(acceptedBarcodes) > 0 && !acceptedBarcodes[result.bestBCName] {
+					passing = false
+					failReasons = append(failReasons, "barcode_mismatch")
+				}
+				if ontFilterBarcodeScore >= 0 && result.bestBCScore < ontFilterBarcodeScore {
+					passing = false
+					failReasons = append(failReasons, "low_barcode_score")
+				}
+				if ontFilterBarcodeMatches >= 0 && result.bestBCMatches < ontFilterBarcodeMatches {
+					passing = false
+					failReasons = append(failReasons, "low_barcode_match")
+				}
+
+				statusStr := "PASS"
+				if !passing {
+					statusStr = strings.Join(failReasons, ";")
+				}
+
 				if reportWriter != nil {
 					fmt.Fprintf(reportWriter, "@%s\t%d\t%.2g\t%d\t%d\t%d\t%s\t%s\t%.2g\t%d\t%d\t%d\t%s\t%s",
 						seq.Name(), result.seqLen,
@@ -366,47 +409,11 @@ var ontPrimersCmd = &cobra.Command{
 							fmt.Fprint(reportWriter, "\t\t\t\t")
 						}
 					}
-					fmt.Fprintln(reportWriter)
+					fmt.Fprintf(reportWriter, "\t%s\n", statusStr)
 				}
 
 				// Write to passing or failed FASTQ if requested.
 				if passingWriter != nil || failedWriter != nil {
-					passing := true
-					var failReasons []string
-
-					if ontFilterVNPMatches >= 0 && vnpAln.Matches() < ontFilterVNPMatches {
-						passing = false
-						failReasons = append(failReasons, "low_vnp_match")
-					}
-					if ontFilterSSPMatches >= 0 && sspAln.Matches() < ontFilterSSPMatches {
-						passing = false
-						failReasons = append(failReasons, "low_ssp_match")
-					}
-					if ontFilterVNPScore >= 0 && vnpAln.Score < ontFilterVNPScore {
-						passing = false
-						failReasons = append(failReasons, "low_vnp_score")
-					}
-					if ontFilterSSPScore >= 0 && sspAln.Score < ontFilterSSPScore {
-						passing = false
-						failReasons = append(failReasons, "low_ssp_score")
-					}
-					if ontFilterVNPSSPPair && vnpAln.Target.Strand() == sspAln.Target.Strand() {
-						passing = false // valid pairs flank on opposite strands
-						failReasons = append(failReasons, "unpaired")
-					}
-					if len(acceptedBarcodes) > 0 && !acceptedBarcodes[result.bestBCName] {
-						passing = false
-						failReasons = append(failReasons, "barcode_mismatch")
-					}
-					if ontFilterBarcodeScore >= 0 && result.bestBCScore < ontFilterBarcodeScore {
-						passing = false
-						failReasons = append(failReasons, "low_barcode_score")
-					}
-					if ontFilterBarcodeMatches >= 0 && result.bestBCMatches < ontFilterBarcodeMatches {
-						passing = false
-						failReasons = append(failReasons, "low_barcode_match")
-					}
-
 					// Annotate FASTQ comment with SAM-style tags.
 					if passing {
 						if ontWriteUMI && result.umiCode != "" {
@@ -417,7 +424,7 @@ var ontPrimersCmd = &cobra.Command{
 							seq.AddCommentTSV("ZB:Z:" + result.bestBCName)
 						}
 					} else {
-						seq.AddCommentTSV("CO:Z:" + strings.Join(failReasons, ";"))
+						seq.AddCommentTSV("CO:Z:" + statusStr)
 					}
 
 					writer := failedWriter
