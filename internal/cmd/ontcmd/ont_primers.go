@@ -191,7 +191,7 @@ var ontPrimersCmd = &cobra.Command{
 			if needsBarcode {
 				fmt.Fprint(reportWriter, "\tbarcode\tbarcode_seq\tbarcode_score\tbarcode_matches")
 			}
-			fmt.Fprint(reportWriter, "\tstatus")
+			fmt.Fprint(reportWriter, "\tinsert_length\tstatus")
 			fmt.Fprintln(reportWriter)
 		}
 
@@ -206,6 +206,7 @@ var ontPrimersCmd = &cobra.Command{
 			vnpEnd        int
 			sspStart      int
 			sspEnd        int
+			insertLength  int
 			umiTargetStr  string
 			umiCode       string
 			umiScore      float32
@@ -264,16 +265,33 @@ var ontPrimersCmd = &cobra.Command{
 						sspEnd = seqLen - sspAln.TargetStart
 					}
 
+					// Compute insert length: bases between VNP end and SSP start
+					// when both primers flank on opposite strands.
+					insertLength := -1
+					vnpPlus := !vnpAln.Target.IsRevComp()
+					sspPlus := !sspAln.Target.IsRevComp()
+					if vnpPlus != sspPlus {
+						if vnpPlus {
+							insertLength = sspStart - vnpEnd
+						} else {
+							insertLength = vnpStart - sspEnd
+						}
+						if insertLength < 0 {
+							insertLength = 0
+						}
+					}
+
 					result := &readResult{
-						seq:      seq,
-						seqFull:  seqFull,
-						seqLen:   seqLen,
-						vnpAln:   vnpAln,
-						sspAln:   sspAln,
-						vnpStart: vnpStart,
-						vnpEnd:   vnpEnd,
-						sspStart: sspStart,
-						sspEnd:   sspEnd,
+						seq:          seq,
+						seqFull:      seqFull,
+						seqLen:       seqLen,
+						vnpAln:       vnpAln,
+						sspAln:       sspAln,
+						vnpStart:     vnpStart,
+						vnpEnd:       vnpEnd,
+						sspStart:     sspStart,
+						sspEnd:       sspEnd,
+						insertLength: insertLength,
 					}
 
 					// UMI processing.
@@ -409,21 +427,20 @@ var ontPrimersCmd = &cobra.Command{
 							fmt.Fprint(reportWriter, "\t\t\t\t")
 						}
 					}
-					fmt.Fprintf(reportWriter, "\t%s\n", statusStr)
+					fmt.Fprintf(reportWriter, "\t%d\t%s\n", result.insertLength, statusStr)
 				}
 
 				// Write to passing or failed FASTQ if requested.
 				if passingWriter != nil || failedWriter != nil {
 					// Annotate FASTQ comment with SAM-style tags.
-					if passing {
-						if ontWriteUMI && result.umiCode != "" {
-							seq.AddCommentTSV("RX:Z:" + result.umiCode)
-						}
-						if ontWriteBarcode && result.bestBCName != "" {
-							seq.AddCommentTSV("BC:Z:" + result.bestBCSeq)
-							seq.AddCommentTSV("ZB:Z:" + result.bestBCName)
-						}
-					} else {
+					if ontWriteUMI && result.umiCode != "" {
+						seq.AddCommentTSV("RX:Z:" + result.umiCode)
+					}
+					if ontWriteBarcode && result.bestBCName != "" {
+						seq.AddCommentTSV("BC:Z:" + result.bestBCSeq)
+						seq.AddCommentTSV("ZB:Z:" + result.bestBCName)
+					}
+					if !passing {
 						seq.AddCommentTSV("CO:Z:" + statusStr)
 					}
 
