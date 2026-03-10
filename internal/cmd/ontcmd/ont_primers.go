@@ -1,8 +1,8 @@
 package ontcmd
 
 import (
-	_ "embed"
 	"compress/gzip"
+	_ "embed"
 	"fmt"
 	"io"
 	"os"
@@ -491,10 +491,17 @@ var ontPrimersCmd = &cobra.Command{
 
 							if trimStart < trimEnd {
 								trimmed := result.seqFull.Sub(trimStart, trimEnd)
+								if ontSenseCorrect && vnpPlus {
+									trimmed = trimmed.RevComp()
+								}
 								writeErr = writer.WriteRecord(seq.Name(), seq.Comment(), trimmed.Seq(), trimmed.Qual())
 							} else {
 								// Trimming produced empty or inverted range — write as-is.
-								writeErr = writer.Write(seq)
+								fullSeq := seq.FullSeq()
+								if ontSenseCorrect && vnpPlus {
+									fullSeq = seq.FullSeq().RevComp()
+								}
+								writeErr = writer.WriteRecord(seq.Name(), seq.Comment(), fullSeq.Seq(), fullSeq.Qual())
 							}
 						} else {
 							writeErr = writer.Write(seq)
@@ -552,6 +559,7 @@ var ontFilterBarcodeMatches int
 var ontWriteBarcode bool
 var ontWriteUMI bool
 var ontTrimFlanking bool
+var ontSenseCorrect bool
 
 var ontThreads int
 
@@ -567,6 +575,7 @@ func init() {
 	ontPrimersCmd.Flags().BoolVar(&ontWriteBarcode, "add-barcode", false, "Add BC= tag to FASTQ comment when writing output")
 	ontPrimersCmd.Flags().BoolVar(&ontWriteUMI, "add-umi", false, "Add UMI= tag to FASTQ comment when writing output")
 	ontPrimersCmd.Flags().BoolVar(&ontTrimFlanking, "trim-flanking", false, "Trim VNP/SSP sequences from passing reads before writing")
+	ontPrimersCmd.Flags().BoolVar(&ontSenseCorrect, "sense-correct", false, "Correct the read to be in the sense orientation (SSP+/VNP-)")
 
 	ontPrimersCmd.Flags().BoolVar(&ontFilterVNPSSPPair, "filter-pair", false, "Require paired VNP/SSP (flanking on opposite strands)")
 	ontPrimersCmd.Flags().Float32Var(&ontFilterVNPScore, "filter-vnp-score", -1, "Require minimum VNP alignment score")
