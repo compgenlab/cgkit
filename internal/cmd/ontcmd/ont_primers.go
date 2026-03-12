@@ -117,6 +117,20 @@ var ontPrimersCmd = &cobra.Command{
 				acceptedBarcodes[bc] = true
 			}
 		}
+
+		// Validate that every requested barcode name exists in the FASTA file.
+		if len(acceptedBarcodes) > 0 {
+			bcNames := make(map[string]bool, len(barcodeSeqs))
+			for _, bc := range barcodeSeqs {
+				bcNames[bc.Name()] = true
+			}
+			for name := range acceptedBarcodes {
+				if !bcNames[name] {
+					return fmt.Errorf("barcode %q not found in primer FASTA", name)
+				}
+			}
+		}
+
 		needsBarcode := ontDetectBC || len(acceptedBarcodes) > 0 ||
 			ontFilterBarcodeScore >= 0 || ontFilterBarcodeMatches >= 0 || ontWriteBarcode
 
