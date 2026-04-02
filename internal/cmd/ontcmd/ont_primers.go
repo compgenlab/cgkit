@@ -337,6 +337,9 @@ var ontPrimersCmd = &cobra.Command{
 								result.umiCode += string(tStr[i])
 							}
 						}
+						if ontUMISepT {
+							result.umiCode = strings.ReplaceAll(result.umiCode, "-", "TT")
+						}
 						result.umiTargetStr = umiAln.TargetStr()
 						result.umiScore = umiAln.Score
 					}
@@ -572,6 +575,7 @@ var ontFilterBarcodeMatches int
 
 var ontWriteBarcode bool
 var ontWriteUMI bool
+var ontUMISepT bool
 var ontTrimFlanking bool
 var ontSenseCorrect bool
 
@@ -588,6 +592,7 @@ func init() {
 
 	ontPrimersCmd.Flags().BoolVar(&ontWriteBarcode, "add-barcode", false, "Add BC= tag to FASTQ comment when writing output")
 	ontPrimersCmd.Flags().BoolVar(&ontWriteUMI, "add-umi", false, "Add UMI= tag to FASTQ comment when writing output")
+	ontPrimersCmd.Flags().BoolVar(&ontUMISepT, "umi-sep-t", false, "Separate UMI groups with T bases instead of dashes (e.g. AAAATTAAAATTAAAA)")
 	ontPrimersCmd.Flags().BoolVar(&ontTrimFlanking, "trim-flanking", false, "Trim VNP/SSP sequences from passing reads before writing")
 	ontPrimersCmd.Flags().BoolVar(&ontSenseCorrect, "sense-correct", false, "Correct the read to be in the sense orientation (SSP+/VNP-)")
 
