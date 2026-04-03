@@ -44,16 +44,64 @@ var ontUmiMergeCmd = &cobra.Command{
 			}()
 		}
 
+		// Open BED writer if requested
+		var bedWriter io.Writer
+		var closeBed func() error
+		if umiMergeBedFilename != "" {
+			var err error
+			bedWriter, closeBed, err = openWriter(umiMergeBedFilename)
+			if err != nil {
+				return fmt.Errorf("opening bed: %w", err)
+			}
+			defer func() {
+				if err := closeBed(); err != nil {
+					fmt.Fprintf(os.Stderr, "error closing bed: %v\n", err)
+				}
+			}()
+		}
+
 		if umiMergeWholeGenome {
 			return umiMergeWholeGenomeMode(inputFile, countsWriter)
 		}
-		return umiMergeOverlapMode(inputFile, countsWriter)
+		return umiMergeOverlapMode(inputFile, countsWriter, bedWriter)
 	},
+}
+
+// overlapGroup tracks a set of buffered reads that overlap or are within
+// the gap tolerance of each other, on the same strand (unless --no-strand).
+type overlapGroup struct {
+	rname    string
+	strand   string // "+" or "-", or "" for --no-strand
+	minStart int    // 0-based
+	maxEnd   int    // 0-based, exclusive
+	recs     []*htsio.SamRecord
+}
+
+func (g *overlapGroup) reset() {
+	g.recs = nil
+}
+
+// readsNearby returns true if a read at readStart is within gap tolerance of this group.
+// Reads that overlap OR whose gap to the group is <= tolerance are merged.
+func (g *overlapGroup) readsNearby(rname string, strand string, readStart int) bool {
+	if len(g.recs) == 0 {
+		return false
+	}
+	if rname != g.rname {
+		return false
+	}
+	if !umiMergeNoStrand && strand != g.strand {
+		return false
+	}
+	// readStart is guaranteed >= g.minStart (coordinate sorted).
+	// Gap = readStart - g.maxEnd (negative means overlap).
+	// Merge if gap <= tolerance.
+	return readStart <= g.maxEnd+umiMergeOverlap
 }
 
 // umiMergeOverlapMode processes each overlap group independently:
 // buffer the group's reads, cluster UMIs, update tags, write out, repeat.
-func umiMergeOverlapMode(inputFile string, countsWriter io.Writer) error {
+func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.Writer) error {
 	reader := htsio.NewSamReader(inputFile)
 
 	// Read first record to populate header
@@ -74,23 +122,22 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer) error {
 
 	writer := htsio.NewSamWriter(umiMergeOutput, header).Format(htsio.FormatBAM)
 
-	// Current overlap group state
-	var groupRecs []*htsio.SamRecord
-	var groupRName string
-	var groupMinStart int // 0-based
-	var groupMaxEnd int   // 0-based, exclusive
+	// Maintain separate groups per strand (interleaved in coordinate-sorted BAM).
+	// With --no-strand, we use only plusGroup for everything.
+	var plusGroup, minusGroup overlapGroup
 
 	totalReads := 0
 	totalChanged := 0
+	regionCount := 0
 
-	flushGroup := func() error {
-		if len(groupRecs) == 0 {
+	flushGroup := func(group *overlapGroup) error {
+		if len(group.recs) == 0 {
 			return nil
 		}
 
 		// Collect UMI counts for this group
 		umiCounts := make(map[string]int)
-		for _, rec := range groupRecs {
+		for _, rec := range group.recs {
 			if umi := getUMI(rec); umi != "" {
 				umiCounts[umi]++
 			}
@@ -100,15 +147,24 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer) error {
 		canonical := make(map[string]string)
 		results := clusterUMIs(umiCounts, canonical, umiVerbose)
 
-		// Write counts
-		writeGroupCounts(countsWriter, results, groupRName, groupMinStart, groupMaxEnd, false)
+		// Write counts and BED
+		regionCount++
+		regionName := fmt.Sprintf("region_%d", regionCount)
+		writeGroupCounts(countsWriter, results, group.rname, group.minStart, group.maxEnd, group.strand, false)
+		if bedWriter != nil {
+			fmt.Fprintf(bedWriter, "%s\t%d\t%d\t%s\t0\t%s\n", group.rname, group.minStart, group.maxEnd, regionName, group.strand)
+		}
 
 		canonicalCount := countCanonical(results)
-		fmt.Fprintf(os.Stderr, "%s:%d-%d: %d reads, %d unique UMIs -> %d canonical\n",
-			groupRName, groupMinStart, groupMaxEnd, len(groupRecs), len(umiCounts), canonicalCount)
+		strandLabel := ""
+		if !umiMergeNoStrand {
+			strandLabel = "(" + group.strand + ") "
+		}
+		fmt.Fprintf(os.Stderr, "%s:%d-%d: %s%d reads, %d unique UMIs -> %d canonical\n",
+			group.rname, group.minStart, group.maxEnd, strandLabel, len(group.recs), len(umiCounts), canonicalCount)
 
 		// Update tags and write reads
-		for _, rec := range groupRecs {
+		for _, rec := range group.recs {
 			tag, hasTag := rec.Tags[umiMergeTag]
 			if hasTag {
 				umi := tag.Value
@@ -124,56 +180,82 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer) error {
 			}
 		}
 
-		groupRecs = nil
+		group.reset()
 		return nil
 	}
 
-	addToGroup := func(rec *htsio.SamRecord) error {
-		readStart := rec.Pos - 1 // convert to 0-based
-		readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
+	// Flush a group if the new read's position is past it (can't grow anymore
+	// since BAM is coordinate-sorted and all future reads have start >= readStart).
+	flushIfPast := func(group *overlapGroup, rname string, readStart int) error {
+		if len(group.recs) == 0 {
+			return nil
+		}
+		if rname != group.rname || readStart > group.maxEnd+umiMergeOverlap {
+			return flushGroup(group)
+		}
+		return nil
+	}
 
+	readStrand := func(rec *htsio.SamRecord) string {
+		if rec.IsReverse() {
+			return "-"
+		}
+		return "+"
+	}
+
+	addRecord := func(rec *htsio.SamRecord) error {
 		if rec.IsUnmapped() || rec.Cigar == "*" {
-			// Unmapped reads: flush current group, write through immediately
-			if err := flushGroup(); err != nil {
-				return err
-			}
 			totalReads++
 			return writer.Write(rec)
 		}
 
-		if len(groupRecs) == 0 {
-			// Start new group
-			groupRName = rec.RName
-			groupMinStart = readStart
-			groupMaxEnd = readEnd
-			groupRecs = append(groupRecs, rec)
-			return nil
-		}
+		readStart := rec.Pos - 1 // convert to 0-based
+		readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
+		strand := readStrand(rec)
 
-		// Check overlap with current group
-		overlap := min(groupMaxEnd, readEnd) - readStart
-		if rec.RName != groupRName || overlap < umiMergeOverlap {
-			// Flush current group, start new one
-			if err := flushGroup(); err != nil {
+		// Flush any group that this read is definitely past
+		if err := flushIfPast(&plusGroup, rec.RName, readStart); err != nil {
+			return err
+		}
+		if !umiMergeNoStrand {
+			if err := flushIfPast(&minusGroup, rec.RName, readStart); err != nil {
 				return err
 			}
-			groupRName = rec.RName
-			groupMinStart = readStart
-			groupMaxEnd = readEnd
-			groupRecs = append(groupRecs, rec)
-			return nil
 		}
 
-		// Extends current group
-		if readEnd > groupMaxEnd {
-			groupMaxEnd = readEnd
+		// Determine which group this read belongs to
+		var group *overlapGroup
+		if umiMergeNoStrand {
+			group = &plusGroup
+		} else if strand == "+" {
+			group = &plusGroup
+		} else {
+			group = &minusGroup
 		}
-		groupRecs = append(groupRecs, rec)
+
+		if group.readsNearby(rec.RName, strand, readStart) {
+			// Extends current group
+			if readEnd > group.maxEnd {
+				group.maxEnd = readEnd
+			}
+			group.recs = append(group.recs, rec)
+		} else {
+			// Flush old group, start new one
+			if err := flushGroup(group); err != nil {
+				return err
+			}
+			group.rname = rec.RName
+			group.strand = strand
+			group.minStart = readStart
+			group.maxEnd = readEnd
+			group.recs = append(group.recs, rec)
+		}
+
 		return nil
 	}
 
 	if firstRec != nil {
-		if err := addToGroup(firstRec); err != nil {
+		if err := addRecord(firstRec); err != nil {
 			return err
 		}
 	}
@@ -185,14 +267,17 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if err := addToGroup(rec); err != nil {
+		if err := addRecord(rec); err != nil {
 			return err
 		}
 	}
 	reader.Close()
 
-	// Flush final group
-	if err := flushGroup(); err != nil {
+	// Flush remaining groups
+	if err := flushGroup(&plusGroup); err != nil {
+		return err
+	}
+	if err := flushGroup(&minusGroup); err != nil {
 		return err
 	}
 
@@ -238,7 +323,7 @@ func umiMergeWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 	// Cluster
 	globalCanonical := make(map[string]string)
 	results := clusterUMIs(umiCounts, globalCanonical, umiVerbose)
-	writeGroupCounts(countsWriter, results, "", 0, 0, true)
+	writeGroupCounts(countsWriter, results, "", 0, 0, "", true)
 	canonicalCount := countCanonical(results)
 	fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d canonical\n", len(umiCounts), canonicalCount)
 
@@ -280,7 +365,7 @@ func umiMergeWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 	return writer.Close()
 }
 
-func writeGroupCounts(w io.Writer, results []umiClusterResult, rname string, start0, end0 int, wholeGenome bool) {
+func writeGroupCounts(w io.Writer, results []umiClusterResult, rname string, start0, end0 int, strand string, wholeGenome bool) {
 	if w == nil || len(results) == 0 {
 		return
 	}
@@ -293,7 +378,7 @@ func writeGroupCounts(w io.Writer, results []umiClusterResult, rname string, sta
 
 	for _, r := range results {
 		if !wholeGenome {
-			fmt.Fprintf(w, "%s\t%d\t%d\t", rname, start0, end0)
+			fmt.Fprintf(w, "%s\t%d\t%d\t%s\t", rname, start0, end0, strand)
 		}
 		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\n", r.umi, r.canonical, r.count, canonicalTotals[r.canonical], r.matchScore)
 	}
@@ -482,8 +567,10 @@ var umiMergeTag string
 var umiMergeOrigTag string
 var umiMergeOverlap int
 var umiMergeWholeGenome bool
+var umiMergeNoStrand bool
 var umiMergeMatchThreshold int
 var umiMergeCountsFilename string
+var umiMergeBedFilename string
 
 var umiVerbose bool
 
@@ -491,9 +578,11 @@ func init() {
 	ontUmiMergeCmd.Flags().StringVarP(&umiMergeOutput, "output", "o", "", "Output BAM file path (required)")
 	ontUmiMergeCmd.Flags().StringVar(&umiMergeTag, "umi-tag", "RX", "SAM tag containing UMI sequence")
 	ontUmiMergeCmd.Flags().StringVar(&umiMergeOrigTag, "orig-umi-tag", "OX", "SAM tag to store original UMI before correction")
-	ontUmiMergeCmd.Flags().IntVar(&umiMergeOverlap, "overlap", 50, "Minimum overlap (bp) to group reads together")
+	ontUmiMergeCmd.Flags().IntVar(&umiMergeOverlap, "overlap", 50, "Maximum gap (bp) between reads to group them together")
 	ontUmiMergeCmd.Flags().BoolVar(&umiMergeWholeGenome, "whole-genome", false, "Process all UMIs as a single group (ignore coordinates)")
+	ontUmiMergeCmd.Flags().BoolVar(&umiMergeNoStrand, "no-strand", false, "Ignore strand when grouping reads (default: group by strand)")
 	ontUmiMergeCmd.Flags().BoolVarP(&umiVerbose, "verbose", "v", false, "Verbose logging")
 	ontUmiMergeCmd.Flags().IntVar(&umiMergeMatchThreshold, "umi-match-threshold", 13, "Minimum matching non-separator bases to cluster two UMIs")
 	ontUmiMergeCmd.Flags().StringVar(&umiMergeCountsFilename, "umi-counts", "", "Write UMI counts to this file")
+	ontUmiMergeCmd.Flags().StringVar(&umiMergeBedFilename, "bed", "", "Write overlap regions to this BED6 file")
 }
