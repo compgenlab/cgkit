@@ -44,176 +44,214 @@ var ontUmiMergeCmd = &cobra.Command{
 			}()
 		}
 
-		// Pass 1: collect UMIs and build canonical mapping
-		globalCanonical, header, err := umiMergePass1(inputFile, countsWriter, umiVerbose)
-		if err != nil {
-			return fmt.Errorf("pass 1: %w", err)
+		if umiMergeWholeGenome {
+			return umiMergeWholeGenomeMode(inputFile, countsWriter)
 		}
-
-		fmt.Fprintf(os.Stderr, "UMI canonical mappings: %d\n", len(globalCanonical))
-
-		// Pass 2: rewrite BAM with canonical UMIs
-		if err := umiMergePass2(inputFile, header, globalCanonical); err != nil {
-			return fmt.Errorf("pass 2: %w", err)
-		}
-
-		return nil
+		return umiMergeOverlapMode(inputFile, countsWriter)
 	},
 }
 
-func umiMergePass1(inputFile string, countsWriter io.Writer, verbose bool) (map[string]string, *htsio.SamHeader, error) {
+// umiMergeOverlapMode processes each overlap group independently:
+// buffer the group's reads, cluster UMIs, update tags, write out, repeat.
+func umiMergeOverlapMode(inputFile string, countsWriter io.Writer) error {
 	reader := htsio.NewSamReader(inputFile)
 
 	// Read first record to populate header
 	firstRec, err := reader.Next()
 	if err != nil && err != io.EOF {
-		return nil, nil, err
+		return err
 	}
 
 	header := reader.Header()
 	if header == nil {
-		return nil, nil, fmt.Errorf("no header found in BAM file")
+		return fmt.Errorf("no header found in BAM file")
+	}
+	if err := validateCoordinateSorted(header); err != nil {
+		return err
 	}
 
-	if !umiMergeWholeGenome {
-		if err := validateCoordinateSorted(header); err != nil {
-			return nil, nil, err
-		}
-	}
+	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-merge\tPN:cgltk\tCL:ont-umi-merge\tDS:UMI collapsing; canonical UMI written to %s, original preserved in %s", umiMergeTag, umiMergeOrigTag))
 
-	globalCanonical := make(map[string]string)
+	writer := htsio.NewSamWriter(umiMergeOutput, header).Format(htsio.FormatBAM)
 
-	writeGroupCounts := func(results []umiClusterResult, rname string, start0, end0 int) {
-		if countsWriter == nil || len(results) == 0 {
-			return
-		}
-		for _, r := range results {
-			if !umiMergeWholeGenome {
-				fmt.Fprintf(countsWriter, "%s\t%d\t%d\t", rname, start0, end0)
-			}
-			fmt.Fprintf(countsWriter, "%s\t%s\t%d\t%d\n", r.umi, r.canonical, r.count, r.matchScore)
-		}
-	}
+	// Current overlap group state
+	var groupRecs []*htsio.SamRecord
+	var groupRName string
+	var groupMinStart int // 0-based
+	var groupMaxEnd int   // 0-based, exclusive
 
-	if umiMergeWholeGenome {
-		// Whole-genome mode: single group for all reads
+	totalReads := 0
+	totalChanged := 0
+
+	flushGroup := func() error {
+		if len(groupRecs) == 0 {
+			return nil
+		}
+
+		// Collect UMI counts for this group
 		umiCounts := make(map[string]int)
-		if firstRec != nil {
-			if umi := getUMI(firstRec); umi != "" {
-				umiCounts[umi]++
-			}
-		}
-		for {
-			rec, err := reader.Next()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, nil, err
-			}
+		for _, rec := range groupRecs {
 			if umi := getUMI(rec); umi != "" {
 				umiCounts[umi]++
 			}
 		}
-		reader.Close()
-		results := clusterUMIs(umiCounts, globalCanonical, verbose)
-		writeGroupCounts(results, "", 0, 0)
+
+		// Cluster UMIs
+		canonical := make(map[string]string)
+		results := clusterUMIs(umiCounts, canonical, umiVerbose)
+
+		// Write counts
+		writeGroupCounts(countsWriter, results, groupRName, groupMinStart, groupMaxEnd, false)
+
 		canonicalCount := countCanonical(results)
-		fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d canonical\n", len(umiCounts), canonicalCount)
-	} else {
-		// Overlap mode: group by coordinate overlap
-		// All positions are 0-based internally (SAM Pos is 1-based, so subtract 1)
-		var currentRName string
-		var currentMinStart int // 0-based
-		var currentMaxEnd int   // 0-based, exclusive
-		currentUMICounts := make(map[string]int)
-		groupActive := false
+		fmt.Fprintf(os.Stderr, "%s:%d-%d: %d reads, %d unique UMIs -> %d canonical\n",
+			groupRName, groupMinStart, groupMaxEnd, len(groupRecs), len(umiCounts), canonicalCount)
 
-		flushGroup := func() {
-			if len(currentUMICounts) > 0 {
-				results := clusterUMIs(currentUMICounts, globalCanonical, verbose)
-				writeGroupCounts(results, currentRName, currentMinStart, currentMaxEnd)
-				canonicalCount := countCanonical(results)
-				fmt.Fprintf(os.Stderr, "%s:%d-%d: %d unique UMIs -> %d canonical\n",
-					currentRName, currentMinStart, currentMaxEnd, len(currentUMICounts), canonicalCount)
+		// Update tags and write reads
+		for _, rec := range groupRecs {
+			tag, hasTag := rec.Tags[umiMergeTag]
+			if hasTag {
+				umi := tag.Value
+				if can, ok := canonical[umi]; ok && can != umi {
+					rec.Tags[umiMergeOrigTag] = htsio.SamTag{Type: 'Z', Value: umi}
+					rec.Tags[umiMergeTag] = htsio.SamTag{Type: 'Z', Value: can}
+					totalChanged++
+				}
+			}
+			totalReads++
+			if err := writer.Write(rec); err != nil {
+				return err
 			}
 		}
 
-		processRecord := func(rec *htsio.SamRecord) {
-			if rec.IsUnmapped() || rec.Cigar == "*" {
-				return
-			}
-			umi := getUMI(rec)
-			if umi == "" {
-				return
-			}
-
-			readStart := rec.Pos - 1 // convert to 0-based
-			readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
-
-			if !groupActive {
-				currentRName = rec.RName
-				currentMinStart = readStart
-				currentMaxEnd = readEnd
-				currentUMICounts[umi]++
-				groupActive = true
-				return
-			}
-
-			// New chrom or no overlap
-			overlap := min(currentMaxEnd, readEnd) - readStart
-			if rec.RName != currentRName || overlap < umiMergeOverlap {
-				flushGroup()
-				// Start new group
-				currentRName = rec.RName
-				currentMinStart = readStart
-				currentMaxEnd = readEnd
-				currentUMICounts = make(map[string]int)
-				currentUMICounts[umi]++
-				return
-			}
-
-			// Extends current group
-			if readEnd > currentMaxEnd {
-				currentMaxEnd = readEnd
-			}
-			currentUMICounts[umi]++
-		}
-
-		if firstRec != nil {
-			processRecord(firstRec)
-		}
-		for {
-			rec, err := reader.Next()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, nil, err
-			}
-			processRecord(rec)
-		}
-		reader.Close()
-
-		// Flush final group
-		flushGroup()
+		groupRecs = nil
+		return nil
 	}
 
-	return globalCanonical, header, nil
+	addToGroup := func(rec *htsio.SamRecord) error {
+		readStart := rec.Pos - 1 // convert to 0-based
+		readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
+
+		if rec.IsUnmapped() || rec.Cigar == "*" {
+			// Unmapped reads: flush current group, write through immediately
+			if err := flushGroup(); err != nil {
+				return err
+			}
+			totalReads++
+			return writer.Write(rec)
+		}
+
+		if len(groupRecs) == 0 {
+			// Start new group
+			groupRName = rec.RName
+			groupMinStart = readStart
+			groupMaxEnd = readEnd
+			groupRecs = append(groupRecs, rec)
+			return nil
+		}
+
+		// Check overlap with current group
+		overlap := min(groupMaxEnd, readEnd) - readStart
+		if rec.RName != groupRName || overlap < umiMergeOverlap {
+			// Flush current group, start new one
+			if err := flushGroup(); err != nil {
+				return err
+			}
+			groupRName = rec.RName
+			groupMinStart = readStart
+			groupMaxEnd = readEnd
+			groupRecs = append(groupRecs, rec)
+			return nil
+		}
+
+		// Extends current group
+		if readEnd > groupMaxEnd {
+			groupMaxEnd = readEnd
+		}
+		groupRecs = append(groupRecs, rec)
+		return nil
+	}
+
+	if firstRec != nil {
+		if err := addToGroup(firstRec); err != nil {
+			return err
+		}
+	}
+	for {
+		rec, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if err := addToGroup(rec); err != nil {
+			return err
+		}
+	}
+	reader.Close()
+
+	// Flush final group
+	if err := flushGroup(); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "Total reads: %d, UMIs corrected: %d\n", totalReads, totalChanged)
+	return writer.Close()
 }
 
-func umiMergePass2(inputFile string, header *htsio.SamHeader, globalCanonical map[string]string) error {
-	// Add @PG header line for this program
+// umiMergeWholeGenomeMode uses two passes over the entire file:
+// pass 1 collects all UMI counts, pass 2 rewrites with canonical UMIs.
+func umiMergeWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
+	// Pass 1: collect all UMIs
+	reader := htsio.NewSamReader(inputFile)
+	umiCounts := make(map[string]int)
+
+	firstRec, err := reader.Next()
+	if err != nil && err != io.EOF {
+		return err
+	}
+	header := reader.Header()
+	if header == nil {
+		return fmt.Errorf("no header found in BAM file")
+	}
+
+	if firstRec != nil {
+		if umi := getUMI(firstRec); umi != "" {
+			umiCounts[umi]++
+		}
+	}
+	for {
+		rec, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if umi := getUMI(rec); umi != "" {
+			umiCounts[umi]++
+		}
+	}
+	reader.Close()
+
+	// Cluster
+	globalCanonical := make(map[string]string)
+	results := clusterUMIs(umiCounts, globalCanonical, umiVerbose)
+	writeGroupCounts(countsWriter, results, "", 0, 0, true)
+	canonicalCount := countCanonical(results)
+	fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d canonical\n", len(umiCounts), canonicalCount)
+
+	// Pass 2: rewrite BAM
 	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-merge\tPN:cgltk\tCL:ont-umi-merge\tDS:UMI collapsing; canonical UMI written to %s, original preserved in %s", umiMergeTag, umiMergeOrigTag))
 
-	reader := htsio.NewSamReader(inputFile)
+	reader2 := htsio.NewSamReader(inputFile)
 	writer := htsio.NewSamWriter(umiMergeOutput, header).Format(htsio.FormatBAM)
 
 	changed := 0
 	total := 0
-
 	for {
-		rec, err := reader.Next()
+		rec, err := reader2.Next()
 		if err == io.EOF {
 			break
 		}
@@ -236,10 +274,29 @@ func umiMergePass2(inputFile string, header *htsio.SamHeader, globalCanonical ma
 			return err
 		}
 	}
+	reader2.Close()
 
-	reader.Close()
 	fmt.Fprintf(os.Stderr, "Total reads: %d, UMIs corrected: %d\n", total, changed)
 	return writer.Close()
+}
+
+func writeGroupCounts(w io.Writer, results []umiClusterResult, rname string, start0, end0 int, wholeGenome bool) {
+	if w == nil || len(results) == 0 {
+		return
+	}
+
+	// Sum counts per canonical UMI
+	canonicalTotals := make(map[string]int)
+	for _, r := range results {
+		canonicalTotals[r.canonical] += r.count
+	}
+
+	for _, r := range results {
+		if !wholeGenome {
+			fmt.Fprintf(w, "%s\t%d\t%d\t", rname, start0, end0)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\n", r.umi, r.canonical, r.count, canonicalTotals[r.canonical], r.matchScore)
+	}
 }
 
 func getUMI(rec *htsio.SamRecord) string {
@@ -277,7 +334,6 @@ func countNonSepBases(umi string, sep string) int {
 	}
 	// For TT separator, count non-T bases.
 	// UMI pattern is VVVVTTVVVVTTVVVVTTVVVV where V is non-T.
-	// We need to identify TT separators vs T bases that are part of the UMI code.
 	// Since UMI code bases are A,C,G (the V positions from the VVVV pattern),
 	// all T's in the UMI string are separators.
 	count := 0
@@ -344,7 +400,8 @@ func clusterUMIs(umiCounts map[string]int, globalCanonical map[string]string, ve
 		if clusterOf[i] > -1 {
 			continue // already merged
 		}
-		// We are sorted desc, so if we are looking at this in the
+
+		// We are sorted desc, so if we are looking at this UMI in the
 		// first loop, this is an anchor UMI/seq
 
 		clusterOf[i] = i
