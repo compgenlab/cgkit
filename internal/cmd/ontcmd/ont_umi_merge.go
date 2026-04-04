@@ -124,6 +124,9 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 	if err != nil {
 		return err
 	}
+	if umiMergeThreads > 1 {
+		reader.Threads(2)
+	}
 
 	// Read first record to populate header
 	firstRec, err := reader.Next()
@@ -146,6 +149,9 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 		return err
 	}
 	writer.Format(htsio.FormatBAM)
+	if umiMergeThreads > 1 {
+		writer.Threads(2)
+	}
 
 	numThreads := umiMergeThreads
 	if numThreads <= 0 {
@@ -530,6 +536,17 @@ type umiCount struct {
 }
 
 func clusterUMIs(umiCounts map[string]int, globalCanonical map[string]string, verbose bool) []umiClusterResult {
+	return clusterUMIsParallel(umiCounts, globalCanonical, verbose, umiMergeThreads)
+}
+
+// alignResult holds the result of a single pairwise alignment job.
+type alignResult struct {
+	j             int
+	nonSepMatches int
+	alnStr        string // only populated when verbose
+}
+
+func clusterUMIsParallel(umiCounts map[string]int, globalCanonical map[string]string, verbose bool, numThreads int) []umiClusterResult {
 	if len(umiCounts) <= 1 {
 		// Single UMI or empty, nothing to cluster
 		var results []umiClusterResult
@@ -539,6 +556,10 @@ func clusterUMIs(umiCounts map[string]int, globalCanonical map[string]string, ve
 			results = append(results, umiClusterResult{umi, umi, count, countNonSepBases(umi, sep)})
 		}
 		return results
+	}
+
+	if numThreads <= 0 {
+		numThreads = 1
 	}
 
 	// Sort by count descending
@@ -564,8 +585,13 @@ func clusterUMIs(umiCounts map[string]int, globalCanonical map[string]string, ve
 		matchScores[i] = countNonSepBases(umis[i].umi, sep) // self-match = all non-sep bases
 	}
 
-	opts := align.OntAlignmentDefaults() //.ClippingDisable()
-	aligner := align.NewGlobalAligner(opts)
+	// Pre-convert all UMI strings to SeqQual once
+	seqs := make([]seqio.SeqQual, len(umis))
+	for i, u := range umis {
+		seqs[i] = seqio.NewStringSeq(u.umi, "").FullSeq()
+	}
+
+	aligner := align.NewGlobalAligner(align.OntAlignmentDefaults())
 
 	for i := 0; i < len(umis); i++ {
 		if clusterOf[i] > -1 {
@@ -574,25 +600,70 @@ func clusterUMIs(umiCounts map[string]int, globalCanonical map[string]string, ve
 
 		// We are sorted desc, so if we are looking at this UMI in the
 		// first loop, this is an anchor UMI/seq
-
 		clusterOf[i] = i
-		seqA := seqio.NewStringSeq(umis[i].umi, "a").FullSeq()
 
+		// Collect unclustered candidates for this anchor
+		candidates := make([]int, 0)
 		for j := i + 1; j < len(umis); j++ {
-			if clusterOf[j] > -1 {
-				continue // already merged
+			if clusterOf[j] == -1 {
+				candidates = append(candidates, j)
 			}
+		}
 
-			seqB := seqio.NewStringSeq(umis[j].umi, "b").FullSeq()
-			aln := aligner.Align(seqA, seqB)
+		if len(candidates) == 0 {
+			continue
+		}
 
-			nonSepMatches := countNonSepAlignedMatches(aln, sep)
-			if nonSepMatches >= umiMergeMatchThreshold {
-				clusterOf[j] = i
-				matchScores[j] = nonSepMatches
+		// For small candidate sets or single thread, run serially
+		if numThreads <= 1 || len(candidates) < numThreads {
+			for _, j := range candidates {
+				aln := aligner.Align(seqs[i], seqs[j])
+				nonSepMatches := countNonSepAlignedMatches(aln, sep)
+				if nonSepMatches >= umiMergeMatchThreshold {
+					clusterOf[j] = i
+					matchScores[j] = nonSepMatches
+					if verbose {
+						fmt.Printf("MATCH! %d\n%s\n===\n", nonSepMatches, aln.String())
+					}
+				}
+			}
+			continue
+		}
 
+		// Parallel: fan out alignments across workers
+		resultsCh := make(chan alignResult, len(candidates))
+		workCh := make(chan int, len(candidates))
+
+		var wg sync.WaitGroup
+		for range numThreads {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := range workCh {
+					aln := aligner.Align(seqs[i], seqs[j])
+					nonSepMatches := countNonSepAlignedMatches(aln, sep)
+					r := alignResult{j: j, nonSepMatches: nonSepMatches}
+					if verbose && nonSepMatches >= umiMergeMatchThreshold {
+						r.alnStr = aln.String()
+					}
+					resultsCh <- r
+				}
+			}()
+		}
+
+		for _, j := range candidates {
+			workCh <- j
+		}
+		close(workCh)
+		wg.Wait()
+		close(resultsCh)
+
+		for r := range resultsCh {
+			if r.nonSepMatches >= umiMergeMatchThreshold {
+				clusterOf[r.j] = i
+				matchScores[r.j] = r.nonSepMatches
 				if verbose {
-					fmt.Printf("MATCH! %d\n%s\n===\n", nonSepMatches, aln.String())
+					fmt.Printf("MATCH! %d\n%s\n===\n", r.nonSepMatches, r.alnStr)
 				}
 			}
 		}
