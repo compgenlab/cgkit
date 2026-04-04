@@ -120,7 +120,10 @@ type groupResult struct {
 // buffer the group's reads, send to workers for UMI clustering in parallel,
 // write results in order.
 func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.Writer) error {
-	reader := htsio.NewSamReader(inputFile)
+	reader, err := htsio.NewSamReader(inputFile)
+	if err != nil {
+		return err
+	}
 
 	// Read first record to populate header
 	firstRec, err := reader.Next()
@@ -138,7 +141,11 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 
 	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-merge\tPN:cgltk\tCL:ont-umi-merge\tDS:UMI collapsing; canonical UMI written to %s, original preserved in %s", umiMergeTag, umiMergeOrigTag))
 
-	writer := htsio.NewSamWriter(umiMergeOutput, header).Format(htsio.FormatBAM)
+	writer, err := htsio.NewSamWriter(umiMergeOutput, header)
+	if err != nil {
+		return err
+	}
+	writer.Format(htsio.FormatBAM)
 
 	numThreads := umiMergeThreads
 	if numThreads <= 0 {
@@ -358,7 +365,10 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 // pass 1 collects all UMI counts, pass 2 rewrites with canonical UMIs.
 func umiMergeWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 	// Pass 1: collect all UMIs
-	reader := htsio.NewSamReader(inputFile)
+	reader, err := htsio.NewSamReader(inputFile)
+	if err != nil {
+		return err
+	}
 	umiCounts := make(map[string]int)
 
 	firstRec, err := reader.Next()
@@ -399,8 +409,15 @@ func umiMergeWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 	// Pass 2: rewrite BAM
 	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-merge\tPN:cgltk\tCL:ont-umi-merge\tDS:UMI collapsing; canonical UMI written to %s, original preserved in %s", umiMergeTag, umiMergeOrigTag))
 
-	reader2 := htsio.NewSamReader(inputFile)
-	writer := htsio.NewSamWriter(umiMergeOutput, header).Format(htsio.FormatBAM)
+	reader2, err := htsio.NewSamReader(inputFile)
+	if err != nil {
+		return err
+	}
+	writer, err := htsio.NewSamWriter(umiMergeOutput, header)
+	if err != nil {
+		return err
+	}
+	writer.Format(htsio.FormatBAM)
 
 	changed := 0
 	total := 0
