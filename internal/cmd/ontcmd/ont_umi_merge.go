@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -142,8 +141,8 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 	writer := htsio.NewSamWriter(umiMergeOutput, header).Format(htsio.FormatBAM)
 
 	numThreads := umiMergeThreads
-	if numThreads == 0 {
-		numThreads = runtime.GOMAXPROCS(0)
+	if numThreads <= 0 {
+		numThreads = 1
 	}
 
 	type workItemWithCh struct {
@@ -652,5 +651,5 @@ func init() {
 	ontUmiMergeCmd.Flags().IntVar(&umiMergeMatchThreshold, "umi-match-threshold", 13, "Minimum matching non-separator bases to cluster two UMIs")
 	ontUmiMergeCmd.Flags().StringVar(&umiMergeCountsFilename, "umi-counts", "", "Write UMI counts to this file")
 	ontUmiMergeCmd.Flags().StringVar(&umiMergeBedFilename, "bed", "", "Write overlap regions to this BED6 file")
-	ontUmiMergeCmd.Flags().IntVarP(&umiMergeThreads, "threads", "t", 0, "Threads for UMI clustering (default: CPU count)")
+	ontUmiMergeCmd.Flags().IntVarP(&umiMergeThreads, "threads", "t", 1, "Threads for UMI clustering")
 }
