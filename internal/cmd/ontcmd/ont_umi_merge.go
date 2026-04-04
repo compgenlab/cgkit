@@ -313,7 +313,11 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 		} else {
 			submitGroup(group)
 			group.rname = rec.RName
-			group.strand = strand
+			if umiMergeNoStrand {
+				group.strand = "."
+			} else {
+				group.strand = strand
+			}
 			group.minStart = readStart
 			group.maxEnd = readEnd
 			group.recs = append(group.recs, rec)
