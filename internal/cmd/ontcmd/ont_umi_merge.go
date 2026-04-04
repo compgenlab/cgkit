@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/compgen-io/cgltk/align"
 	"github.com/compgen-io/cgltk/htsio"
@@ -99,8 +101,25 @@ func (g *overlapGroup) readsNearby(rname string, strand string, readStart int) b
 	return readStart <= g.maxEnd+umiMergeOverlap
 }
 
+// groupWorkItem is sent to worker goroutines for parallel UMI clustering.
+type groupWorkItem struct {
+	recs     []*htsio.SamRecord
+	rname    string
+	strand   string
+	minStart int
+	maxEnd   int
+}
+
+// groupResult is returned by workers after UMI clustering.
+type groupResult struct {
+	item      groupWorkItem
+	canonical map[string]string
+	results   []umiClusterResult
+}
+
 // umiMergeOverlapMode processes each overlap group independently:
-// buffer the group's reads, cluster UMIs, update tags, write out, repeat.
+// buffer the group's reads, send to workers for UMI clustering in parallel,
+// write results in order.
 func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.Writer) error {
 	reader := htsio.NewSamReader(inputFile)
 
@@ -122,78 +141,127 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 
 	writer := htsio.NewSamWriter(umiMergeOutput, header).Format(htsio.FormatBAM)
 
-	// Maintain separate groups per strand (interleaved in coordinate-sorted BAM).
-	// With --no-strand, we use only plusGroup for everything.
-	var plusGroup, minusGroup overlapGroup
-
-	totalReads := 0
-	totalChanged := 0
-	regionCount := 0
-
-	flushGroup := func(group *overlapGroup) error {
-		if len(group.recs) == 0 {
-			return nil
-		}
-
-		// Collect UMI counts for this group
-		umiCounts := make(map[string]int)
-		for _, rec := range group.recs {
-			if umi := getUMI(rec); umi != "" {
-				umiCounts[umi]++
-			}
-		}
-
-		// Cluster UMIs
-		canonical := make(map[string]string)
-		results := clusterUMIs(umiCounts, canonical, umiVerbose)
-
-		// Write counts and BED
-		regionCount++
-		regionName := fmt.Sprintf("region_%d", regionCount)
-		writeGroupCounts(countsWriter, results, group.rname, group.minStart, group.maxEnd, group.strand, false)
-		if bedWriter != nil {
-			fmt.Fprintf(bedWriter, "%s\t%d\t%d\t%s\t0\t%s\n", group.rname, group.minStart, group.maxEnd, regionName, group.strand)
-		}
-
-		canonicalCount := countCanonical(results)
-		strandLabel := ""
-		if !umiMergeNoStrand {
-			strandLabel = "(" + group.strand + ") "
-		}
-		fmt.Fprintf(os.Stderr, "%s:%d-%d: %s%d reads, %d unique UMIs -> %d canonical\n",
-			group.rname, group.minStart, group.maxEnd, strandLabel, len(group.recs), len(umiCounts), canonicalCount)
-
-		// Update tags and write reads
-		for _, rec := range group.recs {
-			tag, hasTag := rec.Tags[umiMergeTag]
-			if hasTag {
-				umi := tag.Value
-				if can, ok := canonical[umi]; ok && can != umi {
-					rec.Tags[umiMergeOrigTag] = htsio.SamTag{Type: 'Z', Value: umi}
-					rec.Tags[umiMergeTag] = htsio.SamTag{Type: 'Z', Value: can}
-					totalChanged++
-				}
-			}
-			totalReads++
-			if err := writer.Write(rec); err != nil {
-				return err
-			}
-		}
-
-		group.reset()
-		return nil
+	numThreads := umiMergeThreads
+	if numThreads == 0 {
+		numThreads = runtime.GOMAXPROCS(0)
 	}
 
-	// Flush a group if the new read's position is past it (can't grow anymore
-	// since BAM is coordinate-sorted and all future reads have start >= readStart).
-	flushIfPast := func(group *overlapGroup, rname string, readStart int) error {
+	type workItemWithCh struct {
+		item     groupWorkItem
+		resultCh chan *groupResult
+	}
+
+	workCh := make(chan workItemWithCh, numThreads)
+	orderCh := make(chan chan *groupResult, numThreads*2)
+
+	var workerWg sync.WaitGroup
+	for range numThreads {
+		workerWg.Add(1)
+		go func() {
+			defer workerWg.Done()
+			for w := range workCh {
+				umiCounts := make(map[string]int)
+				for _, rec := range w.item.recs {
+					if umi := getUMI(rec); umi != "" {
+						umiCounts[umi]++
+					}
+				}
+				canonical := make(map[string]string)
+				results := clusterUMIs(umiCounts, canonical, umiVerbose)
+				w.resultCh <- &groupResult{
+					item:      w.item,
+					canonical: canonical,
+					results:   results,
+				}
+			}
+		}()
+	}
+
+	// Writer goroutine: processes results in submission order.
+	writerErrCh := make(chan error, 1)
+	go func() {
+		var writeErr error
+		totalReads := 0
+		totalChanged := 0
+		regionCount := 0
+
+		for resultCh := range orderCh {
+			gr := <-resultCh
+			if writeErr != nil {
+				continue // drain but skip writing
+			}
+
+			if gr == nil {
+				// This shouldn't happen in normal flow
+				continue
+			}
+
+			// Write counts and BED
+			regionCount++
+			regionName := fmt.Sprintf("region_%d", regionCount)
+			writeGroupCounts(countsWriter, gr.results, gr.item.rname, gr.item.minStart, gr.item.maxEnd, gr.item.strand, false)
+			if bedWriter != nil {
+				fmt.Fprintf(bedWriter, "%s\t%d\t%d\t%s\t0\t%s\n", gr.item.rname, gr.item.minStart, gr.item.maxEnd, regionName, gr.item.strand)
+			}
+
+			canonicalCount := countCanonical(gr.results)
+			strandLabel := ""
+			if !umiMergeNoStrand {
+				strandLabel = "(" + gr.item.strand + ") "
+			}
+			fmt.Fprintf(os.Stderr, "%s:%d-%d: %s%d reads, %d unique UMIs -> %d canonical\n",
+				gr.item.rname, gr.item.minStart, gr.item.maxEnd, strandLabel,
+				len(gr.item.recs), len(gr.results), canonicalCount)
+
+			// Update tags and write reads
+			for _, rec := range gr.item.recs {
+				tag, hasTag := rec.Tags[umiMergeTag]
+				if hasTag {
+					umi := tag.Value
+					if can, ok := gr.canonical[umi]; ok && can != umi {
+						rec.Tags[umiMergeOrigTag] = htsio.SamTag{Type: 'Z', Value: umi}
+						rec.Tags[umiMergeTag] = htsio.SamTag{Type: 'Z', Value: can}
+						totalChanged++
+					}
+				}
+				totalReads++
+				if err := writer.Write(rec); err != nil {
+					writeErr = err
+				}
+			}
+		}
+
+		fmt.Fprintf(os.Stderr, "Total reads: %d, UMIs corrected: %d\n", totalReads, totalChanged)
+		writerErrCh <- writeErr
+	}()
+
+	// Maintain separate groups per strand.
+	var plusGroup, minusGroup overlapGroup
+
+	submitGroup := func(group *overlapGroup) {
 		if len(group.recs) == 0 {
-			return nil
+			return
+		}
+		item := groupWorkItem{
+			recs:     group.recs,
+			rname:    group.rname,
+			strand:   group.strand,
+			minStart: group.minStart,
+			maxEnd:   group.maxEnd,
+		}
+		resultCh := make(chan *groupResult, 1)
+		orderCh <- resultCh
+		workCh <- workItemWithCh{item: item, resultCh: resultCh}
+		group.recs = nil // detach slice so new group gets fresh storage
+	}
+
+	flushIfPast := func(group *overlapGroup, rname string, readStart int) {
+		if len(group.recs) == 0 {
+			return
 		}
 		if rname != group.rname || readStart > group.maxEnd+umiMergeOverlap {
-			return flushGroup(group)
+			submitGroup(group)
 		}
-		return nil
 	}
 
 	readStrand := func(rec *htsio.SamRecord) string {
@@ -203,27 +271,32 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 		return "+"
 	}
 
-	addRecord := func(rec *htsio.SamRecord) error {
+	addRecord := func(rec *htsio.SamRecord) {
 		if rec.IsUnmapped() || rec.Cigar == "*" {
-			totalReads++
-			return writer.Write(rec)
+			// Unmapped reads: submit current groups first to maintain order,
+			// then write through via a passthrough result.
+			submitGroup(&plusGroup)
+			if !umiMergeNoStrand {
+				submitGroup(&minusGroup)
+			}
+			// Write unmapped read in order via a direct result
+			resultCh := make(chan *groupResult, 1)
+			orderCh <- resultCh
+			resultCh <- &groupResult{
+				item: groupWorkItem{recs: []*htsio.SamRecord{rec}},
+			}
+			return
 		}
 
-		readStart := rec.Pos - 1 // convert to 0-based
+		readStart := rec.Pos - 1
 		readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
 		strand := readStrand(rec)
 
-		// Flush any group that this read is definitely past
-		if err := flushIfPast(&plusGroup, rec.RName, readStart); err != nil {
-			return err
-		}
+		flushIfPast(&plusGroup, rec.RName, readStart)
 		if !umiMergeNoStrand {
-			if err := flushIfPast(&minusGroup, rec.RName, readStart); err != nil {
-				return err
-			}
+			flushIfPast(&minusGroup, rec.RName, readStart)
 		}
 
-		// Determine which group this read belongs to
 		var group *overlapGroup
 		if umiMergeNoStrand {
 			group = &plusGroup
@@ -234,30 +307,22 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 		}
 
 		if group.readsNearby(rec.RName, strand, readStart) {
-			// Extends current group
 			if readEnd > group.maxEnd {
 				group.maxEnd = readEnd
 			}
 			group.recs = append(group.recs, rec)
 		} else {
-			// Flush old group, start new one
-			if err := flushGroup(group); err != nil {
-				return err
-			}
+			submitGroup(group)
 			group.rname = rec.RName
 			group.strand = strand
 			group.minStart = readStart
 			group.maxEnd = readEnd
 			group.recs = append(group.recs, rec)
 		}
-
-		return nil
 	}
 
 	if firstRec != nil {
-		if err := addRecord(firstRec); err != nil {
-			return err
-		}
+		addRecord(firstRec)
 	}
 	for {
 		rec, err := reader.Next()
@@ -267,21 +332,22 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 		if err != nil {
 			return err
 		}
-		if err := addRecord(rec); err != nil {
-			return err
-		}
+		addRecord(rec)
 	}
 	reader.Close()
 
 	// Flush remaining groups
-	if err := flushGroup(&plusGroup); err != nil {
-		return err
-	}
-	if err := flushGroup(&minusGroup); err != nil {
-		return err
-	}
+	submitGroup(&plusGroup)
+	submitGroup(&minusGroup)
 
-	fmt.Fprintf(os.Stderr, "Total reads: %d, UMIs corrected: %d\n", totalReads, totalChanged)
+	close(workCh)
+	workerWg.Wait()
+	close(orderCh)
+
+	writeErr := <-writerErrCh
+	if writeErr != nil {
+		return writeErr
+	}
 	return writer.Close()
 }
 
@@ -571,6 +637,7 @@ var umiMergeNoStrand bool
 var umiMergeMatchThreshold int
 var umiMergeCountsFilename string
 var umiMergeBedFilename string
+var umiMergeThreads int
 
 var umiVerbose bool
 
@@ -585,4 +652,5 @@ func init() {
 	ontUmiMergeCmd.Flags().IntVar(&umiMergeMatchThreshold, "umi-match-threshold", 13, "Minimum matching non-separator bases to cluster two UMIs")
 	ontUmiMergeCmd.Flags().StringVar(&umiMergeCountsFilename, "umi-counts", "", "Write UMI counts to this file")
 	ontUmiMergeCmd.Flags().StringVar(&umiMergeBedFilename, "bed", "", "Write overlap regions to this BED6 file")
+	ontUmiMergeCmd.Flags().IntVarP(&umiMergeThreads, "threads", "t", 0, "Threads for UMI clustering (default: CPU count)")
 }
