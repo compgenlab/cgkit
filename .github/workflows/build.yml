@@ -18,6 +18,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install samtools
+        run: sudo apt-get update && sudo apt-get install -y samtools
+
       - name: Run tests
         run: GOCACHE=/tmp/go-build-cache go test ./...
 
