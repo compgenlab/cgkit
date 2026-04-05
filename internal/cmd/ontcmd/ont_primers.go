@@ -335,7 +335,7 @@ var ontPrimersCmd = &cobra.Command{
 							switch tStr[i] {
 							case 'T':
 								if !inT {
-									result.umiCode += "-"
+									result.umiCode += "/"
 								}
 								inT = true
 							case '-':
@@ -345,7 +345,7 @@ var ontPrimersCmd = &cobra.Command{
 							}
 						}
 						if ontUMISepT {
-							result.umiCode = strings.ReplaceAll(result.umiCode, "-", "TT")
+							result.umiCode = strings.ReplaceAll(result.umiCode, "/", "TT")
 						}
 						result.umiTargetStr = umiAln.TargetStr()
 						result.umiScore = umiAln.Score
