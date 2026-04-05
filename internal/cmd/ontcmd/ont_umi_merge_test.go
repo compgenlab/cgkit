@@ -15,20 +15,42 @@ func TestDetectSeparator(t *testing.T) {
 	}
 }
 
-func TestCountNonSepBases(t *testing.T) {
+func TestNormalizeUMISeparator(t *testing.T) {
 	tests := []struct {
 		umi  string
-		sep  string
-		want int
+		want string
 	}{
-		{"AAAA-CCCC-GGGG-AAAA", "-", 16},
-		{"AAAATTCCCCTTGGGGTTAAAA", "TT", 16},
-		{"AAAA-CCCC", "-", 8},
+		{"AAAA-CCCC-GGGG-AAAA", "AAAA-CCCC-GGGG-AAAA"},
+		{"AAAATTCCCCTTGGGGTTAAAA", "AAAA-CCCC-GGGG-AAAA"},
+		{"AAAA-CCCC", "AAAA-CCCC"},
 	}
 	for _, tt := range tests {
-		got := countNonSepBases(tt.umi, tt.sep)
+		got := normalizeUMISeparator(tt.umi)
 		if got != tt.want {
-			t.Errorf("countNonSepBases(%q, %q) = %d, want %d", tt.umi, tt.sep, got, tt.want)
+			t.Errorf("normalizeUMISeparator(%q) = %q, want %q", tt.umi, got, tt.want)
+		}
+	}
+}
+
+func TestUmiLevenshtein(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"AAAA-CCCC-GGGG-AAAA", "AAAA-CCCC-GGGG-AAAA", 0},
+		{"AAAA-CCCC-GGGG-AAAA", "AAAA-CCCC-GGGG-AAAT", 1},
+		{"AAAA-CCCC-GGGG-AAAA", "AAAA-CCCC-GGGG-AACT", 2},
+		// missed separator: edit distance 1 (insert "-")
+		{"AAAA-CCCCGGGG-AAAA", "AAAA-CCCC-GGGG-AAAA", 1},
+		// extra base in first group: edit distance 1
+		{"AAAAA-CCCC-GGGG-AAAA", "AAAA-CCCC-GGGG-AAAA", 1},
+		// completely different UMIs
+		{"AAAA-AAAA-AAAA-AAAA", "CCCC-CCCC-CCCC-CCCC", 16},
+	}
+	for _, tt := range tests {
+		got := umiLevenshtein(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("umiLevenshtein(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
 	}
 }
@@ -37,43 +59,49 @@ func TestClusterUMIs_Identical(t *testing.T) {
 	umiCounts := map[string]int{
 		"AAAA-CCCC-GGGG-AAAA": 10,
 	}
-	canonical := make(map[string]string)
-	clusterUMIs(umiCounts, canonical, false)
+	consensus := make(map[string]string)
+	clusterUMIs(umiCounts, consensus, false)
 
-	if got := canonical["AAAA-CCCC-GGGG-AAAA"]; got != "AAAA-CCCC-GGGG-AAAA" {
-		t.Errorf("canonical = %q, want self", got)
+	if got := consensus["AAAA-CCCC-GGGG-AAAA"]; got != "AAAA-CCCC-GGGG-AAAA" {
+		t.Errorf("consensus = %q, want self", got)
 	}
 }
 
 func TestClusterUMIs_SimilarMerge(t *testing.T) {
-	// Two UMIs that differ by 1 base (well within 12/16 threshold)
 	umiCounts := map[string]int{
 		"AAAA-CCCC-GGGG-AAAA": 10,
 		"AAAA-CCCC-GGGG-AAAT": 3,
 	}
-	canonical := make(map[string]string)
-	umiMergeMatchThreshold = 12
-	clusterUMIs(umiCounts, canonical, false)
+	consensus := make(map[string]string)
+	umiMergeEditThreshold = 3
+	results := clusterUMIs(umiCounts, consensus, false)
 
-	if got := canonical["AAAA-CCCC-GGGG-AAAT"]; got != "AAAA-CCCC-GGGG-AAAA" {
-		t.Errorf("canonical of variant = %q, want %q", got, "AAAA-CCCC-GGGG-AAAA")
+	// Both cluster together; anchor (count=10) wins the vote at the differing position
+	if got := consensus["AAAA-CCCC-GGGG-AAAT"]; got != "AAAA-CCCC-GGGG-AAAA" {
+		t.Errorf("consensus of variant = %q, want %q", got, "AAAA-CCCC-GGGG-AAAA")
 	}
-	if got := canonical["AAAA-CCCC-GGGG-AAAA"]; got != "AAAA-CCCC-GGGG-AAAA" {
-		t.Errorf("canonical of most common = %q, want self", got)
+	if got := consensus["AAAA-CCCC-GGGG-AAAA"]; got != "AAAA-CCCC-GGGG-AAAA" {
+		t.Errorf("consensus of anchor = %q, want self", got)
+	}
+
+	// maxIntraClustDist should be 1 (one mismatch between the two UMIs)
+	for _, r := range results {
+		if r.maxIntraClustDist != 1 {
+			t.Errorf("maxIntraClustDist = %d, want 1", r.maxIntraClustDist)
+		}
 	}
 }
 
 func TestClusterUMIs_DissimilarNoMerge(t *testing.T) {
-	// Two UMIs that differ by many bases (should not merge at 12/16)
 	umiCounts := map[string]int{
 		"AAAA-AAAA-AAAA-AAAA": 10,
 		"CCCC-CCCC-CCCC-CCCC": 5,
 	}
-	canonical := make(map[string]string)
-	umiMergeMatchThreshold = 12
-	clusterUMIs(umiCounts, canonical, false)
+	consensus := make(map[string]string)
+	umiMergeEditThreshold = 3
+	clusterUMIs(umiCounts, consensus, false)
 
-	if got := canonical["CCCC-CCCC-CCCC-CCCC"]; got != "CCCC-CCCC-CCCC-CCCC" {
+	if got := consensus["CCCC-CCCC-CCCC-CCCC"]; got != "CCCC-CCCC-CCCC-CCCC" {
 		t.Errorf("dissimilar UMI should stay self, got %q", got)
 	}
 }
@@ -83,12 +111,94 @@ func TestClusterUMIs_TTSeparator(t *testing.T) {
 		"AAAATTCCCCTTGGGGTTAAAA": 10,
 		"AAAATTCCCCTTGGGGTTAAAT": 3,
 	}
-	canonical := make(map[string]string)
-	umiMergeMatchThreshold = 12
-	clusterUMIs(umiCounts, canonical, false)
+	consensus := make(map[string]string)
+	umiMergeEditThreshold = 3
+	clusterUMIs(umiCounts, consensus, false)
 
-	if got := canonical["AAAATTCCCCTTGGGGTTAAAT"]; got != "AAAATTCCCCTTGGGGTTAAAA" {
-		t.Errorf("canonical of TT variant = %q, want %q", got, "AAAATTCCCCTTGGGGTTAAAA")
+	// Consensus is output in "-" form (normalized)
+	if got := consensus["AAAATTCCCCTTGGGGTTAAAT"]; got != "AAAA-CCCC-GGGG-AAAA" {
+		t.Errorf("consensus of TT variant = %q, want %q", got, "AAAA-CCCC-GGGG-AAAA")
+	}
+}
+
+func TestClusterUMIs_MissedSeparator(t *testing.T) {
+	// xxxx-xxxxxxxx-xxxx (missed one separator) should cluster with xxxx-xxxx-xxxx-xxxx
+	umiCounts := map[string]int{
+		"AAAA-CCCC-GGGG-AAAA": 10,
+		"AAAA-CCCCGGGG-AAAA":  3, // missing separator between CCCC and GGGG
+	}
+	consensus := make(map[string]string)
+	umiMergeEditThreshold = 3
+	clusterUMIs(umiCounts, consensus, false)
+
+	if got := consensus["AAAA-CCCCGGGG-AAAA"]; got != "AAAA-CCCC-GGGG-AAAA" {
+		t.Errorf("missed-separator UMI consensus = %q, want %q", got, "AAAA-CCCC-GGGG-AAAA")
+	}
+}
+
+func TestClusterUMIs_ExtraBase(t *testing.T) {
+	// [5,4,4,4] should cluster with [4,4,4,4] when edit distance is 1
+	umiCounts := map[string]int{
+		"AAAA-CCCC-GGGG-AAAA":  10,
+		"AAAAA-CCCC-GGGG-AAAA": 3,
+	}
+	consensus := make(map[string]string)
+	umiMergeEditThreshold = 3
+	clusterUMIs(umiCounts, consensus, false)
+
+	if got := consensus["AAAAA-CCCC-GGGG-AAAA"]; got != "AAAA-CCCC-GGGG-AAAA" {
+		t.Errorf("extra-base UMI consensus = %q, want %q", got, "AAAA-CCCC-GGGG-AAAA")
+	}
+}
+
+func TestClusterUMIs_SingleLinkageChaining(t *testing.T) {
+	// A and C are edit distance 6 apart (too far to cluster directly),
+	// but B is within distance 3 of both. Single-linkage should merge all three.
+	// A: AAAA-CCCC-GGGG-AAAA
+	// B: AAAA-CCCC-GGGG-AAAT  (dist A-B = 1)
+	// C: AAAA-CCCC-GGGG-TTTT  (dist B-C = 3, dist A-C = 4... let me pick carefully)
+	//
+	// A: AAAA-CCCC-GGGG-AAAA
+	// B: AAAA-CCCC-GGGG-AATТ  (dist A-B = 2)
+	// C: AAAA-CCCC-GGGG-TTTT  (dist B-C = 2, dist A-C = 4 > threshold=3)
+	umiCounts := map[string]int{
+		"AAAA-CCCC-GGGG-AAAA": 5,
+		"AAAA-CCCC-GGGG-AATT": 5, // dist to A = 2, dist to C = 2
+		"AAAA-CCCC-GGGG-TTTT": 5, // dist to A = 4 (> threshold), dist to B = 2
+	}
+	consensus := make(map[string]string)
+	umiMergeEditThreshold = 3
+	clusterUMIs(umiCounts, consensus, false)
+
+	// All three should be in the same cluster (connected via B)
+	ca := consensus["AAAA-CCCC-GGGG-AAAA"]
+	cb := consensus["AAAA-CCCC-GGGG-AATT"]
+	cc := consensus["AAAA-CCCC-GGGG-TTTT"]
+	if ca != cb || cb != cc {
+		t.Errorf("single-linkage chaining failed: A=%q B=%q C=%q, all should be equal", ca, cb, cc)
+	}
+}
+
+func TestComputeConsensusUMI_MajorityVote(t *testing.T) {
+	// 10×A vs 5×T at last position → A wins
+	members := []umiCount{
+		{"AAAA-CCCC-GGGG-AAAA", 10},
+		{"AAAA-CCCC-GGGG-AAAT", 3},
+		{"AAAA-CCCC-GGGG-AAAT", 2},
+	}
+	got := computeConsensusUMI(members)
+	if got != "AAAA-CCCC-GGGG-AAAA" {
+		t.Errorf("computeConsensusUMI = %q, want %q", got, "AAAA-CCCC-GGGG-AAAA")
+	}
+
+	// 3×A vs 8×T at last position → T wins
+	members2 := []umiCount{
+		{"AAAA-CCCC-GGGG-AAAA", 3},
+		{"AAAA-CCCC-GGGG-AAAT", 8},
+	}
+	got2 := computeConsensusUMI(members2)
+	if got2 != "AAAA-CCCC-GGGG-AAAT" {
+		t.Errorf("computeConsensusUMI = %q, want %q", got2, "AAAA-CCCC-GGGG-AAAT")
 	}
 }
 
