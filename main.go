@@ -4,14 +4,15 @@ import (
 	"log"
 	"os"
 	"runtime/pprof"
+	"strings"
 
 	"github.com/compgen-io/cgltk/internal/cmd"
 )
 
 func main() {
 	if len(os.Args) > 1 {
-		if os.Args[1][0:10] == "--profile=" {
-			pfile := os.Args[1][10:len(os.Args[1])]
+		if strings.HasPrefix(os.Args[1], "--profile=") {
+			pfile := os.Args[1][10:]
 			f, err := os.Create(pfile)
 			if err != nil {
 				log.Fatal(err)
