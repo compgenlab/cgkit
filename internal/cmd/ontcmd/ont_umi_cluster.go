@@ -521,7 +521,21 @@ func normalizeUMISeparator(umi string) string {
 
 // umiLevenshtein computes the Levenshtein edit distance between two
 // separator-normalized UMI strings.
+// umiLevenshtein computes the Levenshtein edit distance between two
+// separator-normalized UMI strings. Allocates DP buffers on each call.
 func umiLevenshtein(a, b string) int {
+	var buf levBuf
+	return levDist(a, b, &buf)
+}
+
+// levBuf holds reusable DP buffers for Levenshtein computation.
+type levBuf struct {
+	prev []int
+	curr []int
+}
+
+// levDist computes Levenshtein edit distance reusing the provided buffers.
+func levDist(a, b string, buf *levBuf) int {
 	m, n := len(a), len(b)
 	if m == 0 {
 		return n
@@ -529,23 +543,28 @@ func umiLevenshtein(a, b string) int {
 	if n == 0 {
 		return m
 	}
-	prev := make([]int, n+1)
-	curr := make([]int, n+1)
+	if cap(buf.prev) <= n {
+		buf.prev = make([]int, n+1)
+		buf.curr = make([]int, n+1)
+	} else {
+		buf.prev = buf.prev[:n+1]
+		buf.curr = buf.curr[:n+1]
+	}
 	for j := 0; j <= n; j++ {
-		prev[j] = j
+		buf.prev[j] = j
 	}
 	for i := 1; i <= m; i++ {
-		curr[0] = i
+		buf.curr[0] = i
 		for j := 1; j <= n; j++ {
 			if a[i-1] == b[j-1] {
-				curr[j] = prev[j-1]
+				buf.curr[j] = buf.prev[j-1]
 			} else {
-				curr[j] = 1 + min(prev[j], curr[j-1], prev[j-1])
+				buf.curr[j] = 1 + min(buf.prev[j], buf.curr[j-1], buf.prev[j-1])
 			}
 		}
-		prev, curr = curr, prev
+		buf.prev, buf.curr = buf.curr, buf.prev
 	}
-	return prev[n]
+	return buf.prev[n]
 }
 
 // computeConsensusUMI calculates a consensus UMI string from a set of cluster
@@ -589,8 +608,17 @@ type umiCount struct {
 	count int
 }
 
+// clusterUMIs clusters UMIs using the configured thread count for the
+// all-pairs edit distance computation (suitable for whole-genome mode
+// where there is a single large group).
 func clusterUMIs(umiCounts map[string]int, globalConsensus map[string]string, verbose bool) []umiClusterResult {
 	return clusterUMIsParallel(umiCounts, globalConsensus, verbose, umiClusterThreads)
+}
+
+// clusterUMIsSerial clusters UMIs without internal parallelism. Used in
+// overlap mode where parallelism is at the group level instead.
+func clusterUMIsSerial(umiCounts map[string]int, globalConsensus map[string]string, verbose bool) []umiClusterResult {
+	return clusterUMIsParallel(umiCounts, globalConsensus, verbose, 1)
 }
 
 // umiEdge represents a pair of UMIs within the edit distance threshold.
@@ -632,58 +660,49 @@ func clusterUMIsParallel(umiCounts map[string]int, globalConsensus map[string]st
 	}
 
 	// Compute all-pairs edit distances; collect edges within threshold.
-	type pairJob struct{ i, j int }
+	// Partition rows across workers so each worker processes a contiguous
+	// block of rows without channel overhead per pair.
 	var edges []umiEdge
 
-	if numThreads <= 1 {
+	if numThreads <= 1 || n < 4 {
+		var buf levBuf
 		for i := 0; i < n; i++ {
 			for j := i + 1; j < n; j++ {
-				dist := umiLevenshtein(normalized[i], normalized[j])
+				dist := levDist(normalized[i], normalized[j], &buf)
 				if dist <= umiClusterEditThreshold {
 					edges = append(edges, umiEdge{i, j, dist})
-					if verbose {
-						fmt.Printf("EDGE edit_dist=%d: %s -- %s\n", dist, umis[i].umi, umis[j].umi)
-					}
 				}
 			}
 		}
 	} else {
-		pairsCh := make(chan pairJob, numThreads*4)
-		edgesCh := make(chan umiEdge, numThreads*4)
-
+		// Each worker gets a slice of rows and collects edges locally.
+		// Pre-allocated DP buffers per worker avoid heap churn.
+		workerEdges := make([][]umiEdge, numThreads)
 		var wg sync.WaitGroup
-		for range numThreads {
+
+		// Distribute rows round-robin so work is roughly balanced
+		// (earlier rows have more pairs than later ones).
+		for w := 0; w < numThreads; w++ {
 			wg.Add(1)
-			go func() {
+			go func(workerID int) {
 				defer wg.Done()
-				for p := range pairsCh {
-					dist := umiLevenshtein(normalized[p.i], normalized[p.j])
-					if dist <= umiClusterEditThreshold {
-						edgesCh <- umiEdge{p.i, p.j, dist}
+				var buf levBuf
+				var local []umiEdge
+				for i := workerID; i < n; i += numThreads {
+					for j := i + 1; j < n; j++ {
+						dist := levDist(normalized[i], normalized[j], &buf)
+						if dist <= umiClusterEditThreshold {
+							local = append(local, umiEdge{i, j, dist})
+						}
 					}
 				}
-			}()
+				workerEdges[workerID] = local
+			}(w)
 		}
+		wg.Wait()
 
-		go func() {
-			for i := 0; i < n; i++ {
-				for j := i + 1; j < n; j++ {
-					pairsCh <- pairJob{i, j}
-				}
-			}
-			close(pairsCh)
-		}()
-
-		go func() {
-			wg.Wait()
-			close(edgesCh)
-		}()
-
-		for e := range edgesCh {
-			edges = append(edges, e)
-			if verbose {
-				fmt.Printf("EDGE edit_dist=%d: %s -- %s\n", e.dist, umis[e.i].umi, umis[e.j].umi)
-			}
+		for _, localEdges := range workerEdges {
+			edges = append(edges, localEdges...)
 		}
 	}
 
@@ -730,6 +749,7 @@ func clusterUMIsParallel(umiCounts map[string]int, globalConsensus map[string]st
 	}
 
 	// Build results and populate globalConsensus map.
+	var buf levBuf
 	results := make([]umiClusterResult, n)
 	for k := range umis {
 		root := find(k)
@@ -739,7 +759,7 @@ func clusterUMIsParallel(umiCounts map[string]int, globalConsensus map[string]st
 			umi:               umis[k].umi,
 			consensus:         cons,
 			count:             umis[k].count,
-			editDist:          umiLevenshtein(normalized[k], normalizeUMISeparator(cons)),
+			editDist:          levDist(normalized[k], normalizeUMISeparator(cons), &buf),
 			maxIntraClustDist: compMaxDist[root],
 		}
 	}
