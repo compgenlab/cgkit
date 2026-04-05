@@ -73,7 +73,7 @@ func TestClusterUMIs_SimilarMerge(t *testing.T) {
 		"AAAA-CCCC-GGGG-AAAT": 3,
 	}
 	consensus := make(map[string]string)
-	umiMergeEditThreshold = 3
+	umiClusterEditThreshold = 3
 	results := clusterUMIs(umiCounts, consensus, false)
 
 	// Both cluster together; anchor (count=10) wins the vote at the differing position
@@ -98,7 +98,7 @@ func TestClusterUMIs_DissimilarNoMerge(t *testing.T) {
 		"CCCC-CCCC-CCCC-CCCC": 5,
 	}
 	consensus := make(map[string]string)
-	umiMergeEditThreshold = 3
+	umiClusterEditThreshold = 3
 	clusterUMIs(umiCounts, consensus, false)
 
 	if got := consensus["CCCC-CCCC-CCCC-CCCC"]; got != "CCCC-CCCC-CCCC-CCCC" {
@@ -112,7 +112,7 @@ func TestClusterUMIs_TTSeparator(t *testing.T) {
 		"AAAATTCCCCTTGGGGTTAAAT": 3,
 	}
 	consensus := make(map[string]string)
-	umiMergeEditThreshold = 3
+	umiClusterEditThreshold = 3
 	clusterUMIs(umiCounts, consensus, false)
 
 	// Consensus is output in "-" form (normalized)
@@ -128,7 +128,7 @@ func TestClusterUMIs_MissedSeparator(t *testing.T) {
 		"AAAA-CCCCGGGG-AAAA":  3, // missing separator between CCCC and GGGG
 	}
 	consensus := make(map[string]string)
-	umiMergeEditThreshold = 3
+	umiClusterEditThreshold = 3
 	clusterUMIs(umiCounts, consensus, false)
 
 	if got := consensus["AAAA-CCCCGGGG-AAAA"]; got != "AAAA-CCCC-GGGG-AAAA" {
@@ -143,7 +143,7 @@ func TestClusterUMIs_ExtraBase(t *testing.T) {
 		"AAAAA-CCCC-GGGG-AAAA": 3,
 	}
 	consensus := make(map[string]string)
-	umiMergeEditThreshold = 3
+	umiClusterEditThreshold = 3
 	clusterUMIs(umiCounts, consensus, false)
 
 	if got := consensus["AAAAA-CCCC-GGGG-AAAA"]; got != "AAAA-CCCC-GGGG-AAAA" {
@@ -167,7 +167,7 @@ func TestClusterUMIs_SingleLinkageChaining(t *testing.T) {
 		"AAAA-CCCC-GGGG-TTTT": 5, // dist to A = 4 (> threshold), dist to B = 2
 	}
 	consensus := make(map[string]string)
-	umiMergeEditThreshold = 3
+	umiClusterEditThreshold = 3
 	clusterUMIs(umiCounts, consensus, false)
 
 	// All three should be in the same cluster (connected via B)
