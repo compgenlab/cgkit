@@ -61,3 +61,73 @@ The resulting consensus sequence is always in dash-separated form.
   - `max_intra_cluster_dist` — maximum pairwise edit distance between any two members of this cluster; useful for evaluating cluster cohesion and tuning the edit distance threshold
 
 - **BED file** (`--bed`, optional, overlap mode only): one row per overlap group processed, in BED6 format.
+
+---
+
+## seq-consensus-msa
+
+Performs multiple sequence alignment of highly similar sequences using an incremental consensus algorithm. Designed for building consensus from ONT UMI read groups, but applicable to any set of closely related sequences.
+
+### Input
+
+A FASTA or FASTQ file containing the sequences to align. File format is detected by extension (`.fq`, `.fastq`, `.fq.gz`, `.fastq.gz` → FASTQ; otherwise FASTA). All sequences are loaded into memory. If the input is FASTQ, it is assumed that all reads in the file belong to the same alignment group.
+
+### Algorithm
+
+The alignment proceeds in three phases:
+
+#### Phase 1: All-pairs pairwise alignment
+
+Every pair of input sequences is aligned using global (Needleman-Wunsch) alignment. This produces N×(N-1)/2 alignments and their scores. The all-pairs step can be parallelized across multiple threads (`--threads`).
+
+#### Phase 2: Seed pair selection
+
+The pair of sequences with the **highest alignment score** is selected as the seed. Ties are broken by longest aligned length; if still tied, the first pair found is used. This pair forms the initial 2-sequence MSA. By selecting the best-scoring (and longest) pair, the initial alignment is anchored by the two most similar full-length reads.
+
+#### Phase 3: Incremental incorporation
+
+The remaining sequences are added one at a time:
+
+1. Compute the **consensus** of the current MSA (majority vote at each column, ignoring gaps; ties broken alphabetically).
+2. Align all unincorporated sequences to the consensus using **semi-global alignment** (the read is fully aligned end-to-end, but the consensus can have free end gaps on both sides — this accommodates truncated reads that don't span the full consensus).
+3. Select the **best-scoring** unincorporated sequence and add it to the MSA.
+4. Repeat until all sequences are incorporated.
+
+Each addition refines the consensus, so each subsequent sequence is aligned to an increasingly accurate target. Because the highest-scoring sequences are added first, the consensus stabilizes quickly.
+
+### Alignment modes
+
+The command uses the Oxford Nanopore alignment preset by default (`--ont`, enabled by default), which includes:
+
+- Match score: 1, mismatch penalty: 1
+- Affine gap penalties tuned for ONT error profiles (insertion open: 2, deletion open: 3)
+- Homopolymer indel discounts (reduced gap penalties in homopolymer runs)
+
+An Illumina preset is available with `--ont=false`, which uses stricter mismatch and gap penalties appropriate for short-read error profiles.
+
+Two alignment modes are used internally:
+
+- **Global alignment** (Needleman-Wunsch) for the initial all-pairs distance computation — both sequences are fully aligned end-to-end.
+- **Semi-global alignment** for the incorporation step — the query (read) is fully aligned, but the target (consensus) can have free end gaps. This handles truncated reads that are shorter than the consensus without incurring edge gap penalties.
+
+### Output
+
+By default, the output is a **gapped multi-sequence FASTA** where each sequence includes `-` characters indicating gaps in the alignment. Sequence names are preserved from the input. Sequences appear in the order they were incorporated (seed pair first, then by descending alignment score).
+
+With `--consensus`, the output is a single FASTA record containing the majority-vote consensus sequence.
+
+### Usage
+
+```
+cgltk seq-consensus-msa <input.fasta|fastq> [flags]
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ont` | `true` | Use Oxford Nanopore alignment defaults (set `--ont=false` for Illumina) |
+| `-t`, `--threads` | `1` | Max parallel workers for the all-pairs alignment phase |
+| `-o`, `--output` | stdout | Output file |
+| `--consensus` | `false` | Output a single consensus sequence instead of the full MSA |
+| `-v`, `--verbose` | `false` | Enable verbose alignment debug output |
