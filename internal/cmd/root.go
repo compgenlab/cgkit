@@ -11,12 +11,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Set via -ldflags at build time.
+var (
+	Version = "dev"
+	GitHash = ""
+)
+
+func versionString() string {
+	if GitHash != "" {
+		return fmt.Sprintf("%s (%s)", Version, GitHash)
+	}
+	return Version
+}
+
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "cgltk",
-	Short: "Toolkit for computational genomics research",
-	Long: `Utility toolkit for computational genomics research, 
-with a collection of commands for sequence analysis, 
+	Use:     "cgltk",
+	Short:   "Toolkit for computational genomics research",
+	Version: "", // set in init()
+	Long: `Utility toolkit for computational genomics research,
+with a collection of commands for sequence analysis,
 NGS data-wrangling, and more.`,
 }
 
@@ -29,6 +43,7 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.Version = versionString()
 	// SilenceUsage prevents Cobra from printing usage on errors after argument parsing.
 	rootCmd.SilenceUsage = true
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true

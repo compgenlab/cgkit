@@ -494,21 +494,29 @@ func validateCoordinateSorted(header *htsio.SamHeader) error {
 	return fmt.Errorf("BAM file has no @HD header line; cannot verify sort order")
 }
 
-// detectSeparator returns the UMI separator: "-" or "TT".
+// detectSeparator returns the UMI separator: "/", "-", or "TT".
 func detectSeparator(umi string) string {
+	if strings.Contains(umi, "/") {
+		return "/"
+	}
 	if strings.Contains(umi, "-") {
 		return "-"
 	}
 	return "TT"
 }
 
-// normalizeUMISeparator converts TT-format UMIs to use "-" as the separator.
-// UMIs already using "-" are returned unchanged.
+// normalizeUMISeparator converts all UMI separator formats to use "/" as the
+// canonical separator. "/" is safe to pass directly to the MSA aligner since
+// it is not the alignment gap character ("-").
 func normalizeUMISeparator(umi string) string {
-	if detectSeparator(umi) == "TT" {
-		return strings.ReplaceAll(umi, "TT", "-")
+	switch detectSeparator(umi) {
+	case "-":
+		return strings.ReplaceAll(umi, "-", "/")
+	case "TT":
+		return strings.ReplaceAll(umi, "TT", "/")
+	default:
+		return umi
 	}
-	return umi
 }
 
 // umiLevenshtein computes the Levenshtein edit distance between two
@@ -541,51 +549,30 @@ func umiLevenshtein(a, b string) int {
 }
 
 // computeConsensusUMI calculates a consensus UMI string from a set of cluster
-// members using majority vote per position. Members are assumed sorted by count
-// descending (index 0 is the anchor/highest-count UMI). Only members whose
-// normalized length matches the anchor are included in the vote; others are
-// assigned to the cluster but don't influence the consensus sequence.
-// The result is always in "-"-separated form.
+// members using multiple sequence alignment followed by majority vote per
+// computeConsensusUMI picks the representative UMI for a cluster.
+// The most common UMI (by read count) is chosen. Ties are broken by longer
+// normalized length, then by lexicographic order.
 func computeConsensusUMI(members []umiCount) string {
 	if len(members) == 0 {
 		return ""
 	}
-
-	normalized := make([]string, len(members))
-	for i, m := range members {
-		normalized[i] = normalizeUMISeparator(m.umi)
+	if len(members) == 1 {
+		return normalizeUMISeparator(members[0].umi)
 	}
 
-	refLen := len(normalized[0])
-
-	// Vote per position, weighted by count, for same-length members only.
-	votes := make([]map[byte]int, refLen)
-	for i := range votes {
-		votes[i] = make(map[byte]int)
-	}
-	for i, n := range normalized {
-		if len(n) != refLen {
-			continue
-		}
-		for j := 0; j < refLen; j++ {
-			votes[j][n[j]] += members[i].count
+	best := 0
+	bestNorm := normalizeUMISeparator(members[0].umi)
+	for i := 1; i < len(members); i++ {
+		norm := normalizeUMISeparator(members[i].umi)
+		if members[i].count > members[best].count ||
+			(members[i].count == members[best].count && len(norm) > len(bestNorm)) ||
+			(members[i].count == members[best].count && len(norm) == len(bestNorm) && norm < bestNorm) {
+			best = i
+			bestNorm = norm
 		}
 	}
-
-	result := make([]byte, refLen)
-	for i, v := range votes {
-		best := normalized[0][i] // fallback to anchor base
-		bestCount := 0
-		for b, c := range v {
-			if c > bestCount {
-				best = b
-				bestCount = c
-			}
-		}
-		result[i] = best
-	}
-
-	return string(result)
+	return bestNorm
 }
 
 // umiClusterResult holds the clustering result for one UMI.
