@@ -4,7 +4,7 @@ A toolkit for computational genomics, with a focus on Oxford Nanopore (ONT) long
 
 ---
 
-## ont-umi-merge
+## ont-umi-cluster
 
 Collapses PCR and sequencing duplicates in a coordinate-sorted BAM file using UMI (Unique Molecular Identifier) barcodes. Reads with identical or near-identical UMIs originating from the same genomic locus are identified as duplicates; a consensus UMI sequence is computed for each group and written back to the BAM tags.
 
