@@ -8,9 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/compgen-io/cgltk/align"
 	"github.com/compgen-io/cgltk/htsio"
-	"github.com/compgen-io/cgltk/seqio"
 	"github.com/spf13/cobra"
 )
 
@@ -112,7 +110,7 @@ type groupWorkItem struct {
 // groupResult is returned by workers after UMI clustering.
 type groupResult struct {
 	item      groupWorkItem
-	canonical map[string]string
+	consensus map[string]string
 	results   []umiClusterResult
 }
 
@@ -142,7 +140,7 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 		return err
 	}
 
-	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-merge\tPN:cgltk\tCL:ont-umi-merge\tDS:UMI collapsing; canonical UMI written to %s, original preserved in %s", umiMergeTag, umiMergeOrigTag))
+	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-merge\tPN:cgltk\tCL:ont-umi-merge\tDS:UMI collapsing; consensus UMI written to %s, original preserved in %s", umiMergeTag, umiMergeOrigTag))
 
 	writer, err := htsio.NewSamWriter(umiMergeOutput, header)
 	if err != nil {
@@ -178,11 +176,11 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 						umiCounts[umi]++
 					}
 				}
-				canonical := make(map[string]string)
-				results := clusterUMIs(umiCounts, canonical, umiVerbose)
+				consensus := make(map[string]string)
+				results := clusterUMIs(umiCounts, consensus, umiVerbose)
 				w.resultCh <- &groupResult{
 					item:      w.item,
-					canonical: canonical,
+					consensus: consensus,
 					results:   results,
 				}
 			}
@@ -216,23 +214,23 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 				fmt.Fprintf(bedWriter, "%s\t%d\t%d\t%s\t0\t%s\n", gr.item.rname, gr.item.minStart, gr.item.maxEnd, regionName, gr.item.strand)
 			}
 
-			canonicalCount := countCanonical(gr.results)
+			consensusCount := countConsensus(gr.results)
 			strandLabel := ""
 			if !umiMergeNoStrand {
 				strandLabel = "(" + gr.item.strand + ") "
 			}
-			fmt.Fprintf(os.Stderr, "%s:%d-%d: %s%d reads, %d unique UMIs -> %d canonical\n",
+			fmt.Fprintf(os.Stderr, "%s:%d-%d: %s%d reads, %d unique UMIs -> %d consensus\n",
 				gr.item.rname, gr.item.minStart, gr.item.maxEnd, strandLabel,
-				len(gr.item.recs), len(gr.results), canonicalCount)
+				len(gr.item.recs), len(gr.results), consensusCount)
 
 			// Update tags and write reads
 			for _, rec := range gr.item.recs {
 				tag, hasTag := rec.Tags[umiMergeTag]
 				if hasTag {
 					umi := tag.Value
-					if can, ok := gr.canonical[umi]; ok && can != umi {
+					if cons, ok := gr.consensus[umi]; ok && cons != umi {
 						rec.Tags[umiMergeOrigTag] = htsio.SamTag{Type: 'Z', Value: umi}
-						rec.Tags[umiMergeTag] = htsio.SamTag{Type: 'Z', Value: can}
+						rec.Tags[umiMergeTag] = htsio.SamTag{Type: 'Z', Value: cons}
 						totalChanged++
 					}
 				}
@@ -368,7 +366,7 @@ func umiMergeOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.
 }
 
 // umiMergeWholeGenomeMode uses two passes over the entire file:
-// pass 1 collects all UMI counts, pass 2 rewrites with canonical UMIs.
+// pass 1 collects all UMI counts, pass 2 rewrites with consensus UMIs.
 func umiMergeWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 	// Pass 1: collect all UMIs
 	reader, err := htsio.NewSamReader(inputFile)
@@ -406,14 +404,14 @@ func umiMergeWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 	reader.Close()
 
 	// Cluster
-	globalCanonical := make(map[string]string)
-	results := clusterUMIs(umiCounts, globalCanonical, umiVerbose)
+	globalConsensus := make(map[string]string)
+	results := clusterUMIs(umiCounts, globalConsensus, umiVerbose)
 	writeGroupCounts(countsWriter, results, "", 0, 0, "", true)
-	canonicalCount := countCanonical(results)
-	fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d canonical\n", len(umiCounts), canonicalCount)
+	consensusCount := countConsensus(results)
+	fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d consensus\n", len(umiCounts), consensusCount)
 
 	// Pass 2: rewrite BAM
-	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-merge\tPN:cgltk\tCL:ont-umi-merge\tDS:UMI collapsing; canonical UMI written to %s, original preserved in %s", umiMergeTag, umiMergeOrigTag))
+	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-merge\tPN:cgltk\tCL:ont-umi-merge\tDS:UMI collapsing; consensus UMI written to %s, original preserved in %s", umiMergeTag, umiMergeOrigTag))
 
 	reader2, err := htsio.NewSamReader(inputFile)
 	if err != nil {
@@ -440,9 +438,9 @@ func umiMergeWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 		tag, hasTag := rec.Tags[umiMergeTag]
 		if hasTag {
 			umi := tag.Value
-			if canonical, ok := globalCanonical[umi]; ok && canonical != umi {
+			if cons, ok := globalConsensus[umi]; ok && cons != umi {
 				rec.Tags[umiMergeOrigTag] = htsio.SamTag{Type: 'Z', Value: umi}
-				rec.Tags[umiMergeTag] = htsio.SamTag{Type: 'Z', Value: canonical}
+				rec.Tags[umiMergeTag] = htsio.SamTag{Type: 'Z', Value: cons}
 				changed++
 			}
 		}
@@ -462,17 +460,17 @@ func writeGroupCounts(w io.Writer, results []umiClusterResult, rname string, sta
 		return
 	}
 
-	// Sum counts per canonical UMI
-	canonicalTotals := make(map[string]int)
+	// Sum counts per consensus UMI
+	consensusTotals := make(map[string]int)
 	for _, r := range results {
-		canonicalTotals[r.canonical] += r.count
+		consensusTotals[r.consensus] += r.count
 	}
 
 	for _, r := range results {
 		if !wholeGenome {
 			fmt.Fprintf(w, "%s\t%d\t%d\t%s\t", rname, start0, end0, strand)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\n", r.umi, r.canonical, r.count, canonicalTotals[r.canonical], r.matchScore)
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\n", r.umi, r.consensus, r.count, consensusTotals[r.consensus], r.editDist, r.maxIntraClustDist)
 	}
 }
 
@@ -504,30 +502,99 @@ func detectSeparator(umi string) string {
 	return "TT"
 }
 
-// countNonSepBases returns the number of non-separator bases in a UMI.
-func countNonSepBases(umi string, sep string) int {
-	if sep == "-" {
-		return len(umi) - strings.Count(umi, "-")
+// normalizeUMISeparator converts TT-format UMIs to use "-" as the separator.
+// UMIs already using "-" are returned unchanged.
+func normalizeUMISeparator(umi string) string {
+	if detectSeparator(umi) == "TT" {
+		return strings.ReplaceAll(umi, "TT", "-")
 	}
-	// For TT separator, count non-T bases.
-	// UMI pattern is VVVVTTVVVVTTVVVVTTVVVV where V is non-T.
-	// Since UMI code bases are A,C,G (the V positions from the VVVV pattern),
-	// all T's in the UMI string are separators.
-	count := 0
-	for i := 0; i < len(umi); i++ {
-		if umi[i] != 'T' {
-			count++
+	return umi
+}
+
+// umiLevenshtein computes the Levenshtein edit distance between two
+// separator-normalized UMI strings.
+func umiLevenshtein(a, b string) int {
+	m, n := len(a), len(b)
+	if m == 0 {
+		return n
+	}
+	if n == 0 {
+		return m
+	}
+	prev := make([]int, n+1)
+	curr := make([]int, n+1)
+	for j := 0; j <= n; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= m; i++ {
+		curr[0] = i
+		for j := 1; j <= n; j++ {
+			if a[i-1] == b[j-1] {
+				curr[j] = prev[j-1]
+			} else {
+				curr[j] = 1 + min(prev[j], curr[j-1], prev[j-1])
+			}
+		}
+		prev, curr = curr, prev
+	}
+	return prev[n]
+}
+
+// computeConsensusUMI calculates a consensus UMI string from a set of cluster
+// members using majority vote per position. Members are assumed sorted by count
+// descending (index 0 is the anchor/highest-count UMI). Only members whose
+// normalized length matches the anchor are included in the vote; others are
+// assigned to the cluster but don't influence the consensus sequence.
+// The result is always in "-"-separated form.
+func computeConsensusUMI(members []umiCount) string {
+	if len(members) == 0 {
+		return ""
+	}
+
+	normalized := make([]string, len(members))
+	for i, m := range members {
+		normalized[i] = normalizeUMISeparator(m.umi)
+	}
+
+	refLen := len(normalized[0])
+
+	// Vote per position, weighted by count, for same-length members only.
+	votes := make([]map[byte]int, refLen)
+	for i := range votes {
+		votes[i] = make(map[byte]int)
+	}
+	for i, n := range normalized {
+		if len(n) != refLen {
+			continue
+		}
+		for j := 0; j < refLen; j++ {
+			votes[j][n[j]] += members[i].count
 		}
 	}
-	return count
+
+	result := make([]byte, refLen)
+	for i, v := range votes {
+		best := normalized[0][i] // fallback to anchor base
+		bestCount := 0
+		for b, c := range v {
+			if c > bestCount {
+				best = b
+				bestCount = c
+			}
+		}
+		result[i] = best
+	}
+
+	return string(result)
 }
 
 // umiClusterResult holds the clustering result for one UMI.
 type umiClusterResult struct {
-	umi        string
-	canonical  string
-	count      int
-	matchScore int // non-separator matches vs canonical
+	umi               string
+	consensus         string
+	count             int
+	editDist          int // Levenshtein edit distance from this UMI to the cluster consensus
+	maxIntraClustDist int // maximum pairwise edit distance between any two members of this cluster
 }
 
 type umiCount struct {
@@ -535,25 +602,20 @@ type umiCount struct {
 	count int
 }
 
-func clusterUMIs(umiCounts map[string]int, globalCanonical map[string]string, verbose bool) []umiClusterResult {
-	return clusterUMIsParallel(umiCounts, globalCanonical, verbose, umiMergeThreads)
+func clusterUMIs(umiCounts map[string]int, globalConsensus map[string]string, verbose bool) []umiClusterResult {
+	return clusterUMIsParallel(umiCounts, globalConsensus, verbose, umiMergeThreads)
 }
 
-// alignResult holds the result of a single pairwise alignment job.
-type alignResult struct {
-	j             int
-	nonSepMatches int
-	alnStr        string // only populated when verbose
-}
+// umiEdge represents a pair of UMIs within the edit distance threshold.
+type umiEdge struct{ i, j, dist int }
 
-func clusterUMIsParallel(umiCounts map[string]int, globalCanonical map[string]string, verbose bool, numThreads int) []umiClusterResult {
+func clusterUMIsParallel(umiCounts map[string]int, globalConsensus map[string]string, verbose bool, numThreads int) []umiClusterResult {
 	if len(umiCounts) <= 1 {
 		// Single UMI or empty, nothing to cluster
 		var results []umiClusterResult
 		for umi, count := range umiCounts {
-			globalCanonical[umi] = umi
-			sep := detectSeparator(umi)
-			results = append(results, umiClusterResult{umi, umi, count, countNonSepBases(umi, sep)})
+			globalConsensus[umi] = umi
+			results = append(results, umiClusterResult{umi: umi, consensus: umi, count: count})
 		}
 		return results
 	}
@@ -562,7 +624,7 @@ func clusterUMIsParallel(umiCounts map[string]int, globalCanonical map[string]st
 		numThreads = 1
 	}
 
-	// Sort by count descending
+	// Sort for stable ordering; count does not affect cluster membership.
 	umis := make([]umiCount, 0, len(umiCounts))
 	for umi, count := range umiCounts {
 		umis = append(umis, umiCount{umi, count})
@@ -574,149 +636,135 @@ func clusterUMIsParallel(umiCounts map[string]int, globalCanonical map[string]st
 		return umis[i].umi < umis[j].umi
 	})
 
-	// Detect separator from first UMI
-	sep := detectSeparator(umis[0].umi)
+	n := len(umis)
 
-	// clusterOf[i] = index of the canonical UMI for cluster containing i
-	clusterOf := make([]int, len(umis))
-	matchScores := make([]int, len(umis)) // non-sep matches vs canonical
-	for i := range clusterOf {
-		clusterOf[i] = -1
-		matchScores[i] = countNonSepBases(umis[i].umi, sep) // self-match = all non-sep bases
-	}
-
-	// Pre-convert all UMI strings to SeqQual once
-	seqs := make([]seqio.SeqQual, len(umis))
+	// Pre-normalize all UMI strings once.
+	normalized := make([]string, n)
 	for i, u := range umis {
-		seqs[i] = seqio.NewStringSeq(u.umi, "").FullSeq()
+		normalized[i] = normalizeUMISeparator(u.umi)
 	}
 
-	aligner := align.NewGlobalAligner(align.OntAlignmentDefaults())
+	// Compute all-pairs edit distances; collect edges within threshold.
+	type pairJob struct{ i, j int }
+	var edges []umiEdge
 
-	for i := 0; i < len(umis); i++ {
-		if clusterOf[i] > -1 {
-			continue // already merged
-		}
-
-		// We are sorted desc, so if we are looking at this UMI in the
-		// first loop, this is an anchor UMI/seq
-		clusterOf[i] = i
-
-		// Collect unclustered candidates for this anchor
-		candidates := make([]int, 0)
-		for j := i + 1; j < len(umis); j++ {
-			if clusterOf[j] == -1 {
-				candidates = append(candidates, j)
-			}
-		}
-
-		if len(candidates) == 0 {
-			continue
-		}
-
-		// For small candidate sets or single thread, run serially
-		if numThreads <= 1 || len(candidates) < numThreads {
-			for _, j := range candidates {
-				aln := aligner.Align(seqs[i], seqs[j])
-				nonSepMatches := countNonSepAlignedMatches(aln, sep)
-				if nonSepMatches >= umiMergeMatchThreshold {
-					clusterOf[j] = i
-					matchScores[j] = nonSepMatches
+	if numThreads <= 1 {
+		for i := 0; i < n; i++ {
+			for j := i + 1; j < n; j++ {
+				dist := umiLevenshtein(normalized[i], normalized[j])
+				if dist <= umiMergeEditThreshold {
+					edges = append(edges, umiEdge{i, j, dist})
 					if verbose {
-						fmt.Printf("MATCH! %d\n%s\n===\n", nonSepMatches, aln.String())
+						fmt.Printf("EDGE edit_dist=%d: %s -- %s\n", dist, umis[i].umi, umis[j].umi)
 					}
 				}
 			}
-			continue
 		}
-
-		// Parallel: fan out alignments across workers
-		resultsCh := make(chan alignResult, len(candidates))
-		workCh := make(chan int, len(candidates))
+	} else {
+		pairsCh := make(chan pairJob, numThreads*4)
+		edgesCh := make(chan umiEdge, numThreads*4)
 
 		var wg sync.WaitGroup
 		for range numThreads {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for j := range workCh {
-					aln := aligner.Align(seqs[i], seqs[j])
-					nonSepMatches := countNonSepAlignedMatches(aln, sep)
-					r := alignResult{j: j, nonSepMatches: nonSepMatches}
-					if verbose && nonSepMatches >= umiMergeMatchThreshold {
-						r.alnStr = aln.String()
+				for p := range pairsCh {
+					dist := umiLevenshtein(normalized[p.i], normalized[p.j])
+					if dist <= umiMergeEditThreshold {
+						edgesCh <- umiEdge{p.i, p.j, dist}
 					}
-					resultsCh <- r
 				}
 			}()
 		}
 
-		for _, j := range candidates {
-			workCh <- j
-		}
-		close(workCh)
-		wg.Wait()
-		close(resultsCh)
-
-		for r := range resultsCh {
-			if r.nonSepMatches >= umiMergeMatchThreshold {
-				clusterOf[r.j] = i
-				matchScores[r.j] = r.nonSepMatches
-				if verbose {
-					fmt.Printf("MATCH! %d\n%s\n===\n", r.nonSepMatches, r.alnStr)
+		go func() {
+			for i := 0; i < n; i++ {
+				for j := i + 1; j < n; j++ {
+					pairsCh <- pairJob{i, j}
 				}
+			}
+			close(pairsCh)
+		}()
+
+		go func() {
+			wg.Wait()
+			close(edgesCh)
+		}()
+
+		for e := range edgesCh {
+			edges = append(edges, e)
+			if verbose {
+				fmt.Printf("EDGE edit_dist=%d: %s -- %s\n", e.dist, umis[e.i].umi, umis[e.j].umi)
 			}
 		}
 	}
 
-	// Build canonical mapping and results
-	results := make([]umiClusterResult, len(umis))
+	// Union-Find: find connected components.
+	parent := make([]int, n)
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(x int) int {
+		if parent[x] != x {
+			parent[x] = find(parent[x]) // path compression
+		}
+		return parent[x]
+	}
+	union := func(x, y int) {
+		px, py := find(x), find(y)
+		if px != py {
+			parent[px] = py
+		}
+	}
+	for _, e := range edges {
+		union(e.i, e.j)
+	}
+
+	// Group UMIs by component root; track max intra-cluster distance per component.
+	compMembers := make(map[int][]umiCount)
+	for i := range umis {
+		root := find(i)
+		compMembers[root] = append(compMembers[root], umis[i])
+	}
+	compMaxDist := make(map[int]int)
+	for _, e := range edges {
+		root := find(e.i)
+		if e.dist > compMaxDist[root] {
+			compMaxDist[root] = e.dist
+		}
+	}
+
+	// Compute consensus per component via majority vote.
+	compConsensus := make(map[int]string)
+	for root, members := range compMembers {
+		compConsensus[root] = computeConsensusUMI(members)
+	}
+
+	// Build results and populate globalConsensus map.
+	results := make([]umiClusterResult, n)
 	for k := range umis {
-		canonical := umis[clusterOf[k]].umi
-		globalCanonical[umis[k].umi] = canonical
-		results[k] = umiClusterResult{umis[k].umi, canonical, umis[k].count, matchScores[k]}
+		root := find(k)
+		cons := compConsensus[root]
+		globalConsensus[umis[k].umi] = cons
+		results[k] = umiClusterResult{
+			umi:               umis[k].umi,
+			consensus:         cons,
+			count:             umis[k].count,
+			editDist:          umiLevenshtein(normalized[k], normalizeUMISeparator(cons)),
+			maxIntraClustDist: compMaxDist[root],
+		}
 	}
 	return results
 }
 
-// countNonSepAlignedMatches counts matching bases at non-separator positions
-// in the alignment.
-func countNonSepAlignedMatches(aln *align.PairwiseAlignment, sep string) int {
-	qAligned := aln.QueryAlignedStr()
-	tAligned := aln.TargetAlignedStr()
-
-	matches := 0
-	for i := 0; i < len(qAligned) && i < len(tAligned); i++ {
-		q := qAligned[i]
-		t := tAligned[i]
-		if q == '-' || t == '-' {
-			continue
-		}
-		// Skip separator positions
-		if isSeparatorChar(q, sep) {
-			continue
-		}
-		if q == t {
-			matches++
-		}
-	}
-	return matches
-}
-
-func countCanonical(results []umiClusterResult) int {
+func countConsensus(results []umiClusterResult) int {
 	seen := make(map[string]bool)
 	for _, r := range results {
-		seen[r.canonical] = true
+		seen[r.consensus] = true
 	}
 	return len(seen)
-}
-
-func isSeparatorChar(c byte, sep string) bool {
-	if sep == "-" {
-		return c == '-'
-	}
-	// TT separator: T's are separator chars
-	return c == 'T'
 }
 
 var umiMergeOutput string
@@ -725,7 +773,7 @@ var umiMergeOrigTag string
 var umiMergeOverlap int
 var umiMergeWholeGenome bool
 var umiMergeNoStrand bool
-var umiMergeMatchThreshold int
+var umiMergeEditThreshold int
 var umiMergeCountsFilename string
 var umiMergeBedFilename string
 var umiMergeThreads int
@@ -740,7 +788,7 @@ func init() {
 	ontUmiMergeCmd.Flags().BoolVar(&umiMergeWholeGenome, "whole-genome", false, "Process all UMIs as a single group (ignore coordinates)")
 	ontUmiMergeCmd.Flags().BoolVar(&umiMergeNoStrand, "no-strand", false, "Ignore strand when grouping reads (default: group by strand)")
 	ontUmiMergeCmd.Flags().BoolVarP(&umiVerbose, "verbose", "v", false, "Verbose logging")
-	ontUmiMergeCmd.Flags().IntVar(&umiMergeMatchThreshold, "umi-match-threshold", 13, "Minimum matching non-separator bases to cluster two UMIs")
+	ontUmiMergeCmd.Flags().IntVar(&umiMergeEditThreshold, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to cluster two UMIs")
 	ontUmiMergeCmd.Flags().StringVar(&umiMergeCountsFilename, "umi-counts", "", "Write UMI counts to this file")
 	ontUmiMergeCmd.Flags().StringVar(&umiMergeBedFilename, "bed", "", "Write overlap regions to this BED6 file")
 	ontUmiMergeCmd.Flags().IntVarP(&umiMergeThreads, "threads", "t", 1, "Threads for UMI clustering")
