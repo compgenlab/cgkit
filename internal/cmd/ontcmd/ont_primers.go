@@ -175,6 +175,10 @@ var ontPrimersCmd = &cobra.Command{
 			return fmt.Errorf("no output specified: at least one of --report, --passing-fastq, or --failed-fastq is required")
 		}
 
+		if ontStatusTag != "" && len(ontStatusTag) != 2 {
+			return fmt.Errorf("--add-status-tag must be a two-letter SAM tag name (e.g. CO)")
+		}
+
 		if passingWriter == nil && failedWriter == nil {
 			if ontWriteUMI {
 				fmt.Fprintln(os.Stderr, "warning: --add-umi has no effect without --passing-fastq or --failed-fastq")
@@ -184,6 +188,9 @@ var ontPrimersCmd = &cobra.Command{
 			}
 			if ontTrimFlanking {
 				fmt.Fprintln(os.Stderr, "warning: --trim-flanking has no effect without --passing-fastq")
+			}
+			if ontStatusTag != "" {
+				fmt.Fprintln(os.Stderr, "warning: --add-status-tag has no effect without --passing-fastq or --failed-fastq")
 			}
 		} else if passingWriter == nil && ontTrimFlanking {
 			fmt.Fprintln(os.Stderr, "warning: --trim-flanking has no effect without --passing-fastq")
@@ -457,6 +464,13 @@ var ontPrimersCmd = &cobra.Command{
 						seq.AddCommentTSV("BC:Z:" + result.bestBCSeq)
 						seq.AddCommentTSV("ZB:Z:" + result.bestBCName)
 					}
+					if ontStatusTag != "" {
+						if passing {
+							seq.AddCommentTSV(ontStatusTag + ":Z:pass")
+						} else {
+							seq.AddCommentTSV(ontStatusTag + ":Z:fail")
+						}
+					}
 					if !passing {
 						seq.AddCommentTSV("CO:Z:" + statusStr)
 					}
@@ -576,6 +590,7 @@ var ontFilterBarcodeMatches int
 var ontWriteBarcode bool
 var ontWriteUMI bool
 var ontUMISepT bool
+var ontStatusTag string
 var ontTrimFlanking bool
 var ontSenseCorrect bool
 
@@ -595,6 +610,7 @@ func init() {
 	ontPrimersCmd.Flags().BoolVar(&ontUMISepT, "umi-sep-t", false, "Separate UMI groups with T bases instead of dashes (e.g. AAAATTAAAATTAAAA)")
 	ontPrimersCmd.Flags().BoolVar(&ontTrimFlanking, "trim-flanking", false, "Trim VNP/SSP sequences from passing reads before writing")
 	ontPrimersCmd.Flags().BoolVar(&ontSenseCorrect, "sense-correct", false, "Correct the read to be in the sense orientation (SSP+/VNP-)")
+	ontPrimersCmd.Flags().StringVar(&ontStatusTag, "add-status-tag", "", "Add a SAM-style tag (two-letter name) with pass/fail status to FASTQ comments (e.g. CO)")
 
 	ontPrimersCmd.Flags().BoolVar(&ontFilterVNPSSPPair, "filter-pair", false, "Require paired VNP/SSP (flanking on opposite strands)")
 	ontPrimersCmd.Flags().Float32Var(&ontFilterVNPScore, "filter-vnp-score", -1, "Require minimum VNP alignment score")
