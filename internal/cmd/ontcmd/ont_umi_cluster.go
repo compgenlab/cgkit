@@ -123,7 +123,7 @@ type groupResult struct {
 // buffer the group's reads, send to workers for UMI clustering in parallel,
 // write results in order.
 func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.Writer, skipRefs []string) error {
-	ropts := htsio.NewSamtoolsSamReaderOpts()
+	ropts := htsio.NewSamReaderOpts()
 	if umiClusterThreads > 1 {
 		ropts = ropts.Threads(2)
 	}
