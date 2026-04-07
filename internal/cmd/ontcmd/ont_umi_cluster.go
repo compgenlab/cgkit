@@ -142,13 +142,14 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 
 	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-cluster\tPN:cgltk\tCL:ont-umi-cluster\tDS:UMI collapsing; consensus UMI written to %s, original preserved in %s", umiClusterTag, umiClusterOrigTag))
 
-	writer, err := htsio.NewSamWriter(umiClusterOutput, header)
+	opts := htsio.SamWriterOptions(header).BAM().SortCoord()
+	if umiClusterThreads > 1 {
+		opts = opts.Threads(2)
+	}
+
+	writer, err := htsio.NewSamWriter(umiClusterOutput, opts)
 	if err != nil {
 		return err
-	}
-	writer.Format(htsio.FormatBAM)
-	if umiClusterThreads > 1 {
-		writer.Threads(2)
 	}
 
 	numThreads := umiClusterThreads
@@ -417,11 +418,17 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 	if err != nil {
 		return err
 	}
-	writer, err := htsio.NewSamWriter(umiClusterOutput, header)
+
+	opts := htsio.SamWriterOptions(header).BAM().SortCoord()
+
+	if umiClusterThreads > 1 {
+		opts = opts.Threads(2)
+	}
+
+	writer, err := htsio.NewSamWriter(umiClusterOutput, opts)
 	if err != nil {
 		return err
 	}
-	writer.Format(htsio.FormatBAM)
 
 	changed := 0
 	total := 0
