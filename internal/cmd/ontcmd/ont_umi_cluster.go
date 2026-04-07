@@ -27,6 +27,11 @@ var ontUmiClusterCmd = &cobra.Command{
 
 		inputFile := args[0]
 
+		skipRefs := []string{}
+		if umiClusterSkipRef != "" {
+			skipRefs = strings.Split(umiClusterSkipRef, ",")
+		}
+
 		// Open counts writer if requested
 		var countsWriter io.Writer
 		var closeCounts func() error
@@ -60,9 +65,9 @@ var ontUmiClusterCmd = &cobra.Command{
 		}
 
 		if umiClusterWholeGenome {
-			return umiClusterWholeGenomeMode(inputFile, countsWriter)
+			return umiClusterWholeGenomeMode(inputFile, countsWriter, skipRefs)
 		}
-		return umiClusterOverlapMode(inputFile, countsWriter, bedWriter)
+		return umiClusterOverlapMode(inputFile, countsWriter, bedWriter, skipRefs)
 	},
 }
 
@@ -117,22 +122,20 @@ type groupResult struct {
 // umiClusterOverlapMode processes each overlap group independently:
 // buffer the group's reads, send to workers for UMI clustering in parallel,
 // write results in order.
-func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.Writer) error {
-	reader, err := htsio.NewSamReader(inputFile)
+func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.Writer, skipRefs []string) error {
+	ropts := htsio.NewSamtoolsSamReaderOpts()
+	if umiClusterThreads > 1 {
+		ropts = ropts.Threads(2)
+	}
+	reader, err := htsio.NewSamReader(inputFile, ropts)
 	if err != nil {
 		return err
 	}
-	if umiClusterThreads > 1 {
-		reader.Threads(2)
-	}
 
-	// Read first record to populate header
-	firstRec, err := reader.Next()
-	if err != nil && err != io.EOF {
-		return err
+	header, err := reader.Header()
+	if err != nil {
+		return fmt.Errorf("failed to read header: %w", err)
 	}
-
-	header := reader.Header()
 	if header == nil {
 		return fmt.Errorf("no header found in BAM file")
 	}
@@ -142,12 +145,12 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 
 	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-cluster\tPN:cgltk\tCL:ont-umi-cluster\tDS:UMI collapsing; consensus UMI written to %s, original preserved in %s", umiClusterTag, umiClusterOrigTag))
 
-	opts := htsio.SamWriterOptions(header).BAM().SortCoord()
+	wopts := htsio.SamWriterOptions(header).BAM().SortCoord()
 	if umiClusterThreads > 1 {
-		opts = opts.Threads(2)
+		wopts = wopts.Threads(2)
 	}
 
-	writer, err := htsio.NewSamWriter(umiClusterOutput, opts)
+	writer, err := htsio.NewSamWriter(umiClusterOutput, wopts)
 	if err != nil {
 		return err
 	}
@@ -303,9 +306,9 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 		readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
 		strand := readStrand(rec)
 
-		flushIfPast(&plusGroup, rec.RName, readStart)
+		flushIfPast(&plusGroup, rec.RefName, readStart)
 		if !umiClusterNoStrand {
-			flushIfPast(&minusGroup, rec.RName, readStart)
+			flushIfPast(&minusGroup, rec.RefName, readStart)
 		}
 
 		var group *overlapGroup
@@ -317,14 +320,14 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 			group = &minusGroup
 		}
 
-		if group.readsNearby(rec.RName, strand, readStart) {
+		if group.readsNearby(rec.RefName, strand, readStart) {
 			if readEnd > group.maxEnd {
 				group.maxEnd = readEnd
 			}
 			group.recs = append(group.recs, rec)
 		} else {
 			submitGroup(group)
-			group.rname = rec.RName
+			group.rname = rec.RefName
 			if umiClusterNoStrand {
 				group.strand = "."
 			} else {
@@ -336,9 +339,6 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 		}
 	}
 
-	if firstRec != nil {
-		addRecord(firstRec)
-	}
 	for {
 		rec, err := reader.Next()
 		if err == io.EOF {
@@ -346,6 +346,18 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 		}
 		if err != nil {
 			return err
+		}
+		if umiClusterSkipUnmapped && (rec.IsUnmapped() || rec.Cigar == "*") {
+			writer.Write(rec)
+			continue
+		}
+		if skipRefs != nil {
+			for i := range skipRefs {
+				if rec.RefName == skipRefs[i] {
+					writer.Write(rec)
+					continue
+				}
+			}
 		}
 		addRecord(rec)
 	}
@@ -368,7 +380,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 
 // umiClusterWholeGenomeMode uses two passes over the entire file:
 // pass 1 collects all UMI counts, pass 2 rewrites with consensus UMIs.
-func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
+func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRefs []string) error {
 	// Pass 1: collect all UMIs
 	reader, err := htsio.NewSamReader(inputFile)
 	if err != nil {
@@ -376,20 +388,14 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 	}
 	umiCounts := make(map[string]int)
 
-	firstRec, err := reader.Next()
-	if err != nil && err != io.EOF {
-		return err
+	header, err := reader.Header()
+	if err != nil {
+		return fmt.Errorf("failed to read header: %w", err)
 	}
-	header := reader.Header()
 	if header == nil {
 		return fmt.Errorf("no header found in BAM file")
 	}
 
-	if firstRec != nil {
-		if umi := getUMI(firstRec); umi != "" {
-			umiCounts[umi]++
-		}
-	}
 	for {
 		rec, err := reader.Next()
 		if err == io.EOF {
@@ -397,6 +403,16 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 		}
 		if err != nil {
 			return err
+		}
+		if umiClusterSkipUnmapped && (rec.IsUnmapped() || rec.Cigar == "*") {
+			continue
+		}
+		if skipRefs != nil {
+			for i := range skipRefs {
+				if rec.RefName == skipRefs[i] {
+					continue
+				}
+			}
 		}
 		if umi := getUMI(rec); umi != "" {
 			umiCounts[umi]++
@@ -441,6 +457,19 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer) error {
 			return err
 		}
 		total++
+
+		if umiClusterSkipUnmapped && (rec.IsUnmapped() || rec.Cigar == "*") {
+			writer.Write(rec)
+			continue
+		}
+		if skipRefs != nil {
+			for i := range skipRefs {
+				if rec.RefName == skipRefs[i] {
+					writer.Write(rec)
+					continue
+				}
+			}
+		}
 
 		tag, hasTag := rec.Tags[umiClusterTag]
 		if hasTag {
@@ -791,6 +820,8 @@ var umiClusterEditThreshold int
 var umiClusterCountsFilename string
 var umiClusterBedFilename string
 var umiClusterThreads int
+var umiClusterSkipRef string
+var umiClusterSkipUnmapped bool
 
 var umiVerbose bool
 
@@ -802,6 +833,8 @@ func init() {
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterWholeGenome, "whole-genome", false, "Process all UMIs as a single group (ignore coordinates)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterNoStrand, "no-strand", false, "Ignore strand when grouping reads (default: group by strand)")
 	ontUmiClusterCmd.Flags().BoolVarP(&umiVerbose, "verbose", "v", false, "Verbose logging")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterSkipRef, "--ignore-ref", "", "References to ignore - reads will be passed through with original UMI (comma-separated)")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterSkipUnmapped, "--ignore-unmapped", false, "Ignore unmapped reads (reads will be passed through with original UMI)")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterEditThreshold, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to cluster two UMIs")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterCountsFilename, "umi-counts", "", "Write UMI counts to this file")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterBedFilename, "bed", "", "Write overlap regions to this BED6 file")
