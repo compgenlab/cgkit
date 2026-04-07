@@ -81,10 +81,6 @@ type overlapGroup struct {
 	recs     []*htsio.SamRecord
 }
 
-func (g *overlapGroup) reset() {
-	g.recs = nil
-}
-
 // readsNearby returns true if a read at readStart is within gap tolerance of this group.
 // Reads that overlap OR whose gap to the group is <= tolerance are merged.
 func (g *overlapGroup) readsNearby(rname string, strand string, readStart int) bool {
@@ -143,7 +139,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 		return err
 	}
 
-	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-cluster\tPN:cgltk\tCL:ont-umi-cluster\tDS:UMI collapsing; consensus UMI written to %s, original preserved in %s", umiClusterTag, umiClusterOrigTag))
+	addUMIClusterPGLine(header)
 
 	wopts := htsio.SamWriterOptions(header).BAM().SortCoord()
 	if umiClusterThreads > 1 {
@@ -229,14 +225,8 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 
 			// Update tags and write reads
 			for _, rec := range gr.item.recs {
-				tag, hasTag := rec.Tags[umiClusterTag]
-				if hasTag {
-					umi := tag.Value
-					if cons, ok := gr.consensus[umi]; ok && cons != umi {
-						rec.Tags[umiClusterOrigTag] = htsio.SamTag{Type: 'Z', Value: umi}
-						rec.Tags[umiClusterTag] = htsio.SamTag{Type: 'Z', Value: cons}
-						totalChanged++
-					}
+				if updateRecordUMI(rec, gr.consensus) {
+					totalChanged++
 				}
 				totalReads++
 				if err := writer.Write(rec); err != nil {
@@ -424,7 +414,7 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRef
 	fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d consensus\n", len(umiCounts), consensusCount)
 
 	// Pass 2: rewrite BAM
-	header.AddLine(fmt.Sprintf("@PG\tID:ont-umi-cluster\tPN:cgltk\tCL:ont-umi-cluster\tDS:UMI collapsing; consensus UMI written to %s, original preserved in %s", umiClusterTag, umiClusterOrigTag))
+	addUMIClusterPGLine(header)
 
 	reader2, err := htsio.NewSamReader(inputFile)
 	if err != nil {
@@ -465,14 +455,8 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRef
 			}
 		}
 
-		tag, hasTag := rec.Tags[umiClusterTag]
-		if hasTag {
-			umi := tag.Value
-			if cons, ok := globalConsensus[umi]; ok && cons != umi {
-				rec.Tags[umiClusterOrigTag] = htsio.SamTag{Type: 'Z', Value: umi}
-				rec.Tags[umiClusterTag] = htsio.SamTag{Type: 'Z', Value: cons}
-				changed++
-			}
+		if updateRecordUMI(rec, globalConsensus) {
+			changed++
 		}
 
 		if err := writer.Write(rec); err != nil {
@@ -549,13 +533,26 @@ func normalizeUMISeparator(umi string) string {
 	}
 }
 
-// umiLevenshtein computes the Levenshtein edit distance between two
-// separator-normalized UMI strings.
-// umiLevenshtein computes the Levenshtein edit distance between two
-// separator-normalized UMI strings. Allocates DP buffers on each call.
-func umiLevenshtein(a, b string) int {
-	var buf levBuf
-	return levDist(a, b, &buf)
+// updateRecordUMI rewrites the UMI tag to its consensus value if one exists.
+// Returns true if the tag was changed.
+func updateRecordUMI(rec *htsio.SamRecord, consensus map[string]string) bool {
+	tag, hasTag := rec.Tags[umiClusterTag]
+	if !hasTag {
+		return false
+	}
+	umi := tag.Value
+	cons, ok := consensus[umi]
+	if !ok || cons == umi {
+		return false
+	}
+	rec.Tags[umiClusterOrigTag] = htsio.SamTag{Type: 'Z', Value: umi}
+	rec.Tags[umiClusterTag] = htsio.SamTag{Type: 'Z', Value: cons}
+	return true
+}
+
+// addUMIClusterPGLine appends the ont-umi-cluster @PG header line.
+func addUMIClusterPGLine(header *htsio.SamHeader) {
+	header.AddPGLine("ont-umi-cluster", "cgltk", fmt.Sprintf("DS:UMI collapsing; consensus UMI written to %s, original preserved in %s", umiClusterTag, umiClusterOrigTag))
 }
 
 // levBuf holds reusable DP buffers for Levenshtein computation.
@@ -645,12 +642,6 @@ func clusterUMIs(umiCounts map[string]int, globalConsensus map[string]string, ve
 	return clusterUMIsParallel(umiCounts, globalConsensus, verbose, umiClusterThreads)
 }
 
-// clusterUMIsSerial clusters UMIs without internal parallelism. Used in
-// overlap mode where parallelism is at the group level instead.
-func clusterUMIsSerial(umiCounts map[string]int, globalConsensus map[string]string, verbose bool) []umiClusterResult {
-	return clusterUMIsParallel(umiCounts, globalConsensus, verbose, 1)
-}
-
 // umiEdge represents a pair of UMIs within the edit distance threshold.
 type umiEdge struct{ i, j, dist int }
 
@@ -696,7 +687,7 @@ func clusterUMIsParallel(umiCounts map[string]int, globalConsensus map[string]st
 
 	if numThreads <= 1 || n < 4 {
 		var buf levBuf
-		for i := 0; i < n; i++ {
+		for i := range n {
 			for j := i + 1; j < n; j++ {
 				dist := levDist(normalized[i], normalized[j], &buf)
 				if dist <= umiClusterEditThreshold {
@@ -827,8 +818,8 @@ func init() {
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterWholeGenome, "whole-genome", false, "Process all UMIs as a single group (ignore coordinates)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterNoStrand, "no-strand", false, "Ignore strand when grouping reads (default: group by strand)")
 	ontUmiClusterCmd.Flags().BoolVarP(&umiVerbose, "verbose", "v", false, "Verbose logging")
-	ontUmiClusterCmd.Flags().StringVar(&umiClusterSkipRefs, "--ignore-refs", "", "References to ignore - reads will be passed through with original UMI (comma-separated)")
-	ontUmiClusterCmd.Flags().BoolVar(&umiClusterSkipUnmapped, "--ignore-unmapped", false, "Ignore unmapped reads (reads will be passed through with original UMI)")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterSkipRefs, "ignore-refs", "", "References to ignore (reads will be passed through with original UMI) (comma-separated)")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterSkipUnmapped, "ignore-unmapped", false, "Ignore unmapped reads (reads will be passed through with original UMI)")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterEditThreshold, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to cluster two UMIs")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterCountsFilename, "umi-counts", "", "Write UMI counts to this file")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterBedFilename, "bed", "", "Write overlap regions to this BED6 file")

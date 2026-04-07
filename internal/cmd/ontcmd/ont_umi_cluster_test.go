@@ -51,9 +51,10 @@ func TestUmiLevenshtein(t *testing.T) {
 		{"AAAA/AAAA/AAAA/AAAA", "CCCC/CCCC/CCCC/CCCC", 16},
 	}
 	for _, tt := range tests {
-		got := umiLevenshtein(tt.a, tt.b)
+		var buf levBuf
+		got := levDist(tt.a, tt.b, &buf)
 		if got != tt.want {
-			t.Errorf("umiLevenshtein(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+			t.Errorf("levDist(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
 	}
 }
