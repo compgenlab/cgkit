@@ -42,10 +42,10 @@ func openWriter(filename string) (io.Writer, func() error, error) {
 	return f, f.Close, nil
 }
 
-var ontPrimersCmd = &cobra.Command{
+var ontTagsCmd = &cobra.Command{
 	GroupID: "ontcmd",
-	Use:     "ont-primers <input.fastq>",
-	Short:   "Find and trim common ONT primers from the start of reads in a FASTQ file",
+	Use:     "ont-tags <input.fastq>",
+	Short:   "Find and trim common ONT tags from the start of reads in a FASTQ file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -600,30 +600,30 @@ var ontThreads int
 var ontPrimersDefault string
 
 func init() {
-	ontPrimersCmd.Flags().StringVar(&ontPassingFQFilename, "passing-fastq", "", "Write passing reads to this file (gzipped if .gz)")
-	ontPrimersCmd.Flags().StringVar(&ontFailedFQFilename, "failed-fastq", "", "Write failed reads to this file (gzipped if .gz)")
-	ontPrimersCmd.Flags().StringVar(&ontReportFilename, "report", "", "Write tab-delimited report to this file (use '-' for stdout; gzipped if .gz)")
-	ontPrimersCmd.Flags().StringVar(&ontPrimersFilename, "primers-fasta", "", "FASTA file with primers (default: use included primers)")
+	ontTagsCmd.Flags().StringVar(&ontPassingFQFilename, "passing-fastq", "", "Write passing reads to this file (gzipped if .gz)")
+	ontTagsCmd.Flags().StringVar(&ontFailedFQFilename, "failed-fastq", "", "Write failed reads to this file (gzipped if .gz)")
+	ontTagsCmd.Flags().StringVar(&ontReportFilename, "report", "", "Write tab-delimited report to this file (use '-' for stdout; gzipped if .gz)")
+	ontTagsCmd.Flags().StringVar(&ontPrimersFilename, "primers-fasta", "", "FASTA file with primers (default: use included primers)")
 
-	ontPrimersCmd.Flags().BoolVar(&ontWriteBarcode, "add-barcode", false, "Add BC= tag to FASTQ comment when writing output")
-	ontPrimersCmd.Flags().BoolVar(&ontWriteUMI, "add-umi", false, "Add UMI= tag to FASTQ comment when writing output")
-	ontPrimersCmd.Flags().BoolVar(&ontUMISepT, "umi-sep-t", false, "Separate UMI groups with T bases instead of dashes (e.g. AAAATTAAAATTAAAA)")
-	ontPrimersCmd.Flags().BoolVar(&ontTrimFlanking, "trim-flanking", false, "Trim VNP/SSP sequences from passing reads before writing")
-	ontPrimersCmd.Flags().BoolVar(&ontSenseCorrect, "sense-correct", false, "Correct the read to be in the sense orientation (SSP+/VNP-)")
-	ontPrimersCmd.Flags().StringVar(&ontStatusTag, "add-status-tag", "", "Add a SAM-style tag (two-letter name) with pass/fail status to FASTQ comments (e.g. CO)")
+	ontTagsCmd.Flags().BoolVar(&ontWriteBarcode, "add-barcode", false, "Add BC= tag to FASTQ comment when writing output")
+	ontTagsCmd.Flags().BoolVar(&ontWriteUMI, "add-umi", false, "Add UMI= tag to FASTQ comment when writing output")
+	ontTagsCmd.Flags().BoolVar(&ontUMISepT, "umi-sep-t", false, "Separate UMI groups with T bases instead of dashes (e.g. AAAATTAAAATTAAAA)")
+	ontTagsCmd.Flags().BoolVar(&ontTrimFlanking, "trim-flanking", false, "Trim VNP/SSP sequences from passing reads before writing")
+	ontTagsCmd.Flags().BoolVar(&ontSenseCorrect, "sense-correct", false, "Correct the read to be in the sense orientation (SSP+/VNP-)")
+	ontTagsCmd.Flags().StringVar(&ontStatusTag, "add-status-tag", "", "Add a SAM-style tag (two-letter name) with pass/fail status to FASTQ comments (e.g. CO)")
 
-	ontPrimersCmd.Flags().BoolVar(&ontFilterVNPSSPPair, "filter-pair", false, "Require paired VNP/SSP (flanking on opposite strands)")
-	ontPrimersCmd.Flags().Float32Var(&ontFilterVNPScore, "filter-vnp-score", -1, "Require minimum VNP alignment score")
-	ontPrimersCmd.Flags().Float32Var(&ontFilterSSPScore, "filter-ssp-score", -1, "Require minimum SSP alignment score")
-	ontPrimersCmd.Flags().Float32Var(&ontFilterBarcodeScore, "filter-barcode-score", -1, "Require minimum barcode alignment score")
+	ontTagsCmd.Flags().BoolVar(&ontFilterVNPSSPPair, "filter-pair", false, "Require paired VNP/SSP (flanking on opposite strands)")
+	ontTagsCmd.Flags().Float32Var(&ontFilterVNPScore, "filter-vnp-score", -1, "Require minimum VNP alignment score")
+	ontTagsCmd.Flags().Float32Var(&ontFilterSSPScore, "filter-ssp-score", -1, "Require minimum SSP alignment score")
+	ontTagsCmd.Flags().Float32Var(&ontFilterBarcodeScore, "filter-barcode-score", -1, "Require minimum barcode alignment score")
 
-	ontPrimersCmd.Flags().IntVar(&ontFilterVNPMatches, "filter-vnp-match", -1, "Require minimum VNP match count")
-	ontPrimersCmd.Flags().IntVar(&ontFilterSSPMatches, "filter-ssp-match", -1, "Require minimum SSP match count")
-	ontPrimersCmd.Flags().IntVar(&ontFilterBarcodeMatches, "filter-barcode-match", -1, "Require minimum barcode match count")
+	ontTagsCmd.Flags().IntVar(&ontFilterVNPMatches, "filter-vnp-match", -1, "Require minimum VNP match count")
+	ontTagsCmd.Flags().IntVar(&ontFilterSSPMatches, "filter-ssp-match", -1, "Require minimum SSP match count")
+	ontTagsCmd.Flags().IntVar(&ontFilterBarcodeMatches, "filter-barcode-match", -1, "Require minimum barcode match count")
 
-	ontPrimersCmd.Flags().StringVar(&ontFilterBarcodes, "filter-allowed-barcodes", "", "Comma-separated list of acceptable barcode names (also enables barcode detection)")
-	ontPrimersCmd.Flags().BoolVar(&ontDetectBC, "detect-barcode", false, "Detect barcode upstream of VNP and include in report (no name filtering)")
+	ontTagsCmd.Flags().StringVar(&ontFilterBarcodes, "filter-allowed-barcodes", "", "Comma-separated list of acceptable barcode names (also enables barcode detection)")
+	ontTagsCmd.Flags().BoolVar(&ontDetectBC, "detect-barcode", false, "Detect barcode upstream of VNP and include in report (no name filtering)")
 
-	ontPrimersCmd.Flags().BoolVar(&ontPrimersUMI, "detect-umi", false, "Use UMI SSP primer (SSPII)")
-	ontPrimersCmd.Flags().IntVarP(&ontThreads, "threads", "t", 0, "Threads to use (default: CPU count)")
+	ontTagsCmd.Flags().BoolVar(&ontPrimersUMI, "detect-umi", false, "Use UMI SSP primer (SSPII)")
+	ontTagsCmd.Flags().IntVarP(&ontThreads, "threads", "t", 0, "Threads to use (default: CPU count)")
 }
