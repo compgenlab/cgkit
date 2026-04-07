@@ -28,8 +28,8 @@ var ontUmiClusterCmd = &cobra.Command{
 		inputFile := args[0]
 
 		skipRefs := []string{}
-		if umiClusterSkipRef != "" {
-			skipRefs = strings.Split(umiClusterSkipRef, ",")
+		if umiClusterSkipRefs != "" {
+			skipRefs = strings.Split(umiClusterSkipRefs, ",")
 		}
 
 		// Open counts writer if requested
@@ -351,12 +351,10 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 			writer.Write(rec)
 			continue
 		}
-		if skipRefs != nil {
-			for i := range skipRefs {
-				if rec.RefName == skipRefs[i] {
-					writer.Write(rec)
-					continue
-				}
+		for i := range skipRefs {
+			if rec.RefName == skipRefs[i] {
+				writer.Write(rec)
+				continue
 			}
 		}
 		addRecord(rec)
@@ -407,11 +405,9 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRef
 		if umiClusterSkipUnmapped && (rec.IsUnmapped() || rec.Cigar == "*") {
 			continue
 		}
-		if skipRefs != nil {
-			for i := range skipRefs {
-				if rec.RefName == skipRefs[i] {
-					continue
-				}
+		for i := range skipRefs {
+			if rec.RefName == skipRefs[i] {
+				continue
 			}
 		}
 		if umi := getUMI(rec); umi != "" {
@@ -462,12 +458,10 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRef
 			writer.Write(rec)
 			continue
 		}
-		if skipRefs != nil {
-			for i := range skipRefs {
-				if rec.RefName == skipRefs[i] {
-					writer.Write(rec)
-					continue
-				}
+		for i := range skipRefs {
+			if rec.RefName == skipRefs[i] {
+				writer.Write(rec)
+				continue
 			}
 		}
 
@@ -820,7 +814,7 @@ var umiClusterEditThreshold int
 var umiClusterCountsFilename string
 var umiClusterBedFilename string
 var umiClusterThreads int
-var umiClusterSkipRef string
+var umiClusterSkipRefs string
 var umiClusterSkipUnmapped bool
 
 var umiVerbose bool
@@ -833,7 +827,7 @@ func init() {
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterWholeGenome, "whole-genome", false, "Process all UMIs as a single group (ignore coordinates)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterNoStrand, "no-strand", false, "Ignore strand when grouping reads (default: group by strand)")
 	ontUmiClusterCmd.Flags().BoolVarP(&umiVerbose, "verbose", "v", false, "Verbose logging")
-	ontUmiClusterCmd.Flags().StringVar(&umiClusterSkipRef, "--ignore-ref", "", "References to ignore - reads will be passed through with original UMI (comma-separated)")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterSkipRefs, "--ignore-refs", "", "References to ignore - reads will be passed through with original UMI (comma-separated)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterSkipUnmapped, "--ignore-unmapped", false, "Ignore unmapped reads (reads will be passed through with original UMI)")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterEditThreshold, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to cluster two UMIs")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterCountsFilename, "umi-counts", "", "Write UMI counts to this file")
