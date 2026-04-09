@@ -1,0 +1,86 @@
+package samcmd
+
+import (
+	"fmt"
+	"io"
+
+	"github.com/compgen-io/cgltk/htsio"
+	"github.com/spf13/cobra"
+)
+
+var samFilterCmd = &cobra.Command{
+	GroupID: "samcmd",
+	Use:     "sam-filter <input.bam> <output.bam>",
+	Short:   "Filter SAM/BAM/CRAM reads and write to a new file",
+	Long:    "Filter reads from a SAM/BAM/CRAM file and write passing reads to a new SAM/BAM/CRAM file.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) < 2 {
+			cmd.Help()
+			return nil
+		}
+
+		opts, err := samFilterReaderFlags.buildReaderOpts()
+		if err != nil {
+			return err
+		}
+
+		inputFile := args[0]
+		outputFile := args[1]
+
+		reader, err := htsio.NewSamReader(inputFile, opts)
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+
+		header, err := reader.Header()
+		if err != nil {
+			return fmt.Errorf("reading header: %w", err)
+		}
+
+		// Determine output format.
+		writerOpts := htsio.SamWriterOptions(header)
+		if samFilterBAM {
+			writerOpts.BAM()
+		} else if samFilterCRAM {
+			writerOpts.CRAM(samFilterCRAMRef)
+		}
+
+		writer, err := htsio.NewSamWriter(outputFile, writerOpts)
+		if err != nil {
+			return err
+		}
+		defer writer.Close()
+
+		for {
+			rec, err := reader.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
+
+			if err := writer.Write(rec); err != nil {
+				return fmt.Errorf("write record: %w", err)
+			}
+		}
+
+		return nil
+	},
+}
+
+var (
+	samFilterBAM          bool
+	samFilterCRAM         bool
+	samFilterCRAMRef      string
+	samFilterReaderFlags  samReaderFlags
+)
+
+func init() {
+	samFilterReaderFlags.register(samFilterCmd)
+
+	samFilterCmd.Flags().BoolVar(&samFilterBAM, "bam", false, "Output in BAM format")
+	samFilterCmd.Flags().BoolVar(&samFilterCRAM, "cram", false, "Output in CRAM format")
+	samFilterCmd.Flags().StringVar(&samFilterCRAMRef, "cram-ref", "", "Reference FASTA for CRAM output")
+}
