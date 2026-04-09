@@ -209,7 +209,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 					}
 				}
 				representative := make(map[string]string)
-				results := clusterUMIs(umiCounts, representative, umiVerbose)
+				results := clusterUMIsParallel(umiCounts, representative, umiVerbose, 1)
 				w.resultCh <- &groupResult{
 					item:           w.item,
 					representative: representative,
@@ -408,14 +408,31 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 		return "+"
 	}
 
-	for {
-		rec, err := reader.Next()
-		if err == io.EOF {
-			break
+	// Read records in a separate goroutine to overlap I/O with grouping.
+	type readResult struct {
+		rec *htsio.SamRecord
+		err error
+	}
+	readCh := make(chan readResult, 256)
+	go func() {
+		defer close(readCh)
+		for {
+			rec, err := reader.Next()
+			if err == io.EOF {
+				return
+			}
+			readCh <- readResult{rec, err}
+			if err != nil {
+				return
+			}
 		}
-		if err != nil {
-			return err
+	}()
+
+	for rr := range readCh {
+		if rr.err != nil {
+			return rr.err
 		}
+		rec := rr.rec
 
 		if umiClusterSkipUnmapped && (rec.IsUnmapped() || rec.Cigar == "*") {
 			writer.Write(rec)

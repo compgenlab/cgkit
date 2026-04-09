@@ -26,11 +26,11 @@ type umiClusterRecord struct {
 
 // matchesPosition returns true if a read at (start, end) on the given strand
 // overlaps this cluster record within the gap tolerance.
-func (r *umiClusterRecord) matchesPosition(rname, strand string, readStart, readEnd, gap int, matchOneEnd bool) bool {
+func (r *umiClusterRecord) matchesPosition(rname, strand string, readStart, readEnd, gap int, matchOneEnd, noStrand bool) bool {
 	if rname != r.chrom {
 		return false
 	}
-	if strand != r.strand {
+	if !noStrand && strand != r.strand {
 		return false
 	}
 
@@ -233,7 +233,7 @@ Both files must be sorted by coordinate.`,
 					break
 				}
 
-				if !r.matchesPosition(rec.RefName, strand, readStart, readEnd, umiLookupOverlap, umiLookupMatchOneEnd) {
+				if !r.matchesPosition(rec.RefName, strand, readStart, readEnd, umiLookupOverlap, umiLookupMatchOneEnd, umiLookupNoStrand) {
 					continue
 				}
 				if r.matchesUMI(umi, umiLookupEditDist) {
@@ -264,6 +264,7 @@ var (
 	umiLookupOverlap     int
 	umiLookupEditDist    int
 	umiLookupMatchOneEnd bool
+	umiLookupNoStrand    bool
 )
 
 func init() {
@@ -272,4 +273,5 @@ func init() {
 	ontUmiLookupCmd.Flags().IntVar(&umiLookupOverlap, "overlap", 50, "Maximum gap (bp) between read ends to consider a positional match")
 	ontUmiLookupCmd.Flags().IntVar(&umiLookupEditDist, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to match a UMI")
 	ontUmiLookupCmd.Flags().BoolVar(&umiLookupMatchOneEnd, "match-one-end", false, "Match if EITHER 5' or 3' ends overlap (default: require BOTH)")
+	ontUmiLookupCmd.Flags().BoolVar(&umiLookupNoStrand, "no-strand", false, "Ignore strand when matching positions")
 }
