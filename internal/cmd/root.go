@@ -49,6 +49,10 @@ func init() {
 	rootCmd.SilenceUsage = true
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
+	// Add version footer to all help output.
+	defaultHelp := rootCmd.HelpTemplate()
+	rootCmd.SetHelpTemplate(defaultHelp + "\ncgltk " + versionString() + "\n")
+
 	ontcmd.InitCmd(rootCmd)
 	fastacmd.InitCmd(rootCmd)
 	fastqcmd.InitCmd(rootCmd)
