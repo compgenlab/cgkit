@@ -219,6 +219,12 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 		}()
 	}
 
+	// Build chrom ordering from header for counts output sorting.
+	chromOrder := make(map[string]int)
+	for i, ref := range header.References() {
+		chromOrder[ref.Name] = i
+	}
+
 	// Writer goroutine: processes results in submission order.
 	writerErrCh := make(chan error, 1)
 	go func() {
@@ -226,6 +232,10 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 		totalReads := 0
 		totalChanged := 0
 		nextMI := 1
+		var cb *countsBuffer
+		if countsWriter != nil {
+			cb = &countsBuffer{w: countsWriter}
+		}
 
 		for resultCh := range orderCh {
 			gr := <-resultCh
@@ -248,7 +258,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 			// Assign a unique MI value per UMI-cluster (per representative).
 			// A read-overlap-group may contain multiple UMI-clusters.
 			repToMI := make(map[string]string)
-			if umiClusterMI || countsWriter != nil {
+			if umiClusterMI || cb != nil {
 				for _, r := range gr.results {
 					if _, ok := repToMI[r.representative]; !ok {
 						repToMI[r.representative] = fmt.Sprintf("mi_%09d", nextMI)
@@ -257,9 +267,13 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 				}
 			}
 
-			// Write per-UMI-cluster summary to counts file.
-			if countsWriter != nil && len(gr.results) > 0 {
-				writeUMIClusterCounts(countsWriter, &gr.item, gr.results, repToMI)
+			// Buffer counts lines; flush those safely behind the current position.
+			if cb != nil && len(gr.results) > 0 {
+				curChromIdx := chromOrder[gr.item.rname]
+				if err := cb.flushBefore(curChromIdx, gr.item.minStart); err != nil {
+					writeErr = err
+				}
+				cb.add(buildUMIClusterCounts(&gr.item, gr.results, repToMI, chromOrder))
 			}
 
 			for _, rec := range gr.item.recs {
@@ -279,6 +293,13 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 				if err := writer.Write(rec); err != nil {
 					writeErr = err
 				}
+			}
+		}
+
+		// Flush remaining counts lines.
+		if cb != nil {
+			if err := cb.flushAll(); err != nil && writeErr == nil {
+				writeErr = err
 			}
 		}
 
@@ -604,15 +625,89 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 	return writer.Close()
 }
 
-// writeUMIClusterCounts writes one line per UMI-cluster (per MI) to the counts file:
-// chrom, start, end, MI, strand, representative_umi, num_reads, num_unique_umis, max_edit_dist
-func writeUMIClusterCounts(w io.Writer, item *groupWorkItem, results []umiClusterResult, repToMI map[string]string) {
+// countsLine holds one buffered line of counts output for sorting.
+type countsLine struct {
+	chromIdx int // index into header reference order
+	start    int
+	end      int
+	line     string
+}
+
+// countsBuffer accumulates counts lines and flushes them in sorted order
+// as the read position advances. Only lines that are guaranteed to sort
+// before any future output are flushed, keeping the buffer small.
+type countsBuffer struct {
+	lines []countsLine
+	w     io.Writer
+}
+
+// add appends new counts lines to the buffer.
+func (cb *countsBuffer) add(lines []countsLine) {
+	cb.lines = append(cb.lines, lines...)
+}
+
+// flushBefore sorts the buffer and writes all lines guaranteed to be before
+// (chromIdx, start) in coordinate order. A line is safe to flush when its
+// chromIdx is less than the current, or its end is before the current start
+// on the same chromosome (since future lines will have start >= current start).
+func (cb *countsBuffer) flushBefore(chromIdx, start int) error {
+	if len(cb.lines) == 0 {
+		return nil
+	}
+	cb.sortLines()
+
+	i := 0
+	for i < len(cb.lines) {
+		l := &cb.lines[i]
+		if l.chromIdx < chromIdx || (l.chromIdx == chromIdx && l.end < start) {
+			if _, err := fmt.Fprintln(cb.w, l.line); err != nil {
+				return err
+			}
+			i++
+		} else {
+			break
+		}
+	}
+	// Compact: shift remaining lines to front.
+	cb.lines = append(cb.lines[:0], cb.lines[i:]...)
+	return nil
+}
+
+// flushAll sorts and writes all remaining buffered lines.
+func (cb *countsBuffer) flushAll() error {
+	if len(cb.lines) == 0 {
+		return nil
+	}
+	cb.sortLines()
+	for _, l := range cb.lines {
+		if _, err := fmt.Fprintln(cb.w, l.line); err != nil {
+			return err
+		}
+	}
+	cb.lines = cb.lines[:0]
+	return nil
+}
+
+func (cb *countsBuffer) sortLines() {
+	sort.Slice(cb.lines, func(i, j int) bool {
+		if cb.lines[i].chromIdx != cb.lines[j].chromIdx {
+			return cb.lines[i].chromIdx < cb.lines[j].chromIdx
+		}
+		if cb.lines[i].start != cb.lines[j].start {
+			return cb.lines[i].start < cb.lines[j].start
+		}
+		return cb.lines[i].end < cb.lines[j].end
+	})
+}
+
+// buildUMIClusterCounts returns counts lines for one read-overlap-group.
+func buildUMIClusterCounts(item *groupWorkItem, results []umiClusterResult, repToMI map[string]string, chromOrder map[string]int) []countsLine {
 	// Group results by representative UMI.
 	type clusterInfo struct {
 		mi             string
 		representative string
-		numReads       int // total reads across all UMIs in this cluster
-		numUniqueUMIs  int // number of distinct original UMIs
+		numReads       int      // total reads across all UMIs in this cluster
+		umis           []string // all distinct original UMIs in this cluster
 		maxEditDist    int
 	}
 	clusters := make(map[string]*clusterInfo)
@@ -626,17 +721,27 @@ func writeUMIClusterCounts(w io.Writer, item *groupWorkItem, results []umiCluste
 			clusters[r.representative] = ci
 		}
 		ci.numReads += r.count
-		ci.numUniqueUMIs++
+		ci.umis = append(ci.umis, r.umi)
 		if r.maxIntraClustDist > ci.maxEditDist {
 			ci.maxEditDist = r.maxIntraClustDist
 		}
 	}
 
+	cidx := chromOrder[item.rname]
+	var lines []countsLine
 	for _, ci := range clusters {
-		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\n",
+		line := fmt.Sprintf("%s\t%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\t%s",
 			item.rname, item.minStart, item.maxEnd, ci.mi, item.strand,
-			ci.representative, ci.numReads, ci.numUniqueUMIs, ci.maxEditDist)
+			ci.representative, ci.numReads, len(ci.umis), ci.maxEditDist,
+			strings.Join(ci.umis, ","))
+		lines = append(lines, countsLine{
+			chromIdx: cidx,
+			start:    item.minStart,
+			end:      item.maxEnd,
+			line:     line,
+		})
 	}
+	return lines
 }
 
 func getUMI(rec *htsio.SamRecord) string {
