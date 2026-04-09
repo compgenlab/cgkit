@@ -37,7 +37,7 @@ var ontUmiClusterCmd = &cobra.Command{
 		var closeCounts func() error
 		if umiClusterCountsFilename != "" {
 			var err error
-			countsWriter, closeCounts, err = openWriter(umiClusterCountsFilename)
+			countsWriter, closeCounts, err = openWriter(umiClusterCountsFilename, true)
 			if err != nil {
 				return fmt.Errorf("opening umi-counts: %w", err)
 			}
