@@ -63,11 +63,11 @@ func TestClusterUMIs_Identical(t *testing.T) {
 	umiCounts := map[string]int{
 		"AAAA/CCCC/GGGG/AAAA": 10,
 	}
-	consensus := make(map[string]string)
-	clusterUMIs(umiCounts, consensus, false)
+	representative := make(map[string]string)
+	clusterUMIs(umiCounts, representative, false)
 
-	if got := consensus["AAAA/CCCC/GGGG/AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
-		t.Errorf("consensus = %q, want self", got)
+	if got := representative["AAAA/CCCC/GGGG/AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
+		t.Errorf("representative = %q, want self", got)
 	}
 }
 
@@ -76,16 +76,16 @@ func TestClusterUMIs_SimilarMerge(t *testing.T) {
 		"AAAA/CCCC/GGGG/AAAA": 10,
 		"AAAA/CCCC/GGGG/AAAT": 3,
 	}
-	consensus := make(map[string]string)
+	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	results := clusterUMIs(umiCounts, consensus, false)
+	results := clusterUMIs(umiCounts, representative, false)
 
 	// Both cluster together; most common UMI (count=10) is picked as representative
-	if got := consensus["AAAA/CCCC/GGGG/AAAT"]; got != "AAAA/CCCC/GGGG/AAAA" {
-		t.Errorf("consensus of variant = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
+	if got := representative["AAAA/CCCC/GGGG/AAAT"]; got != "AAAA/CCCC/GGGG/AAAA" {
+		t.Errorf("representative of variant = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
 	}
-	if got := consensus["AAAA/CCCC/GGGG/AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
-		t.Errorf("consensus of anchor = %q, want self", got)
+	if got := representative["AAAA/CCCC/GGGG/AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
+		t.Errorf("representative of anchor = %q, want self", got)
 	}
 
 	// maxIntraClustDist should be 1 (one mismatch between the two UMIs)
@@ -101,11 +101,11 @@ func TestClusterUMIs_DissimilarNoMerge(t *testing.T) {
 		"AAAA/AAAA/AAAA/AAAA": 10,
 		"CCCC/CCCC/CCCC/CCCC": 5,
 	}
-	consensus := make(map[string]string)
+	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	clusterUMIs(umiCounts, consensus, false)
+	clusterUMIs(umiCounts, representative, false)
 
-	if got := consensus["CCCC/CCCC/CCCC/CCCC"]; got != "CCCC/CCCC/CCCC/CCCC" {
+	if got := representative["CCCC/CCCC/CCCC/CCCC"]; got != "CCCC/CCCC/CCCC/CCCC" {
 		t.Errorf("dissimilar UMI should stay self, got %q", got)
 	}
 }
@@ -115,13 +115,13 @@ func TestClusterUMIs_TTSeparator(t *testing.T) {
 		"AAAATTCCCCTTGGGGTTAAAA": 10,
 		"AAAATTCCCCTTGGGGTTAAAT": 3,
 	}
-	consensus := make(map[string]string)
+	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	clusterUMIs(umiCounts, consensus, false)
+	clusterUMIs(umiCounts, representative, false)
 
 	// Consensus is output in "/" form (normalized)
-	if got := consensus["AAAATTCCCCTTGGGGTTAAAT"]; got != "AAAA/CCCC/GGGG/AAAA" {
-		t.Errorf("consensus of TT variant = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
+	if got := representative["AAAATTCCCCTTGGGGTTAAAT"]; got != "AAAA/CCCC/GGGG/AAAA" {
+		t.Errorf("representative of TT variant = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
 	}
 }
 
@@ -131,12 +131,12 @@ func TestClusterUMIs_MissedSeparator(t *testing.T) {
 		"AAAA/CCCC/GGGG/AAAA": 10,
 		"AAAA-CCCCGGGG-AAAA":  3, // missing separator between CCCC and GGGG
 	}
-	consensus := make(map[string]string)
+	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	clusterUMIs(umiCounts, consensus, false)
+	clusterUMIs(umiCounts, representative, false)
 
-	if got := consensus["AAAA-CCCCGGGG-AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
-		t.Errorf("missed-separator UMI consensus = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
+	if got := representative["AAAA-CCCCGGGG-AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
+		t.Errorf("missed-separator UMI representative = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
 	}
 }
 
@@ -146,12 +146,12 @@ func TestClusterUMIs_ExtraBase(t *testing.T) {
 		"AAAA/CCCC/GGGG/AAAA":  10,
 		"GAAAA/CCCC/GGGG/AAAA": 3,
 	}
-	consensus := make(map[string]string)
+	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	clusterUMIs(umiCounts, consensus, false)
+	clusterUMIs(umiCounts, representative, false)
 
-	if got := consensus["GAAAA/CCCC/GGGG/AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
-		t.Errorf("extra-base UMI consensus = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
+	if got := representative["GAAAA/CCCC/GGGG/AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
+		t.Errorf("extra-base UMI representative = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
 	}
 }
 
@@ -170,29 +170,29 @@ func TestClusterUMIs_SingleLinkageChaining(t *testing.T) {
 		"AAAA-CCCC-GGGG-AATT": 5, // dist to A = 2, dist to C = 2
 		"AAAA-CCCC-GGGG-TTTT": 5, // dist to A = 4 (> threshold), dist to B = 2
 	}
-	consensus := make(map[string]string)
+	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	clusterUMIs(umiCounts, consensus, false)
+	clusterUMIs(umiCounts, representative, false)
 
 	// All three should be in the same cluster (connected via B)
-	ca := consensus["AAAA/CCCC/GGGG/AAAA"]
-	cb := consensus["AAAA-CCCC-GGGG-AATT"]
-	cc := consensus["AAAA-CCCC-GGGG-TTTT"]
+	ca := representative["AAAA/CCCC/GGGG/AAAA"]
+	cb := representative["AAAA-CCCC-GGGG-AATT"]
+	cc := representative["AAAA-CCCC-GGGG-TTTT"]
 	if ca != cb || cb != cc {
 		t.Errorf("single-linkage chaining failed: A=%q B=%q C=%q, all should be equal", ca, cb, cc)
 	}
 }
 
-func TestComputeConsensusUMI_MostCommon(t *testing.T) {
+func TestComputeRepresentativeUMI_MostCommon(t *testing.T) {
 	// Highest count UMI is picked as representative
 	members := []umiCount{
 		{"AAAA/CCCC/GGGG/AAAA", 10},
 		{"AAAA/CCCC/GGGG/AAAT", 3},
 		{"AAAA/CCCC/GGGG/AAAT", 2},
 	}
-	got := computeConsensusUMI(members)
+	got := computeRepresentativeUMI(members)
 	if got != "AAAA/CCCC/GGGG/AAAA" {
-		t.Errorf("computeConsensusUMI = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
+		t.Errorf("computeRepresentativeUMI = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
 	}
 
 	// When the other UMI has more reads, it wins
@@ -200,9 +200,9 @@ func TestComputeConsensusUMI_MostCommon(t *testing.T) {
 		{"AAAA/CCCC/GGGG/AAAA", 3},
 		{"AAAA/CCCC/GGGG/AAAT", 8},
 	}
-	got2 := computeConsensusUMI(members2)
+	got2 := computeRepresentativeUMI(members2)
 	if got2 != "AAAA/CCCC/GGGG/AAAT" {
-		t.Errorf("computeConsensusUMI = %q, want %q", got2, "AAAA/CCCC/GGGG/AAAT")
+		t.Errorf("computeRepresentativeUMI = %q, want %q", got2, "AAAA/CCCC/GGGG/AAAT")
 	}
 
 	// Tie broken by longer normalized length
@@ -210,9 +210,9 @@ func TestComputeConsensusUMI_MostCommon(t *testing.T) {
 		{"AAAA/CCCC/GGGG/AAAA", 5},
 		{"GAAAA/CCCC/GGGG/AAAA", 5},
 	}
-	got3 := computeConsensusUMI(members3)
+	got3 := computeRepresentativeUMI(members3)
 	if got3 != "GAAAA/CCCC/GGGG/AAAA" {
-		t.Errorf("computeConsensusUMI tie = %q, want %q", got3, "GAAAA/CCCC/GGGG/AAAA")
+		t.Errorf("computeRepresentativeUMI tie = %q, want %q", got3, "GAAAA/CCCC/GGGG/AAAA")
 	}
 }
 
