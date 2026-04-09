@@ -49,7 +49,7 @@ var ontUmiClusterCmd = &cobra.Command{
 		}
 
 		if umiClusterWholeGenome {
-			return umiClusterWholeGenomeMode(inputFile, countsWriter, skipRefs)
+			return umiClusterWholeGenomeMode(inputFile, skipRefs)
 		}
 		return umiClusterOverlapMode(inputFile, countsWriter, skipRefs)
 	},
@@ -118,13 +118,14 @@ func (uf *unionFind) union(x, y int) (newRoot, oldRoot int, merged bool) {
 }
 
 // groupWorkItem is sent to worker goroutines for parallel UMI clustering.
+// It represents a read-overlap-group: reads with similar 5'/3' ends on the
+// same strand. Within each group, UMIs are clustered by edit distance.
 type groupWorkItem struct {
-	recs        []*htsio.SamRecord
-	rname       string
-	strand      string
-	minStart    int
-	maxEnd      int
-	componentID int // sequential ID assigned when the component is submitted
+	recs     []*htsio.SamRecord
+	rname    string
+	strand   string
+	minStart int
+	maxEnd   int
 }
 
 // groupResult is returned by workers after UMI clustering.
@@ -224,6 +225,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 		var writeErr error
 		totalReads := 0
 		totalChanged := 0
+		nextMI := 1
 
 		for resultCh := range orderCh {
 			gr := <-resultCh
@@ -232,15 +234,6 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 			}
 			if gr == nil {
 				continue
-			}
-
-			// Build per-UMI result lookup for counts output.
-			var umiResults map[string]*umiClusterResult
-			if countsWriter != nil && len(gr.results) > 0 {
-				umiResults = make(map[string]*umiClusterResult, len(gr.results))
-				for i := range gr.results {
-					umiResults[gr.results[i].umi] = &gr.results[i]
-				}
 			}
 
 			representativeCount := countRepresentative(gr.results)
@@ -252,21 +245,36 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 				gr.item.rname, gr.item.minStart, gr.item.maxEnd, strandLabel,
 				len(gr.item.recs), len(gr.results), representativeCount)
 
+			// Assign a unique MI value per UMI-cluster (per representative).
+			// A read-overlap-group may contain multiple UMI-clusters.
+			repToMI := make(map[string]string)
+			if umiClusterMI || countsWriter != nil {
+				for _, r := range gr.results {
+					if _, ok := repToMI[r.representative]; !ok {
+						repToMI[r.representative] = fmt.Sprintf("mi_%09d", nextMI)
+						nextMI++
+					}
+				}
+			}
+
+			// Write per-UMI-cluster summary to counts file.
+			if countsWriter != nil && len(gr.results) > 0 {
+				writeUMIClusterCounts(countsWriter, &gr.item, gr.results, repToMI)
+			}
+
 			for _, rec := range gr.item.recs {
 				if updateRecordUMI(rec, gr.representative) {
 					totalChanged++
 				}
 				if umiClusterMI {
-					rec.Tags["MI"] = htsio.SamTag{
-						Type:  'Z',
-						Value: fmt.Sprintf("mi_%09d", gr.item.componentID),
+					umi := getUMI(rec)
+					if rep, ok := gr.representative[umi]; ok {
+						if mi, ok := repToMI[rep]; ok {
+							rec.Tags["MI"] = htsio.SamTag{Type: 'Z', Value: mi}
+						}
 					}
 				}
 				totalReads++
-
-				if umiResults != nil {
-					writeReadCounts(countsWriter, rec, umiResults)
-				}
 
 				if err := writer.Write(rec); err != nil {
 					writeErr = err
@@ -284,7 +292,6 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 	activeCount := make(map[int]int)    // root -> count of un-ejected reads
 	componentReads := make(map[int][]*bufferedRead) // root -> ejected reads
 	globalID := 0
-	nextComponentID := 1
 	lastRname := ""
 
 	submitComponent := func(root int) {
@@ -309,14 +316,12 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 			}
 		}
 		item := groupWorkItem{
-			recs:        recs,
-			rname:       rname,
-			strand:      strand,
-			minStart:    minStart,
-			maxEnd:      maxEnd,
-			componentID: nextComponentID,
+			recs:     recs,
+			rname:    rname,
+			strand:   strand,
+			minStart: minStart,
+			maxEnd:   maxEnd,
 		}
-		nextComponentID++
 		resultCh := make(chan *groupResult, 1)
 		orderCh <- resultCh
 		workCh <- workItemWithCh{item: item, resultCh: resultCh}
@@ -412,12 +417,8 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 			resultCh := make(chan *groupResult, 1)
 			orderCh <- resultCh
 			resultCh <- &groupResult{
-				item: groupWorkItem{
-					recs:        []*htsio.SamRecord{rec},
-					componentID: nextComponentID,
-				},
+				item: groupWorkItem{recs: []*htsio.SamRecord{rec}},
 			}
-			nextComponentID++
 			continue
 		}
 
@@ -503,7 +504,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 
 // umiClusterWholeGenomeMode uses two passes over the entire file:
 // pass 1 collects all UMI counts, pass 2 rewrites with representative UMIs.
-func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRefs []string) error {
+func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 	// Pass 1: collect all UMIs
 	reader, err := htsio.NewSamReader(inputFile)
 	if err != nil {
@@ -544,7 +545,6 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRef
 	// Cluster
 	globalRepresentative := make(map[string]string)
 	results := clusterUMIs(umiCounts, globalRepresentative, umiVerbose)
-	writeGroupCounts(countsWriter, results, "", 0, 0, "", true)
 	representativeCount := countRepresentative(results)
 	fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d representative\n", len(umiCounts), representativeCount)
 
@@ -604,48 +604,39 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRef
 	return writer.Close()
 }
 
-func writeGroupCounts(w io.Writer, results []umiClusterResult, rname string, start0, end0 int, strand string, wholeGenome bool) {
-	if w == nil || len(results) == 0 {
-		return
+// writeUMIClusterCounts writes one line per UMI-cluster (per MI) to the counts file:
+// chrom, start, end, MI, strand, representative_umi, num_reads, num_unique_umis, max_edit_dist
+func writeUMIClusterCounts(w io.Writer, item *groupWorkItem, results []umiClusterResult, repToMI map[string]string) {
+	// Group results by representative UMI.
+	type clusterInfo struct {
+		mi             string
+		representative string
+		numReads       int // total reads across all UMIs in this cluster
+		numUniqueUMIs  int // number of distinct original UMIs
+		maxEditDist    int
 	}
-
-	// Sum counts per representative UMI
-	representativeTotals := make(map[string]int)
+	clusters := make(map[string]*clusterInfo)
 	for _, r := range results {
-		representativeTotals[r.representative] += r.count
-	}
-
-	for _, r := range results {
-		if !wholeGenome {
-			fmt.Fprintf(w, "%s\t%d\t%d\t%s\t", rname, start0, end0, strand)
+		ci, ok := clusters[r.representative]
+		if !ok {
+			ci = &clusterInfo{
+				mi:             repToMI[r.representative],
+				representative: r.representative,
+			}
+			clusters[r.representative] = ci
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\n", r.umi, r.representative, r.count, representativeTotals[r.representative], r.editDist, r.maxIntraClustDist)
+		ci.numReads += r.count
+		ci.numUniqueUMIs++
+		if r.maxIntraClustDist > ci.maxEditDist {
+			ci.maxEditDist = r.maxIntraClustDist
+		}
 	}
-}
 
-// writeReadCounts writes a per-read line to the counts file:
-// rname, start, end, strand, umi, representative, editDist, maxIntraClustDist
-func writeReadCounts(w io.Writer, rec *htsio.SamRecord, umiResults map[string]*umiClusterResult) {
-	umi := getUMI(rec)
-	if umi == "" {
-		return
+	for _, ci := range clusters {
+		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\n",
+			item.rname, item.minStart, item.maxEnd, ci.mi, item.strand,
+			ci.representative, ci.numReads, ci.numUniqueUMIs, ci.maxEditDist)
 	}
-	r, ok := umiResults[umi]
-	if !ok {
-		return
-	}
-	readStart := rec.Pos - 1
-	readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
-	strand := "+"
-	if rec.IsReverse() {
-		strand = "-"
-	}
-	if umiClusterNoStrand {
-		strand = "."
-	}
-	fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\t%d\t%d\n",
-		rec.RefName, readStart, readEnd, strand,
-		r.umi, r.representative, r.editDist, r.maxIntraClustDist)
 }
 
 func getUMI(rec *htsio.SamRecord) string {
@@ -982,7 +973,7 @@ func init() {
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterSkipRefs, "ignore-refs", "", "References to ignore (reads will be passed through with original UMI) (comma-separated)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterSkipUnmapped, "ignore-unmapped", false, "Ignore unmapped reads (reads will be passed through with original UMI)")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterEditThreshold, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to cluster two UMIs")
-	ontUmiClusterCmd.Flags().StringVar(&umiClusterCountsFilename, "umi-counts", "", "Write UMI counts to this file")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterCountsFilename, "umi-counts", "", "Write per-component UMI summary to this file")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMI, "mi", false, "Add MI tag with molecule group ID to output reads")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchOneEnd, "match-one-end", false, "Match reads if EITHER 5' or 3' ends are within gap (default: require BOTH ends)")
 	ontUmiClusterCmd.Flags().IntVarP(&umiClusterThreads, "threads", "t", 1, "Threads for UMI clustering")
