@@ -1,14 +1,13 @@
 package fastacmd
 
 import (
-	"fmt"
 	"io"
+	"os"
 
 	"github.com/compgen-io/cgltk/seqio"
 	"github.com/spf13/cobra"
 )
 
-// fastagcCmd implements the initial counting entrypoint.
 var fastaWrapCmd = &cobra.Command{
 	GroupID: "fastacmd",
 	Use:     "fasta-wrap <input.fasta>",
@@ -24,6 +23,13 @@ var fastaWrapCmd = &cobra.Command{
 		}
 		defer reader.Close()
 
+		wrap := wrapWidth
+		if wrap < 1 {
+			wrap = 0
+		}
+		writer := seqio.NewFastaWriter(os.Stdout, seqio.NewFastaWriterOpts().Wrap(wrap))
+		defer writer.Close()
+
 		for rec, err := reader.NextSeq(); ; rec, err = reader.NextSeq() {
 			if err != nil {
 				if err != io.EOF {
@@ -35,36 +41,8 @@ var fastaWrapCmd = &cobra.Command{
 				break
 			}
 
-			fmt.Printf(">%s", rec.Name())
-
-			if rec.Comment() != "" {
-				fmt.Printf(" %s\n", rec.Comment())
-			} else {
-				fmt.Printf("\n")
-			}
-			if wrapWidth < 1 {
-				// if wrapWidth is negative, just print the whole sequence at once
-				for chunk := range rec.Chunks(1024) {
-					fmt.Print(chunk.Seq())
-				}
-				fmt.Print('\n')
-				continue
-			} else {
-				seq := ""
-				for chunk := range rec.Chunks(wrapWidth) {
-					seq += chunk.Seq()
-					for len(seq) >= wrapWidth {
-						fmt.Printf("%s\n", seq[:wrapWidth])
-						seq = seq[wrapWidth:]
-					}
-				}
-				for len(seq) >= wrapWidth {
-					fmt.Printf("%s\n", seq[:wrapWidth])
-					seq = seq[wrapWidth:]
-				}
-				if len(seq) > 0 {
-					fmt.Printf("%s\n", seq)
-				}
+			if err := writer.WriteSeq(rec); err != nil {
+				return err
 			}
 		}
 		return nil
