@@ -12,19 +12,32 @@ import (
 
 	"github.com/compgen-io/cgltk/align"
 	"github.com/compgen-io/cgltk/seqio"
+	"github.com/compgen-io/cgltk/tabix"
 	"github.com/spf13/cobra"
 )
 
 // openWriter opens a file for writing (or returns os.Stdout if filename is empty).
-// If the filename ends in ".gz", the output is gzip-compressed.
+// If the filename ends in ".gz", the output is gzip-compressed. If preferBGZip
+// is true, files ending in ".gz" or ".bgz" use bgzip (blocked gzip) compression
+// instead, which is compatible with tabix indexing.
 // The returned closer must be called when done.
-func openWriter(filename string) (io.Writer, func() error, error) {
+func openWriter(filename string, preferBGZip ...bool) (io.Writer, func() error, error) {
 	if filename == "" {
 		return nil, func() error { return nil }, nil
 	}
 	if filename == "-" {
 		return os.Stdout, func() error { return nil }, nil
 	}
+
+	useBGZip := len(preferBGZip) > 0 && preferBGZip[0]
+	if useBGZip && (strings.HasSuffix(filename, ".gz") || strings.HasSuffix(filename, ".bgz")) {
+		bgz, err := tabix.NewBGZipFile(filename)
+		if err != nil {
+			return nil, nil, err
+		}
+		return bgz, bgz.Close, nil
+	}
+
 	f, err := os.Create(filename)
 	if err != nil {
 		return nil, nil, err
