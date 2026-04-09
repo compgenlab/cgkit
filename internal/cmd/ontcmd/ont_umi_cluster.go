@@ -184,9 +184,9 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 	})
 
 	// Open writer — samtools sort handles merging unsorted chromosome output.
-	writerThreads := 2
+	writerThreads := 1
 	if umiClusterThreads > 4 {
-		writerThreads = 4
+		writerThreads = 2
 	}
 	wopts := htsio.SamWriterOptions(header).BAM().SortCoord().Threads(writerThreads)
 	writer, err := htsio.NewSamWriter(umiClusterOutput, wopts)
