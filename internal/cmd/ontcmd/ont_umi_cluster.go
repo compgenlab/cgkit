@@ -1012,12 +1012,30 @@ func clusterUMIsParallel(umiCounts map[string]int, globalRepresentative map[stri
 		root := find(i)
 		compMembers[root] = append(compMembers[root], umis[i])
 	}
+	// Compute max pairwise edit distance within each component.
 	compMaxDist := make(map[int]int)
-	for _, e := range edges {
-		root := find(e.i)
-		if e.dist > compMaxDist[root] {
-			compMaxDist[root] = e.dist
+	for root, compMems := range compMembers {
+		if len(compMems) <= 1 {
+			continue
 		}
+		// Collect indices into the normalized array for this component.
+		var indices []int
+		for i := range umis {
+			if find(i) == root {
+				indices = append(indices, i)
+			}
+		}
+		var buf levBuf
+		maxDist := 0
+		for a := 0; a < len(indices); a++ {
+			for b := a + 1; b < len(indices); b++ {
+				d := levDist(normalized[indices[a]], normalized[indices[b]], &buf)
+				if d > maxDist {
+					maxDist = d
+				}
+			}
+		}
+		compMaxDist[root] = maxDist
 	}
 
 	// Compute representative per component (most common UMI).
