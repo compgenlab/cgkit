@@ -130,7 +130,7 @@ type groupWorkItem struct {
 // groupResult is returned by workers after UMI clustering.
 type groupResult struct {
 	item      groupWorkItem
-	consensus map[string]string
+	representative map[string]string
 	results   []umiClusterResult
 }
 
@@ -207,11 +207,11 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 						umiCounts[umi]++
 					}
 				}
-				consensus := make(map[string]string)
-				results := clusterUMIs(umiCounts, consensus, umiVerbose)
+				representative := make(map[string]string)
+				results := clusterUMIs(umiCounts, representative, umiVerbose)
 				w.resultCh <- &groupResult{
-					item:      w.item,
-					consensus: consensus,
+					item:           w.item,
+					representative: representative,
 					results:   results,
 				}
 			}
@@ -243,17 +243,17 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 				}
 			}
 
-			consensusCount := countConsensus(gr.results)
+			representativeCount := countRepresentative(gr.results)
 			strandLabel := ""
 			if !umiClusterNoStrand {
 				strandLabel = "(" + gr.item.strand + ") "
 			}
-			fmt.Fprintf(os.Stderr, "%s:%d-%d: %s%d reads, %d unique UMIs -> %d consensus\n",
+			fmt.Fprintf(os.Stderr, "%s:%d-%d: %s%d reads, %d unique UMIs -> %d representative\n",
 				gr.item.rname, gr.item.minStart, gr.item.maxEnd, strandLabel,
-				len(gr.item.recs), len(gr.results), consensusCount)
+				len(gr.item.recs), len(gr.results), representativeCount)
 
 			for _, rec := range gr.item.recs {
-				if updateRecordUMI(rec, gr.consensus) {
+				if updateRecordUMI(rec, gr.representative) {
 					totalChanged++
 				}
 				if umiClusterMI {
@@ -502,7 +502,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 }
 
 // umiClusterWholeGenomeMode uses two passes over the entire file:
-// pass 1 collects all UMI counts, pass 2 rewrites with consensus UMIs.
+// pass 1 collects all UMI counts, pass 2 rewrites with representative UMIs.
 func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRefs []string) error {
 	// Pass 1: collect all UMIs
 	reader, err := htsio.NewSamReader(inputFile)
@@ -542,11 +542,11 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRef
 	reader.Close()
 
 	// Cluster
-	globalConsensus := make(map[string]string)
-	results := clusterUMIs(umiCounts, globalConsensus, umiVerbose)
+	globalRepresentative := make(map[string]string)
+	results := clusterUMIs(umiCounts, globalRepresentative, umiVerbose)
 	writeGroupCounts(countsWriter, results, "", 0, 0, "", true)
-	consensusCount := countConsensus(results)
-	fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d consensus\n", len(umiCounts), consensusCount)
+	representativeCount := countRepresentative(results)
+	fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d representative\n", len(umiCounts), representativeCount)
 
 	// Pass 2: rewrite BAM
 	addUMIClusterPGLine(header)
@@ -590,7 +590,7 @@ func umiClusterWholeGenomeMode(inputFile string, countsWriter io.Writer, skipRef
 			}
 		}
 
-		if updateRecordUMI(rec, globalConsensus) {
+		if updateRecordUMI(rec, globalRepresentative) {
 			changed++
 		}
 
@@ -609,22 +609,22 @@ func writeGroupCounts(w io.Writer, results []umiClusterResult, rname string, sta
 		return
 	}
 
-	// Sum counts per consensus UMI
-	consensusTotals := make(map[string]int)
+	// Sum counts per representative UMI
+	representativeTotals := make(map[string]int)
 	for _, r := range results {
-		consensusTotals[r.consensus] += r.count
+		representativeTotals[r.representative] += r.count
 	}
 
 	for _, r := range results {
 		if !wholeGenome {
 			fmt.Fprintf(w, "%s\t%d\t%d\t%s\t", rname, start0, end0, strand)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\n", r.umi, r.consensus, r.count, consensusTotals[r.consensus], r.editDist, r.maxIntraClustDist)
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\n", r.umi, r.representative, r.count, representativeTotals[r.representative], r.editDist, r.maxIntraClustDist)
 	}
 }
 
 // writeReadCounts writes a per-read line to the counts file:
-// rname, start, end, strand, umi, consensus, editDist, maxIntraClustDist
+// rname, start, end, strand, umi, representative, editDist, maxIntraClustDist
 func writeReadCounts(w io.Writer, rec *htsio.SamRecord, umiResults map[string]*umiClusterResult) {
 	umi := getUMI(rec)
 	if umi == "" {
@@ -645,7 +645,7 @@ func writeReadCounts(w io.Writer, rec *htsio.SamRecord, umiResults map[string]*u
 	}
 	fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\t%d\t%d\n",
 		rec.RefName, readStart, readEnd, strand,
-		r.umi, r.consensus, r.editDist, r.maxIntraClustDist)
+		r.umi, r.representative, r.editDist, r.maxIntraClustDist)
 }
 
 func getUMI(rec *htsio.SamRecord) string {
@@ -693,15 +693,15 @@ func normalizeUMISeparator(umi string) string {
 	}
 }
 
-// updateRecordUMI rewrites the UMI tag to its consensus value if one exists.
+// updateRecordUMI rewrites the UMI tag to its representative value if one exists.
 // Returns true if the tag was changed.
-func updateRecordUMI(rec *htsio.SamRecord, consensus map[string]string) bool {
+func updateRecordUMI(rec *htsio.SamRecord, representative map[string]string) bool {
 	tag, hasTag := rec.Tags[umiClusterTag]
 	if !hasTag {
 		return false
 	}
 	umi := tag.Value
-	cons, ok := consensus[umi]
+	cons, ok := representative[umi]
 	if !ok || cons == umi {
 		return false
 	}
@@ -712,7 +712,7 @@ func updateRecordUMI(rec *htsio.SamRecord, consensus map[string]string) bool {
 
 // addUMIClusterPGLine appends the ont-umi-cluster @PG header line.
 func addUMIClusterPGLine(header *htsio.SamHeader) {
-	header.AddPGLine("ont-umi-cluster", "cgltk", fmt.Sprintf("DS:UMI collapsing; consensus UMI written to %s, original preserved in %s, molecule ID in MI", umiClusterTag, umiClusterOrigTag))
+	header.AddPGLine("ont-umi-cluster", "cgltk", fmt.Sprintf("DS:UMI collapsing; representative UMI written to %s, original preserved in %s, molecule ID in MI", umiClusterTag, umiClusterOrigTag))
 }
 
 // levBuf holds reusable DP buffers for Levenshtein computation.
@@ -754,12 +754,12 @@ func levDist(a, b string, buf *levBuf) int {
 	return buf.prev[n]
 }
 
-// computeConsensusUMI calculates a consensus UMI string from a set of cluster
+// computeRepresentativeUMI picks the representative UMI from a set of cluster
 // members using multiple sequence alignment followed by majority vote per
-// computeConsensusUMI picks the representative UMI for a cluster.
+// computeRepresentativeUMI picks the representative UMI for a cluster.
 // The most common UMI (by read count) is chosen. Ties are broken by longer
 // normalized length, then by lexicographic order.
-func computeConsensusUMI(members []umiCount) string {
+func computeRepresentativeUMI(members []umiCount) string {
 	if len(members) == 0 {
 		return ""
 	}
@@ -784,9 +784,9 @@ func computeConsensusUMI(members []umiCount) string {
 // umiClusterResult holds the clustering result for one UMI.
 type umiClusterResult struct {
 	umi               string
-	consensus         string
+	representative    string
 	count             int
-	editDist          int // Levenshtein edit distance from this UMI to the cluster consensus
+	editDist          int // Levenshtein edit distance from this UMI to the cluster representative
 	maxIntraClustDist int // maximum pairwise edit distance between any two members of this cluster
 }
 
@@ -798,20 +798,20 @@ type umiCount struct {
 // clusterUMIs clusters UMIs using the configured thread count for the
 // all-pairs edit distance computation (suitable for whole-genome mode
 // where there is a single large group).
-func clusterUMIs(umiCounts map[string]int, globalConsensus map[string]string, verbose bool) []umiClusterResult {
-	return clusterUMIsParallel(umiCounts, globalConsensus, verbose, umiClusterThreads)
+func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]string, verbose bool) []umiClusterResult {
+	return clusterUMIsParallel(umiCounts, globalRepresentative, verbose, umiClusterThreads)
 }
 
 // umiEdge represents a pair of UMIs within the edit distance threshold.
 type umiEdge struct{ i, j, dist int }
 
-func clusterUMIsParallel(umiCounts map[string]int, globalConsensus map[string]string, verbose bool, numThreads int) []umiClusterResult {
+func clusterUMIsParallel(umiCounts map[string]int, globalRepresentative map[string]string, verbose bool, numThreads int) []umiClusterResult {
 	if len(umiCounts) <= 1 {
 		// Single UMI or empty, nothing to cluster
 		var results []umiClusterResult
 		for umi, count := range umiCounts {
-			globalConsensus[umi] = umi
-			results = append(results, umiClusterResult{umi: umi, consensus: umi, count: count})
+			globalRepresentative[umi] = umi
+			results = append(results, umiClusterResult{umi: umi, representative: umi, count: count})
 		}
 		return results
 	}
@@ -923,22 +923,22 @@ func clusterUMIsParallel(umiCounts map[string]int, globalConsensus map[string]st
 		}
 	}
 
-	// Compute consensus per component via majority vote.
-	compConsensus := make(map[int]string)
+	// Compute representative per component (most common UMI).
+	compRepresentative := make(map[int]string)
 	for root, members := range compMembers {
-		compConsensus[root] = computeConsensusUMI(members)
+		compRepresentative[root] = computeRepresentativeUMI(members)
 	}
 
-	// Build results and populate globalConsensus map.
+	// Build results and populate globalRepresentative map.
 	var buf levBuf
 	results := make([]umiClusterResult, n)
 	for k := range umis {
 		root := find(k)
-		cons := compConsensus[root]
-		globalConsensus[umis[k].umi] = cons
+		cons := compRepresentative[root]
+		globalRepresentative[umis[k].umi] = cons
 		results[k] = umiClusterResult{
 			umi:               umis[k].umi,
-			consensus:         cons,
+			representative:    cons,
 			count:             umis[k].count,
 			editDist:          levDist(normalized[k], normalizeUMISeparator(cons), &buf),
 			maxIntraClustDist: compMaxDist[root],
@@ -947,10 +947,10 @@ func clusterUMIsParallel(umiCounts map[string]int, globalConsensus map[string]st
 	return results
 }
 
-func countConsensus(results []umiClusterResult) int {
+func countRepresentative(results []umiClusterResult) int {
 	seen := make(map[string]bool)
 	for _, r := range results {
-		seen[r.consensus] = true
+		seen[r.representative] = true
 	}
 	return len(seen)
 }
