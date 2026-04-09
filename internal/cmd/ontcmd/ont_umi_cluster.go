@@ -48,64 +48,83 @@ var ontUmiClusterCmd = &cobra.Command{
 			}()
 		}
 
-		// Open BED writer if requested
-		var bedWriter io.Writer
-		var closeBed func() error
-		if umiClusterBedFilename != "" {
-			var err error
-			bedWriter, closeBed, err = openWriter(umiClusterBedFilename)
-			if err != nil {
-				return fmt.Errorf("opening bed: %w", err)
-			}
-			defer func() {
-				if err := closeBed(); err != nil {
-					fmt.Fprintf(os.Stderr, "error closing bed: %v\n", err)
-				}
-			}()
-		}
-
 		if umiClusterWholeGenome {
 			return umiClusterWholeGenomeMode(inputFile, countsWriter, skipRefs)
 		}
-		return umiClusterOverlapMode(inputFile, countsWriter, bedWriter, skipRefs)
+		return umiClusterOverlapMode(inputFile, countsWriter, skipRefs)
 	},
 }
 
-// overlapGroup tracks a set of buffered reads that overlap or are within
-// the gap tolerance of each other, on the same strand (unless --no-strand).
-type overlapGroup struct {
-	rname    string
-	strand   string // "+" or "-", or "" for --no-strand
-	minStart int    // 0-based
-	maxEnd   int    // 0-based, exclusive
-	recs     []*htsio.SamRecord
+// bufferedRead holds a read in the overlap buffer along with precomputed
+// coordinate fields and a union-find identifier.
+type bufferedRead struct {
+	id     int // global sequential ID for union-find
+	rec    *htsio.SamRecord
+	rname  string
+	strand string // "+", "-", or "." for --no-strand
+	start  int    // 0-based
+	end    int    // 0-based, exclusive (start + CigarRefLen)
 }
 
-// readsNearby returns true if a read at readStart is within gap tolerance of this group.
-// Reads that overlap OR whose gap to the group is <= tolerance are merged.
-func (g *overlapGroup) readsNearby(rname string, strand string, readStart int) bool {
-	if len(g.recs) == 0 {
-		return false
+// unionFind implements a disjoint-set data structure with path compression
+// and union by rank. The union method returns old/new roots so callers can
+// merge associated maps.
+type unionFind struct {
+	parent []int
+	rank   []int
+}
+
+func newUnionFind(capacity int) *unionFind {
+	parent := make([]int, capacity)
+	for i := range parent {
+		parent[i] = i
 	}
-	if rname != g.rname {
-		return false
+	return &unionFind{
+		parent: parent,
+		rank:   make([]int, capacity),
 	}
-	if !umiClusterNoStrand && strand != g.strand {
-		return false
+}
+
+// grow ensures the union-find has capacity for IDs [0, n).
+func (uf *unionFind) grow(n int) {
+	for len(uf.parent) < n {
+		uf.parent = append(uf.parent, len(uf.parent))
+		uf.rank = append(uf.rank, 0)
 	}
-	// readStart is guaranteed >= g.minStart (coordinate sorted).
-	// Gap = readStart - g.maxEnd (negative means overlap).
-	// Merge if gap <= tolerance.
-	return readStart <= g.maxEnd+umiClusterOverlap
+}
+
+func (uf *unionFind) find(x int) int {
+	if uf.parent[x] != x {
+		uf.parent[x] = uf.find(uf.parent[x])
+	}
+	return uf.parent[x]
+}
+
+// union merges the sets containing x and y. Returns the new root, old root,
+// and whether a merge actually occurred (false if already in same set).
+func (uf *unionFind) union(x, y int) (newRoot, oldRoot int, merged bool) {
+	px, py := uf.find(x), uf.find(y)
+	if px == py {
+		return px, py, false
+	}
+	if uf.rank[px] < uf.rank[py] {
+		px, py = py, px
+	}
+	uf.parent[py] = px
+	if uf.rank[px] == uf.rank[py] {
+		uf.rank[px]++
+	}
+	return px, py, true
 }
 
 // groupWorkItem is sent to worker goroutines for parallel UMI clustering.
 type groupWorkItem struct {
-	recs     []*htsio.SamRecord
-	rname    string
-	strand   string
-	minStart int
-	maxEnd   int
+	recs        []*htsio.SamRecord
+	rname       string
+	strand      string
+	minStart    int
+	maxEnd      int
+	componentID int // sequential ID assigned when the component is submitted
 }
 
 // groupResult is returned by workers after UMI clustering.
@@ -115,10 +134,22 @@ type groupResult struct {
 	results   []umiClusterResult
 }
 
-// umiClusterOverlapMode processes each overlap group independently:
-// buffer the group's reads, send to workers for UMI clustering in parallel,
-// write results in order.
-func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter io.Writer, skipRefs []string) error {
+// umiClusterOverlapMode groups reads by 5' and/or 3' end proximity using a
+// buffer + union-find approach, then clusters UMIs within each component.
+//
+// Reads are buffered as they arrive (coordinate-sorted). A new read is
+// unioned with any buffered read on the same strand whose ends are within
+// the gap tolerance. Reads are ejected from the buffer once no future read
+// can possibly match them; when all members of a union-find component have
+// been ejected, the component is submitted for UMI clustering.
+//
+// Ejection safety:
+//   - AND mode (--both-ends, default): eject when curStart - B.start > gap
+//     (5' is required and can never match again since starts only increase)
+//   - OR mode (--single-end): eject when curStart > B.end + gap
+//     (neither 5' nor 3' can match: 5' fails because curStart - B.start >=
+//     curStart - B.end > gap; 3' fails because curEnd >= curStart > B.end + gap)
+func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []string) error {
 	ropts := htsio.NewSamReaderOpts()
 	if umiClusterThreads > 1 {
 		ropts = ropts.Threads(2)
@@ -193,25 +224,23 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 		var writeErr error
 		totalReads := 0
 		totalChanged := 0
-		regionCount := 0
 
 		for resultCh := range orderCh {
 			gr := <-resultCh
 			if writeErr != nil {
-				continue // drain but skip writing
+				continue
 			}
-
 			if gr == nil {
-				// This shouldn't happen in normal flow
 				continue
 			}
 
-			// Write counts and BED
-			regionCount++
-			regionName := fmt.Sprintf("region_%d", regionCount)
-			writeGroupCounts(countsWriter, gr.results, gr.item.rname, gr.item.minStart, gr.item.maxEnd, gr.item.strand, false)
-			if bedWriter != nil {
-				fmt.Fprintf(bedWriter, "%s\t%d\t%d\t%s\t0\t%s\n", gr.item.rname, gr.item.minStart, gr.item.maxEnd, regionName, gr.item.strand)
+			// Build per-UMI result lookup for counts output.
+			var umiResults map[string]*umiClusterResult
+			if countsWriter != nil && len(gr.results) > 0 {
+				umiResults = make(map[string]*umiClusterResult, len(gr.results))
+				for i := range gr.results {
+					umiResults[gr.results[i].umi] = &gr.results[i]
+				}
 			}
 
 			consensusCount := countConsensus(gr.results)
@@ -223,12 +252,22 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 				gr.item.rname, gr.item.minStart, gr.item.maxEnd, strandLabel,
 				len(gr.item.recs), len(gr.results), consensusCount)
 
-			// Update tags and write reads
 			for _, rec := range gr.item.recs {
 				if updateRecordUMI(rec, gr.consensus) {
 					totalChanged++
 				}
+				if umiClusterMI {
+					rec.Tags["MI"] = htsio.SamTag{
+						Type:  'Z',
+						Value: fmt.Sprintf("mi_%09d", gr.item.componentID),
+					}
+				}
 				totalReads++
+
+				if umiResults != nil {
+					writeReadCounts(countsWriter, rec, umiResults)
+				}
+
 				if err := writer.Write(rec); err != nil {
 					writeErr = err
 				}
@@ -239,94 +278,107 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 		writerErrCh <- writeErr
 	}()
 
-	// Maintain separate groups per strand.
-	var plusGroup, minusGroup overlapGroup
+	// Buffer + Union-Find state.
+	var buffer []*bufferedRead
+	uf := newUnionFind(1024)
+	activeCount := make(map[int]int)    // root -> count of un-ejected reads
+	componentReads := make(map[int][]*bufferedRead) // root -> ejected reads
+	globalID := 0
+	nextComponentID := 1
+	lastRname := ""
 
-	submitGroup := func(group *overlapGroup) {
-		if len(group.recs) == 0 {
+	submitComponent := func(root int) {
+		reads := componentReads[root]
+		delete(componentReads, root)
+		delete(activeCount, root)
+		if len(reads) == 0 {
 			return
 		}
-		item := groupWorkItem{
-			recs:     group.recs,
-			rname:    group.rname,
-			strand:   group.strand,
-			minStart: group.minStart,
-			maxEnd:   group.maxEnd,
+		minStart := reads[0].start
+		maxEnd := reads[0].end
+		rname := reads[0].rname
+		strand := reads[0].strand
+		recs := make([]*htsio.SamRecord, len(reads))
+		for i, br := range reads {
+			recs[i] = br.rec
+			if br.start < minStart {
+				minStart = br.start
+			}
+			if br.end > maxEnd {
+				maxEnd = br.end
+			}
 		}
+		item := groupWorkItem{
+			recs:        recs,
+			rname:       rname,
+			strand:      strand,
+			minStart:    minStart,
+			maxEnd:      maxEnd,
+			componentID: nextComponentID,
+		}
+		nextComponentID++
 		resultCh := make(chan *groupResult, 1)
 		orderCh <- resultCh
 		workCh <- workItemWithCh{item: item, resultCh: resultCh}
-		group.recs = nil // detach slice so new group gets fresh storage
 	}
 
-	flushIfPast := func(group *overlapGroup, rname string, readStart int) {
-		if len(group.recs) == 0 {
-			return
+	ejectRead := func(b *bufferedRead) {
+		root := uf.find(b.id)
+		componentReads[root] = append(componentReads[root], b)
+		activeCount[root]--
+		if activeCount[root] == 0 {
+			submitComponent(root)
 		}
-		if rname != group.rname || readStart > group.maxEnd+umiClusterOverlap {
-			submitGroup(group)
+	}
+
+	ejectAll := func() {
+		for _, b := range buffer {
+			ejectRead(b)
+		}
+		buffer = buffer[:0]
+	}
+
+	ejectExpired := func(curStart int) {
+		kept := 0
+		for _, b := range buffer {
+			shouldEject := false
+			if umiClusterMatchOneEnd {
+				// OR mode: eject when curStart > b.end + gap
+				shouldEject = curStart > b.end+umiClusterOverlap
+			} else {
+				// AND mode: eject when curStart - b.start > gap
+				shouldEject = curStart-b.start > umiClusterOverlap
+			}
+			if shouldEject {
+				ejectRead(b)
+			} else {
+				buffer[kept] = b
+				kept++
+			}
+		}
+		for i := kept; i < len(buffer); i++ {
+			buffer[i] = nil
+		}
+		buffer = buffer[:kept]
+	}
+
+	mergeComponents := func(newRoot, oldRoot int) {
+		activeCount[newRoot] += activeCount[oldRoot]
+		delete(activeCount, oldRoot)
+		if reads, ok := componentReads[oldRoot]; ok {
+			componentReads[newRoot] = append(componentReads[newRoot], reads...)
+			delete(componentReads, oldRoot)
 		}
 	}
 
 	readStrand := func(rec *htsio.SamRecord) string {
+		if umiClusterNoStrand {
+			return "."
+		}
 		if rec.IsReverse() {
 			return "-"
 		}
 		return "+"
-	}
-
-	addRecord := func(rec *htsio.SamRecord) {
-		if rec.IsUnmapped() || rec.Cigar == "*" {
-			// Unmapped reads: submit current groups first to maintain order,
-			// then write through via a passthrough result.
-			submitGroup(&plusGroup)
-			if !umiClusterNoStrand {
-				submitGroup(&minusGroup)
-			}
-			// Write unmapped read in order via a direct result
-			resultCh := make(chan *groupResult, 1)
-			orderCh <- resultCh
-			resultCh <- &groupResult{
-				item: groupWorkItem{recs: []*htsio.SamRecord{rec}},
-			}
-			return
-		}
-
-		readStart := rec.Pos - 1
-		readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
-		strand := readStrand(rec)
-
-		flushIfPast(&plusGroup, rec.RefName, readStart)
-		if !umiClusterNoStrand {
-			flushIfPast(&minusGroup, rec.RefName, readStart)
-		}
-
-		var group *overlapGroup
-		if umiClusterNoStrand {
-			group = &plusGroup
-		} else if strand == "+" {
-			group = &plusGroup
-		} else {
-			group = &minusGroup
-		}
-
-		if group.readsNearby(rec.RefName, strand, readStart) {
-			if readEnd > group.maxEnd {
-				group.maxEnd = readEnd
-			}
-			group.recs = append(group.recs, rec)
-		} else {
-			submitGroup(group)
-			group.rname = rec.RefName
-			if umiClusterNoStrand {
-				group.strand = "."
-			} else {
-				group.strand = strand
-			}
-			group.minStart = readStart
-			group.maxEnd = readEnd
-			group.recs = append(group.recs, rec)
-		}
 	}
 
 	for {
@@ -337,23 +389,106 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, bedWriter i
 		if err != nil {
 			return err
 		}
+
 		if umiClusterSkipUnmapped && (rec.IsUnmapped() || rec.Cigar == "*") {
 			writer.Write(rec)
 			continue
 		}
+		skip := false
 		for i := range skipRefs {
 			if rec.RefName == skipRefs[i] {
 				writer.Write(rec)
-				continue
+				skip = true
+				break
 			}
 		}
-		addRecord(rec)
+		if skip {
+			continue
+		}
+
+		if rec.IsUnmapped() || rec.Cigar == "*" {
+			// Flush buffer before writing unmapped read to maintain ordering.
+			ejectAll()
+			resultCh := make(chan *groupResult, 1)
+			orderCh <- resultCh
+			resultCh <- &groupResult{
+				item: groupWorkItem{
+					recs:        []*htsio.SamRecord{rec},
+					componentID: nextComponentID,
+				},
+			}
+			nextComponentID++
+			continue
+		}
+
+		readStart := rec.Pos - 1
+		readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
+		strand := readStrand(rec)
+
+		// Reference change: force-eject all buffered reads.
+		if rec.RefName != lastRname {
+			ejectAll()
+			lastRname = rec.RefName
+		}
+
+		// Eject reads that can never match any future read.
+		ejectExpired(readStart)
+
+		// Create buffered read entry.
+		br := &bufferedRead{
+			id:     globalID,
+			rec:    rec,
+			rname:  rec.RefName,
+			strand: strand,
+			start:  readStart,
+			end:    readEnd,
+		}
+		uf.grow(globalID + 1)
+		globalID++
+
+		// Initialize this read as its own component.
+		activeCount[br.id] = 1
+
+		// Find matching reads in buffer and union.
+		for _, b := range buffer {
+			if b.strand != br.strand {
+				continue
+			}
+
+			var matches bool
+			if umiClusterMatchOneEnd {
+				// OR mode: match if 5' OR 3' ends are within gap.
+				fivePrime := br.start-b.start <= umiClusterOverlap
+				diff := br.end - b.end
+				if diff < 0 {
+					diff = -diff
+				}
+				threePrime := diff <= umiClusterOverlap
+				matches = fivePrime || threePrime
+			} else {
+				// AND mode: 5' is guaranteed within gap by ejection;
+				// just check 3'.
+				diff := br.end - b.end
+				if diff < 0 {
+					diff = -diff
+				}
+				matches = diff <= umiClusterOverlap
+			}
+
+			if matches {
+				newRoot, oldRoot, merged := uf.union(br.id, b.id)
+				if merged {
+					mergeComponents(newRoot, oldRoot)
+				}
+			}
+		}
+
+		buffer = append(buffer, br)
 	}
 	reader.Close()
 
-	// Flush remaining groups
-	submitGroup(&plusGroup)
-	submitGroup(&minusGroup)
+	// Flush remaining buffered reads.
+	ejectAll()
 
 	close(workCh)
 	workerWg.Wait()
@@ -488,6 +623,31 @@ func writeGroupCounts(w io.Writer, results []umiClusterResult, rname string, sta
 	}
 }
 
+// writeReadCounts writes a per-read line to the counts file:
+// rname, start, end, strand, umi, consensus, editDist, maxIntraClustDist
+func writeReadCounts(w io.Writer, rec *htsio.SamRecord, umiResults map[string]*umiClusterResult) {
+	umi := getUMI(rec)
+	if umi == "" {
+		return
+	}
+	r, ok := umiResults[umi]
+	if !ok {
+		return
+	}
+	readStart := rec.Pos - 1
+	readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
+	strand := "+"
+	if rec.IsReverse() {
+		strand = "-"
+	}
+	if umiClusterNoStrand {
+		strand = "."
+	}
+	fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\t%d\t%d\n",
+		rec.RefName, readStart, readEnd, strand,
+		r.umi, r.consensus, r.editDist, r.maxIntraClustDist)
+}
+
 func getUMI(rec *htsio.SamRecord) string {
 	tag, ok := rec.Tags[umiClusterTag]
 	if !ok {
@@ -552,7 +712,7 @@ func updateRecordUMI(rec *htsio.SamRecord, consensus map[string]string) bool {
 
 // addUMIClusterPGLine appends the ont-umi-cluster @PG header line.
 func addUMIClusterPGLine(header *htsio.SamHeader) {
-	header.AddPGLine("ont-umi-cluster", "cgltk", fmt.Sprintf("DS:UMI collapsing; consensus UMI written to %s, original preserved in %s", umiClusterTag, umiClusterOrigTag))
+	header.AddPGLine("ont-umi-cluster", "cgltk", fmt.Sprintf("DS:UMI collapsing; consensus UMI written to %s, original preserved in %s, molecule ID in MI", umiClusterTag, umiClusterOrigTag))
 }
 
 // levBuf holds reusable DP buffers for Levenshtein computation.
@@ -803,7 +963,8 @@ var umiClusterWholeGenome bool
 var umiClusterNoStrand bool
 var umiClusterEditThreshold int
 var umiClusterCountsFilename string
-var umiClusterBedFilename string
+var umiClusterMI bool
+var umiClusterMatchOneEnd bool
 var umiClusterThreads int
 var umiClusterSkipRefs string
 var umiClusterSkipUnmapped bool
@@ -822,6 +983,7 @@ func init() {
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterSkipUnmapped, "ignore-unmapped", false, "Ignore unmapped reads (reads will be passed through with original UMI)")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterEditThreshold, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to cluster two UMIs")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterCountsFilename, "umi-counts", "", "Write UMI counts to this file")
-	ontUmiClusterCmd.Flags().StringVar(&umiClusterBedFilename, "bed", "", "Write overlap regions to this BED6 file")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMI, "mi", false, "Add MI tag with molecule group ID to output reads")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchOneEnd, "match-one-end", false, "Match reads if EITHER 5' or 3' ends are within gap (default: require BOTH ends)")
 	ontUmiClusterCmd.Flags().IntVarP(&umiClusterThreads, "threads", "t", 1, "Threads for UMI clustering")
 }

@@ -216,6 +216,177 @@ func TestComputeConsensusUMI_MostCommon(t *testing.T) {
 	}
 }
 
+func TestUnionFind(t *testing.T) {
+	uf := newUnionFind(10)
+
+	// Initially all elements are their own root.
+	for i := 0; i < 10; i++ {
+		if got := uf.find(i); got != i {
+			t.Errorf("find(%d) = %d, want %d", i, got, i)
+		}
+	}
+
+	// Union 0 and 1.
+	newRoot, oldRoot, merged := uf.union(0, 1)
+	if !merged {
+		t.Fatal("union(0,1) should merge")
+	}
+	if uf.find(0) != uf.find(1) {
+		t.Error("0 and 1 should be in same set")
+	}
+	if newRoot == oldRoot {
+		t.Error("newRoot and oldRoot should differ")
+	}
+
+	// Union 0 and 1 again — should be no-op.
+	_, _, merged = uf.union(0, 1)
+	if merged {
+		t.Error("union(0,1) again should not merge")
+	}
+
+	// Transitive: union 1 and 2 should put 0,1,2 together.
+	uf.union(1, 2)
+	if uf.find(0) != uf.find(2) {
+		t.Error("0 and 2 should be in same set after transitive union")
+	}
+
+	// 3 should still be separate.
+	if uf.find(0) == uf.find(3) {
+		t.Error("0 and 3 should be in different sets")
+	}
+
+	// Grow and use new elements.
+	uf.grow(20)
+	if got := uf.find(15); got != 15 {
+		t.Errorf("find(15) after grow = %d, want 15", got)
+	}
+}
+
+func TestEndProximityMatching_BothEnds(t *testing.T) {
+	// AND mode: reads must match on BOTH 5' and 3' ends.
+	gap := 50
+
+	tests := []struct {
+		name      string
+		aStart    int
+		aEnd      int
+		bStart    int
+		bEnd      int
+		wantMatch bool
+	}{
+		{"identical positions", 100, 1000, 100, 1000, true},
+		{"5' within gap, 3' within gap", 100, 1000, 140, 1030, true},
+		{"5' within gap, 3' outside gap", 100, 1000, 140, 1100, false},
+		{"5' at exact gap boundary, 3' match", 100, 1000, 150, 1000, true},
+		{"5' beyond gap, 3' match", 100, 1000, 151, 1000, false},
+		{"same start, different length (3' far)", 100, 1000, 100, 500, false},
+		{"truncated read, 3' close", 100, 1000, 120, 980, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Simulate AND mode matching: 5' within gap AND 3' within gap
+			fivePrime := (tt.bStart - tt.aStart) <= gap && (tt.aStart - tt.bStart) <= gap
+			diff := tt.bEnd - tt.aEnd
+			if diff < 0 {
+				diff = -diff
+			}
+			threePrime := diff <= gap
+			got := fivePrime && threePrime
+			if got != tt.wantMatch {
+				t.Errorf("AND match = %v, want %v (5'=%v, 3'=%v)", got, tt.wantMatch, fivePrime, threePrime)
+			}
+		})
+	}
+}
+
+func TestEndProximityMatching_SingleEnd(t *testing.T) {
+	// OR mode: reads match if EITHER 5' or 3' ends are within gap.
+	gap := 50
+
+	tests := []struct {
+		name      string
+		aStart    int
+		aEnd      int
+		bStart    int
+		bEnd      int
+		wantMatch bool
+	}{
+		{"identical positions", 100, 1000, 100, 1000, true},
+		{"5' within gap, 3' outside gap", 100, 1000, 140, 1100, true},
+		{"5' outside gap, 3' within gap", 100, 1000, 200, 1030, true},
+		{"both outside gap", 100, 1000, 200, 1100, false},
+		{"5' at boundary, 3' far", 100, 1000, 150, 2000, true},
+		{"truncated molecule (5' match, 3' far)", 100, 1000, 120, 500, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fivePrime := (tt.bStart - tt.aStart) <= gap && (tt.aStart - tt.bStart) <= gap
+			diff := tt.bEnd - tt.aEnd
+			if diff < 0 {
+				diff = -diff
+			}
+			threePrime := diff <= gap
+			got := fivePrime || threePrime
+			if got != tt.wantMatch {
+				t.Errorf("OR match = %v, want %v (5'=%v, 3'=%v)", got, tt.wantMatch, fivePrime, threePrime)
+			}
+		})
+	}
+}
+
+func TestEjectionSafety_BothEnds(t *testing.T) {
+	// AND mode: eject when curStart - B.start > gap
+	gap := 50
+
+	tests := []struct {
+		name        string
+		bStart      int
+		curStart    int
+		wantEjected bool
+	}{
+		{"within gap", 100, 140, false},
+		{"at gap boundary", 100, 150, false},
+		{"beyond gap", 100, 151, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.curStart-tt.bStart > gap
+			if got != tt.wantEjected {
+				t.Errorf("ejected = %v, want %v", got, tt.wantEjected)
+			}
+		})
+	}
+}
+
+func TestEjectionSafety_SingleEnd(t *testing.T) {
+	// OR mode: eject when curStart > B.end + gap
+	gap := 50
+
+	tests := []struct {
+		name        string
+		bEnd        int
+		curStart    int
+		wantEjected bool
+	}{
+		{"well before end", 1000, 500, false},
+		{"at end+gap boundary", 1000, 1050, false},
+		{"beyond end+gap", 1000, 1051, true},
+		{"long read stays buffered", 500000, 1000, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.curStart > tt.bEnd+gap
+			if got != tt.wantEjected {
+				t.Errorf("ejected = %v, want %v", got, tt.wantEjected)
+			}
+		})
+	}
+}
+
 func TestValidateCoordinateSorted(t *testing.T) {
 	tests := []struct {
 		name    string
