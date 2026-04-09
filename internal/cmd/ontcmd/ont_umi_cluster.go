@@ -277,12 +277,13 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 			}
 
 			for _, rec := range gr.item.recs {
+				// Read original UMI before updateRecordUMI rewrites the tag.
+				origUMI := getUMI(rec)
 				if updateRecordUMI(rec, gr.representative) {
 					totalChanged++
 				}
-				if umiClusterMI {
-					umi := getUMI(rec)
-					if rep, ok := gr.representative[umi]; ok {
+				if umiClusterMI && origUMI != "" {
+					if rep, ok := gr.representative[origUMI]; ok {
 						if mi, ok := repToMI[rep]; ok {
 							rec.Tags["MI"] = htsio.SamTag{Type: 'Z', Value: mi}
 						}
