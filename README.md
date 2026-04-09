@@ -105,6 +105,19 @@ Two alignment modes are used internally:
 - **Global alignment** (Needleman-Wunsch) for the initial all-pairs distance computation — both sequences are fully aligned end-to-end.
 - **Semi-global alignment** for the incorporation step — the query (read) is fully aligned, but the target (consensus) can have free end gaps. This handles truncated reads that are shorter than the consensus without incurring edge gap penalties.
 
+### Consensus calling
+
+The consensus sequence is built by majority vote at each column of the MSA:
+
+1. For each column, count the occurrences of each non-gap base.
+2. The base with the highest count is chosen as the consensus base.
+3. Ties are broken alphabetically (A before C before G before T).
+4. Columns where every entry is a gap are skipped.
+
+The consensus is used in two places: internally during the incremental incorporation step (each new sequence is aligned to the current consensus), and as the final output when `--consensus` is specified.
+
+The current implementation does not use FASTQ quality scores to weight the vote, nor does it produce quality scores for the consensus bases. Homopolymer-compressed consensus (tracking per-position run lengths and expanding back) is a planned future extension.
+
 ### Output
 
 By default, the output is a **gapped multi-sequence FASTA** where each sequence includes `-` characters indicating gaps in the alignment. Sequence names are preserved from the input. Sequences appear in the order they were incorporated (seed pair first, then by descending alignment score).
