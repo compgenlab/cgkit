@@ -12,7 +12,7 @@ import (
 
 // columnDef defines a SAM column that can be exported.
 type columnDef struct {
-	name    string                        // column name (used in header and flag name)
+	name    string                             // column name (used in header and flag name)
 	extract func(rec *htsio.SamRecord) string // extracts the column value
 }
 
@@ -62,8 +62,13 @@ var samExportCmd = &cobra.Command{
 			return fmt.Errorf("at least one column flag or --tags value is required")
 		}
 
+		opts, err := samExportReaderFlags.buildReaderOpts()
+		if err != nil {
+			return err
+		}
+
 		inputFile := args[0]
-		reader, err := htsio.NewSamReader(inputFile)
+		reader, err := htsio.NewSamReader(inputFile, opts)
 		if err != nil {
 			return err
 		}
@@ -94,19 +99,6 @@ var samExportCmd = &cobra.Command{
 			}
 			if err != nil {
 				return err
-			}
-
-			// Filter by required flags: all bits must be set.
-			if samExportRequiredFlag != 0 && rec.Flag&samExportRequiredFlag != samExportRequiredFlag {
-				continue
-			}
-			// Filter by excluded flags: none of these bits may be set.
-			if samExportFilterFlag != 0 && rec.Flag&samExportFilterFlag != 0 {
-				continue
-			}
-			// Filter by minimum mapping quality.
-			if samExportMinMapQ >= 0 && rec.MapQ < samExportMinMapQ {
-				continue
 			}
 
 			parts := make([]string, 0, len(selected)+len(tags))
@@ -144,12 +136,10 @@ func parseTags(tagStr string) []string {
 }
 
 var (
-	samExportColumnFlags []bool // one bool per samColumnDefs entry
-	samExportTags        string
-	samExportOutput      string
-	samExportFilterFlag  int
-	samExportRequiredFlag int
-	samExportMinMapQ     int
+	samExportColumnFlags  []bool // one bool per samColumnDefs entry
+	samExportTags         string
+	samExportOutput       string
+	samExportReaderFlags  samReaderFlags
 )
 
 func init() {
@@ -162,7 +152,6 @@ func init() {
 
 	samExportCmd.Flags().StringVar(&samExportTags, "tags", "", "SAM tags to export (comma-separated, e.g. RX,MI,NM)")
 	samExportCmd.Flags().StringVarP(&samExportOutput, "output", "o", "-", "Output file (default: stdout)")
-	samExportCmd.Flags().IntVar(&samExportFilterFlag, "filter-flag", 0, "Exclude reads with any of these flag bits set")
-	samExportCmd.Flags().IntVar(&samExportRequiredFlag, "required-flag", 0, "Require all of these flag bits to be set")
-	samExportCmd.Flags().IntVar(&samExportMinMapQ, "min-mapq", -1, "Minimum mapping quality (exclude reads below this)")
+
+	samExportReaderFlags.register(samExportCmd)
 }
