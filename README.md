@@ -34,7 +34,8 @@ Smith-Waterman based alignment with affine gap penalties and Oxford Nanopore-awa
 - Configurable scoring matrix, gap penalties, clipping, and homopolymer discount via builder pattern
 - `AlignBatch()` — parallel alignment with semaphore-controlled goroutine pool
 - `CigarCondense()` / `CigarExpand()` — convert between run-length and per-base CIGAR formats
-- `MSA()` — incremental consensus multiple sequence alignment with `Profile` output
+- `MSA()` — incremental consensus multiple sequence alignment returning an `MSAAlignment` with optional homopolymer compression and reference sequence handling
+- `MSAAlignment` — result type with `Consensus()`, `RehydratedConsensus()`, `WriteClustal()`, `WriteFasta()`, `GappedSequences()` for library-level output
 
 ### htsio — SAM/BAM/CRAM I/O
 
@@ -80,7 +81,7 @@ Usage: `cgltk [--profile=cpu.prof] <command>`
 |---------|-------------|
 | `seq-revcomp` | Reverse complement a sequence |
 | `seq-pairwise` | Pairwise alignment with configurable scoring, gap penalties, and homopolymer discounts |
-| `seq-consensus-msa` | Multiple sequence alignment via incremental consensus (`--ont` for Nanopore defaults) |
+| `seq-msa` | Multiple sequence alignment via incremental consensus (CLUSTAL by default; `--fasta` or `--consensus` for alternates; `--hp-compress` collapses homopolymers and rehydrates the consensus; `--ref <name>` marks a reference sequence that is aligned last, displayed first, and used for HP tiebreaks) |
 
 ### SAM/BAM/CRAM
 
