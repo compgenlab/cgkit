@@ -66,6 +66,13 @@ var msaCmd = &cobra.Command{
 			return fmt.Errorf("no sequences found in input file")
 		}
 
+		// --hp-expand is a post-processing step on top of --hp-compress.
+		// Expansion needs the per-sequence HP length data that compression
+		// records, so it cannot be used on its own.
+		if msaHPExpand && !msaHPCompress {
+			return fmt.Errorf("--hp-expand requires --hp-compress")
+		}
+
 		// Build alignment options: scoring preset, threading, HP compression,
 		// and reference name are all configured here and passed to align.MSA.
 		alignOpts := align.OntAlignmentDefaults()
@@ -99,21 +106,50 @@ var msaCmd = &cobra.Command{
 			out = f
 		}
 
-		// Dispatch to the library's output methods. All three formats live
-		// on MSAAlignment so any caller can reuse them.
+		// --hp-expand post-processes the alignment by expanding each
+		// compressed column out to the per-row original HP lengths. When
+		// --consensus is also set, the consensus is computed first and
+		// included as an extra row in the expanded alignment (so the
+		// per-column max covers the consensus runs too). After expansion
+		// the alignment behaves like a normal full-length one, so the
+		// rest of the output dispatch below doesn't have to branch on
+		// HP mode separately.
 		//
-		//   --consensus : single FASTA record. In HP-compressed mode this
-		//                 is the rehydrated consensus (HP runs restored
-		//                 from per-column mode length); otherwise it is
-		//                 the plain majority-vote consensus (reads only,
-		//                 ref excluded when present).
-		//   --fasta     : gapped multi-FASTA of the alignment rows as-is.
-		//                 In HP-compressed mode this shows the compressed
-		//                 alignment; rehydration only applies to consensus.
-		//   default     : CLUSTAL interleaved format, same rules as --fasta
-		//                 for HP-compressed output.
+		// A subtle point: with --hp-expand --consensus, the consensus
+		// row is embedded in the expanded alignment. So for FASTA output
+		// (--fasta), the consensus row would be written as one of the
+		// sequence records. To keep --fasta --consensus meaning "just
+		// the consensus as a single record", we detect that combination
+		// separately below and produce the single-record output without
+		// invoking Expanded(withConsensus=true).
+		displayAln := aln
+		if msaHPExpand && !(msaFasta && msaConsensus) {
+			// Expand the alignment in place. Include the consensus row
+			// only when we're about to show it (CLUSTAL + --consensus).
+			displayAln = aln.Expanded(msaConsensus)
+			if displayAln == nil {
+				return fmt.Errorf("Expanded() returned nil; did --hp-compress populate HPLens?")
+			}
+		}
+
+		// Output dispatch — --consensus is a modifier on top of --fasta
+		// or the default CLUSTAL output, not a standalone mode:
+		//
+		//   default             : CLUSTAL interleaved (compressed or
+		//                          expanded depending on --hp-expand).
+		//   --consensus         : CLUSTAL + a synthetic consensus row
+		//                          at the bottom of every block. With
+		//                          --hp-expand the consensus is already
+		//                          embedded in displayAln as a regular
+		//                          row, so we fall through to plain
+		//                          WriteClustal.
+		//   --fasta             : gapped multi-FASTA of the alignment
+		//                          rows.
+		//   --fasta --consensus : single-record FASTA of the consensus
+		//                          sequence. Rehydrated when --hp-expand
+		//                          (or just --hp-compress) is set.
 		switch {
-		case msaConsensus:
+		case msaFasta && msaConsensus:
 			var cons string
 			if msaHPCompress {
 				cons = aln.RehydratedConsensus()
@@ -122,11 +158,24 @@ var msaCmd = &cobra.Command{
 			}
 			fmt.Fprintf(out, ">consensus\n%s\n", cons)
 		case msaFasta:
-			if err := aln.WriteFasta(out); err != nil {
+			if err := displayAln.WriteFasta(out); err != nil {
 				return fmt.Errorf("writing fasta: %w", err)
 			}
+		case msaConsensus:
+			if msaHPExpand {
+				// Consensus is already a row in displayAln after
+				// Expanded(true); emit it with plain WriteClustal so we
+				// don't get a duplicate synthetic consensus row.
+				if err := displayAln.WriteClustal(out); err != nil {
+					return fmt.Errorf("writing clustal: %w", err)
+				}
+			} else {
+				if err := displayAln.WriteClustalWithConsensus(out); err != nil {
+					return fmt.Errorf("writing clustal: %w", err)
+				}
+			}
 		default:
-			if err := aln.WriteClustal(out); err != nil {
+			if err := displayAln.WriteClustal(out); err != nil {
 				return fmt.Errorf("writing clustal: %w", err)
 			}
 		}
@@ -142,6 +191,7 @@ var (
 	msaFasta      bool
 	msaConsensus  bool
 	msaHPCompress bool
+	msaHPExpand   bool
 	msaRef        string
 	msaVerbose    bool
 )
@@ -151,8 +201,9 @@ func init() {
 	msaCmd.Flags().IntVarP(&msaThreads, "threads", "t", 1, "Max parallel workers for all-pairs alignment")
 	msaCmd.Flags().StringVarP(&msaOutput, "output", "o", "", "Output file (default: stdout)")
 	msaCmd.Flags().BoolVar(&msaFasta, "fasta", false, "Output gapped multi-sequence FASTA instead of CLUSTAL")
-	msaCmd.Flags().BoolVar(&msaConsensus, "consensus", false, "Output a single consensus sequence instead of the full MSA")
-	msaCmd.Flags().BoolVar(&msaHPCompress, "hp-compress", false, "Homopolymer-compress sequences before alignment; --consensus output is rehydrated using per-column mode lengths")
+	msaCmd.Flags().BoolVar(&msaConsensus, "consensus", false, "Append a consensus row to the CLUSTAL output (or with --fasta, write only the consensus as FASTA)")
+	msaCmd.Flags().BoolVar(&msaHPCompress, "hp-compress", false, "Homopolymer-compress sequences before alignment")
+	msaCmd.Flags().BoolVar(&msaHPExpand, "hp-expand", false, "After HP-compressed MSA, expand each row back to its original homopolymer lengths (requires --hp-compress)")
 	msaCmd.Flags().StringVar(&msaRef, "ref", "", "Name of the reference sequence in the input; aligned last and shown first, used for HP tiebreaks")
 	msaCmd.Flags().BoolVarP(&msaVerbose, "verbose", "v", false, "Enable verbose output")
 }
