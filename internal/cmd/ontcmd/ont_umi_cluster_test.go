@@ -52,7 +52,8 @@ func TestUmiLevenshtein(t *testing.T) {
 	}
 	for _, tt := range tests {
 		var buf levBuf
-		got := levDist(tt.a, tt.b, &buf)
+		// Unbounded (-1) so the test exercises the full-distance path.
+		got := levDist(tt.a, tt.b, &buf, -1)
 		if got != tt.want {
 			t.Errorf("levDist(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
@@ -64,7 +65,7 @@ func TestClusterUMIs_Identical(t *testing.T) {
 		"AAAA/CCCC/GGGG/AAAA": 10,
 	}
 	representative := make(map[string]string)
-	clusterUMIs(umiCounts, representative, false)
+	clusterUMIs(umiCounts, representative, 1)
 
 	if got := representative["AAAA/CCCC/GGGG/AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
 		t.Errorf("representative = %q, want self", got)
@@ -78,7 +79,7 @@ func TestClusterUMIs_SimilarMerge(t *testing.T) {
 	}
 	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	results := clusterUMIs(umiCounts, representative, false)
+	results := clusterUMIs(umiCounts, representative, 1)
 
 	// Both cluster together; most common UMI (count=10) is picked as representative
 	if got := representative["AAAA/CCCC/GGGG/AAAT"]; got != "AAAA/CCCC/GGGG/AAAA" {
@@ -103,7 +104,7 @@ func TestClusterUMIs_DissimilarNoMerge(t *testing.T) {
 	}
 	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	clusterUMIs(umiCounts, representative, false)
+	clusterUMIs(umiCounts, representative, 1)
 
 	if got := representative["CCCC/CCCC/CCCC/CCCC"]; got != "CCCC/CCCC/CCCC/CCCC" {
 		t.Errorf("dissimilar UMI should stay self, got %q", got)
@@ -117,7 +118,7 @@ func TestClusterUMIs_TTSeparator(t *testing.T) {
 	}
 	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	clusterUMIs(umiCounts, representative, false)
+	clusterUMIs(umiCounts, representative, 1)
 
 	// Consensus is output in "/" form (normalized)
 	if got := representative["AAAATTCCCCTTGGGGTTAAAT"]; got != "AAAA/CCCC/GGGG/AAAA" {
@@ -133,7 +134,7 @@ func TestClusterUMIs_MissedSeparator(t *testing.T) {
 	}
 	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	clusterUMIs(umiCounts, representative, false)
+	clusterUMIs(umiCounts, representative, 1)
 
 	if got := representative["AAAA-CCCCGGGG-AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
 		t.Errorf("missed-separator UMI representative = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
@@ -148,7 +149,7 @@ func TestClusterUMIs_ExtraBase(t *testing.T) {
 	}
 	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	clusterUMIs(umiCounts, representative, false)
+	clusterUMIs(umiCounts, representative, 1)
 
 	if got := representative["GAAAA/CCCC/GGGG/AAAA"]; got != "AAAA/CCCC/GGGG/AAAA" {
 		t.Errorf("extra-base UMI representative = %q, want %q", got, "AAAA/CCCC/GGGG/AAAA")
@@ -172,7 +173,7 @@ func TestClusterUMIs_SingleLinkageChaining(t *testing.T) {
 	}
 	representative := make(map[string]string)
 	umiClusterEditThreshold = 3
-	clusterUMIs(umiCounts, representative, false)
+	clusterUMIs(umiCounts, representative, 1)
 
 	// All three should be in the same cluster (connected via B)
 	ca := representative["AAAA/CCCC/GGGG/AAAA"]
