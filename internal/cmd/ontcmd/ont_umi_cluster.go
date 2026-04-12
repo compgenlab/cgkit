@@ -368,6 +368,36 @@ func processReads(
 				representative := make(map[string]string)
 				results := clusterUMIs(umiCounts, representative, umiClusterThreads)
 
+				// Build per-UMI coordinate bounding boxes BEFORE
+				// updateRecordUMI rewrites the tags — the map must be
+				// keyed by the original UMI string (which is what
+				// umiClusterResult.umi contains), not the normalized
+				// representative that updateRecordUMI writes back.
+				// We use the bufferedRead's pre-computed start/end to
+				// avoid re-parsing CIGARs.
+				var coordsByUMI map[string]umiCoords
+				if countsWriter != nil {
+					coordsByUMI = make(map[string]umiCoords, len(reads))
+					for _, br := range reads {
+						umi := getUMI(br.rec)
+						if umi == "" {
+							continue
+						}
+						c, ok := coordsByUMI[umi]
+						if !ok {
+							coordsByUMI[umi] = umiCoords{minStart: br.start, maxEnd: br.end}
+						} else {
+							if br.start < c.minStart {
+								c.minStart = br.start
+							}
+							if br.end > c.maxEnd {
+								c.maxEnd = br.end
+							}
+							coordsByUMI[umi] = c
+						}
+					}
+				}
+
 				// Update UMI tags on records (each worker owns its own
 				// records, so no lock needed for the tag mutations).
 				changed := 0
@@ -429,30 +459,6 @@ func processReads(
 				}
 
 				if firstErr == nil && countsWriter != nil && len(results) > 0 {
-					// Build per-UMI coordinate bounding boxes from the
-					// actual read positions so that the counts file gets
-					// per-cluster coordinates, not the component-wide span.
-					coordsByUMI := make(map[string]umiCoords, len(results))
-					for _, rec := range recs {
-						umi := getUMI(rec)
-						if umi == "" {
-							continue
-						}
-						readStart := rec.Pos - 1
-						readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
-						c, ok := coordsByUMI[umi]
-						if !ok {
-							coordsByUMI[umi] = umiCoords{minStart: readStart, maxEnd: readEnd}
-						} else {
-							if readStart < c.minStart {
-								c.minStart = readStart
-							}
-							if readEnd > c.maxEnd {
-								c.maxEnd = readEnd
-							}
-							coordsByUMI[umi] = c
-						}
-					}
 					cl := buildUMIClusterCounts(rname, strand, results, repToMI, coordsByUMI)
 					ioMu.Lock()
 					for _, line := range cl {
