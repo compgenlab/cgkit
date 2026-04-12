@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/compgen-io/cgltk/htsio"
 	"github.com/spf13/cobra"
@@ -25,6 +24,9 @@ var ontUmiClusterCmd = &cobra.Command{
 		if umiClusterOutput == "" {
 			return fmt.Errorf("--output is required")
 		}
+		if umiClusterRegion != "" && umiClusterWholeGenome {
+			return fmt.Errorf("--region and --whole-genome are mutually exclusive")
+		}
 
 		inputFile := args[0]
 
@@ -33,7 +35,9 @@ var ontUmiClusterCmd = &cobra.Command{
 			skipRefs = strings.Split(umiClusterSkipRefs, ",")
 		}
 
-		// Open counts writer if requested
+		// Open counts writer if requested and emit the BED6+ header. The
+		// header is a single '#'-prefixed line so downstream BED tools
+		// skip it as a comment.
 		var countsWriter io.Writer
 		var closeCounts func() error
 		if umiClusterCountsFilename != "" {
@@ -47,6 +51,9 @@ var ontUmiClusterCmd = &cobra.Command{
 					fmt.Fprintf(os.Stderr, "error closing umi-counts: %v\n", err)
 				}
 			}()
+			if _, err := fmt.Fprintln(countsWriter, umiCountsHeaderLine); err != nil {
+				return fmt.Errorf("writing umi-counts header: %w", err)
+			}
 		}
 
 		if umiClusterWholeGenome {
@@ -118,27 +125,48 @@ func (uf *unionFind) union(x, y int) (newRoot, oldRoot int, merged bool) {
 	return px, py, true
 }
 
-// groupWorkItem is sent to worker goroutines for parallel UMI clustering.
-// It represents a read-overlap-group: reads with similar 5'/3' ends on the
-// same strand. Within each group, UMIs are clustered by edit distance.
+// removeFromBin removes the bufferedRead with the given id from a bin
+// slice using swap-with-last. Order within a bin doesn't matter, so this
+// is O(bin_size) scan + O(1) removal. Returns the shortened slice.
+func removeFromBin(bin []*bufferedRead, id int) []*bufferedRead {
+	for i, r := range bin {
+		if r.id == id {
+			bin[i] = bin[len(bin)-1]
+			bin[len(bin)-1] = nil
+			return bin[:len(bin)-1]
+		}
+	}
+	return bin
+}
+
+// groupWorkItem describes a single read-overlap-group: reads sharing
+// 5'/3' endpoints within the overlap threshold on the same strand. Used
+// to carry the coordinate-level metadata needed by buildUMIClusterCounts
+// (chrom, strand, span); the underlying SamRecords are passed separately
+// and aren't stored here.
 type groupWorkItem struct {
-	recs     []*htsio.SamRecord
 	rname    string
 	strand   string
 	minStart int
 	maxEnd   int
 }
 
-// groupResult is returned by workers after UMI clustering.
-type groupResult struct {
-	item      groupWorkItem
-	representative map[string]string
-	results   []umiClusterResult
-}
-
 // umiClusterOverlapMode groups reads by 5' and/or 3' end proximity using a
 // buffer + union-find approach, then clusters UMIs within each component.
-// Chromosomes are processed in parallel (largest first) to maximize throughput.
+//
+// Parallelism model (rewritten 2026-04-11):
+//
+//   - When --region is set, cgltk processes that region only. The caller
+//     is expected to be orchestrating per-region jobs externally (e.g.
+//     one SLURM task per chromosome), so we do not also do per-chromosome
+//     parallelism inside a single invocation. Skipped refs and unmapped
+//     reads are *not* passed through in region mode — they are handled
+//     by separate jobs.
+//
+//   - When --region is not set, we process each chromosome in the header
+//     sequentially. The entire --threads budget is given to the per-group
+//     UMI clustering step (clusterUMIs), which is the real
+//     bottleneck. samtools sort is cheap and does not need many threads.
 func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []string) error {
 	// Read header from the input file.
 	reader, err := htsio.NewSamReader(inputFile)
@@ -159,90 +187,65 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 
 	addUMIClusterPGLine(header)
 
-	// Build skip set for fast lookup.
+	// Build skip set for fast lookup (only used when --region is not set).
 	skipSet := make(map[string]bool)
 	for _, r := range skipRefs {
 		skipSet[r] = true
 	}
 
-	// Sort chromosomes by length (largest first).
-	refs := header.References()
-	type chromJob struct {
-		name   string
-		length int
-		idx    int // original header order
-	}
-	var jobs []chromJob
-	for i, ref := range refs {
-		if skipSet[ref.Name] {
-			continue
+	// Determine which regions to process. When --region is set we only
+	// do that one region; otherwise iterate all references in header
+	// order (minus the skip list).
+	var regions []string
+	if umiClusterRegion != "" {
+		regions = []string{umiClusterRegion}
+	} else {
+		for _, ref := range header.References() {
+			if skipSet[ref.Name] {
+				continue
+			}
+			regions = append(regions, ref.Name)
 		}
-		jobs = append(jobs, chromJob{name: ref.Name, length: ref.Length, idx: i})
 	}
-	sort.Slice(jobs, func(i, j int) bool {
-		return jobs[i].length > jobs[j].length
-	})
 
-	// Open writer — samtools sort handles merging unsorted chromosome output.
-	writerThreads := 1
-	if umiClusterThreads > 8 {
-		writerThreads = 4
-	} else if umiClusterThreads > 4 {
-		writerThreads = 2
-	}
-	wopts := htsio.SamWriterOptions(header).BAM().SortCoord().Threads(writerThreads)
+	// Open writer — samtools sort handles merging output. samtools itself
+	// uses very little CPU so we keep writer threads small and leave the
+	// compute budget for clusterUMIs.
+	wopts := htsio.SamWriterOptions(header).BAM().SortCoord().Threads(2)
 	writer, err := htsio.NewSamWriter(umiClusterOutput, wopts)
 	if err != nil {
 		return err
 	}
 
-	// Shared state.
-	var nextMI atomic.Int64
-	nextMI.Store(1)
-	var totalReads atomic.Int64
-	var totalChanged atomic.Int64
-	var countsMu sync.Mutex // protects countsWriter
+	// Per-run state. Plain ints/counters are safe because everything below
+	// this point runs on the caller's single goroutine — we removed the
+	// per-chromosome parallelism in favor of one-region-per-invocation.
+	// If a future rework reintroduces parallel regions, these will need
+	// to become atomics (or the counters need to move into a synchronized
+	// aggregator), but for now the simpler types avoid pointless atomic
+	// ops on every record written.
+	var nextMI int64 = 1
+	var totalReads int64
+	var totalChanged int64
 
-	if umiClusterThreads >= 4 {
-		// Parallel: process threads-2 chromosomes concurrently.
-		chromWorkers := umiClusterThreads - 2
-		sem := make(chan struct{}, chromWorkers)
-
-		var wg sync.WaitGroup
-		var firstErr atomic.Value
-
-		for _, job := range jobs {
-			sem <- struct{}{} // acquire slot
-			wg.Add(1)
-			go func(chromName string) {
-				defer wg.Done()
-				defer func() { <-sem }() // release slot
-
-				if err := processChromosome(inputFile, chromName, writer, &countsMu,
-					&nextMI, &totalReads, &totalChanged, countsWriter); err != nil {
-					firstErr.CompareAndSwap(nil, err)
-				}
-			}(job.name)
-		}
-		wg.Wait()
-
-		if e := firstErr.Load(); e != nil {
+	// Process each region sequentially. processRegion handles the buffer
+	// + union-find grouping and per-group UMI clustering with the full
+	// --threads budget for clusterUMIs.
+	for _, region := range regions {
+		if err := processRegion(inputFile, region, writer,
+			&nextMI, &totalReads, &totalChanged, countsWriter); err != nil {
 			writer.Close()
-			return e.(error)
-		}
-	} else {
-		// Sequential: process one chromosome at a time.
-		for _, job := range jobs {
-			if err := processChromosome(inputFile, job.name, writer, &countsMu,
-				&nextMI, &totalReads, &totalChanged, countsWriter); err != nil {
-				writer.Close()
-				return err
-			}
+			return err
 		}
 	}
 
-	// Process skipped refs: pass through without UMI clustering.
-	if len(skipRefs) > 0 {
+	// In full-file mode (no --region), pass through skipped refs and
+	// unmapped reads unchanged so the output BAM is complete. In
+	// --region mode, the user is orchestrating per-region jobs
+	// externally, so these pass-through passes are someone else's
+	// concern — we skip them here to avoid duplicating records.
+	if umiClusterRegion == "" {
+		// Skipped refs: pass through without UMI clustering.
 		for _, refName := range skipRefs {
 			ropts := htsio.NewSamReaderOpts().Region(refName)
 			r, err := htsio.NewSamReader(inputFile, ropts)
@@ -260,14 +263,19 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 					writer.Close()
 					return err
 				}
-				writer.Write(rec)
+				if err := writer.Write(rec); err != nil {
+					r.Close()
+					writer.Close()
+					return fmt.Errorf("writing skipped-ref record: %w", err)
+				}
 			}
 			r.Close()
 		}
-	}
 
-	// Process unmapped reads (unless --ignore-unmapped is set).
-	if !umiClusterSkipUnmapped {
+		// Unmapped reads: pass through unchanged. They have no
+		// position so there's nothing to cluster against, but they
+		// belong in the output BAM so downstream tools see a
+		// complete file.
 		unmappedOpts := htsio.NewSamReaderOpts().FlagRequired(0x4)
 		unmappedReader, err := htsio.NewSamReader(inputFile, unmappedOpts)
 		if err != nil {
@@ -284,49 +292,78 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 				writer.Close()
 				return err
 			}
-			writer.Write(rec)
+			if err := writer.Write(rec); err != nil {
+				unmappedReader.Close()
+				writer.Close()
+				return fmt.Errorf("writing unmapped record: %w", err)
+			}
 		}
 		unmappedReader.Close()
 	}
 
 	fmt.Fprintf(os.Stderr, "Total reads: %d, UMIs corrected: %d\n",
-		totalReads.Load(), totalChanged.Load())
+		totalReads, totalChanged)
 	return writer.Close()
 }
 
-// processChromosome runs the overlap-mode grouping + UMI clustering for a
-// single chromosome. The writer is thread-safe; countsMu protects countsWriter.
-func processChromosome(
+// processRegion runs the overlap-mode grouping + UMI clustering for a
+// single samtools region (a chromosome name like "chr19" or a region like
+// "chr19:1000000-2000000"). The caller (umiClusterOverlapMode) invokes
+// this sequentially per region, so the counter pointers are plain *int64
+// rather than atomic — there's no concurrent mutation.
+func processRegion(
 	inputFile string,
-	chromName string,
+	region string,
 	writer *htsio.SamtoolsSamWriter,
-	countsMu *sync.Mutex,
-	nextMI *atomic.Int64,
-	totalReads *atomic.Int64,
-	totalChanged *atomic.Int64,
+	nextMI *int64,
+	totalReads *int64,
+	totalChanged *int64,
 	countsWriter io.Writer,
 ) error {
-	ropts := htsio.NewSamReaderOpts().Region(chromName)
+	ropts := htsio.NewSamReaderOpts().Region(region)
 	reader, err := htsio.NewSamReader(inputFile, ropts)
 	if err != nil {
 		return err
 	}
 	defer reader.Close()
 
-	fmt.Fprintf(os.Stderr, "Processing %s...\n", chromName)
+	fmt.Fprintf(os.Stderr, "Processing %s...\n", region)
 
-	// Per-chromosome state.
-	var buffer []*bufferedRead
+	// Per-region state. Reads are indexed by start and end position in
+	// bin maps (bin size = overlap) so overlap queries are O(matches)
+	// instead of O(buffer_size). The union-find and component maps are
+	// the same as before; only the detection data structure changed.
+	overlap := umiClusterOverlap
+	if overlap <= 0 {
+		overlap = 1 // safety: avoid division by zero in bin keys
+	}
+
+	startIndex := make(map[int][]*bufferedRead) // key = start / overlap
+	endIndex := make(map[int][]*bufferedRead)   // key = end / overlap
+	active := make(map[int]*bufferedRead)        // key = read id
+
 	uf := newUnionFind(1024)
 	activeCount := make(map[int]int)
 	componentReads := make(map[int][]*bufferedRead)
 	globalID := 0
 
-	// Collect results locally, then write in batch to reduce lock contention.
+	// loStartBin / loEndBin are watermarks for the lowest bin that might
+	// still contain reads. Ejection walks forward from the watermark
+	// instead of scanning all bins.
+	loStartBin := 0
+	loEndBin := 0
+
+	// processedGroup holds a fully-clustered read-overlap-group: the
+	// final SamRecords to write, the counts-file lines that describe
+	// this group's clusters, and the number of records whose UMI tag
+	// was rewritten. The split between processGroup (which produces
+	// one of these) and writeGroup (which consumes it) exists so the
+	// per-group stderr log line appears before the records hit the
+	// writer, which makes killed jobs easier to diagnose.
 	type processedGroup struct {
-		recs           []*htsio.SamRecord
-		countsLines    []string
-		readsChanged   int
+		recs         []*htsio.SamRecord
+		countsLines  []string
+		readsChanged int
 	}
 
 	processGroup := func(reads []*bufferedRead) *processedGroup {
@@ -356,7 +393,8 @@ func processChromosome(
 			}
 		}
 		representative := make(map[string]string)
-		results := clusterUMIsParallel(umiCounts, representative, umiVerbose, 1)
+		// Use the full --threads budget for per-group clustering.
+		results := clusterUMIs(umiCounts, representative, umiClusterThreads)
 
 		representativeCount := countRepresentative(results)
 		strandLabel := ""
@@ -367,12 +405,13 @@ func processChromosome(
 			rname, minStart, maxEnd, strandLabel,
 			len(recs), len(results), representativeCount)
 
-		// Assign MI values using the shared atomic counter.
+		// Assign MI values.
 		repToMI := make(map[string]string)
 		if umiClusterMI || countsWriter != nil {
 			for _, r := range results {
 				if _, ok := repToMI[r.representative]; !ok {
-					mi := nextMI.Add(1) - 1
+					mi := *nextMI
+					*nextMI++
 					repToMI[r.representative] = fmt.Sprintf("mi_%09d", mi)
 				}
 			}
@@ -380,7 +419,6 @@ func processChromosome(
 
 		// Build counts lines.
 		item := &groupWorkItem{
-			recs:     recs,
 			rname:    rname,
 			strand:   strand,
 			minStart: minStart,
@@ -408,74 +446,49 @@ func processChromosome(
 		}
 
 		return &processedGroup{
-			recs:        recs,
-			countsLines: cl,
+			recs:         recs,
+			countsLines:  cl,
 			readsChanged: changed,
 		}
 	}
 
-	writeGroup := func(pg *processedGroup) {
+	writeGroup := func(pg *processedGroup) error {
 		if pg == nil {
-			return
+			return nil
 		}
 		for _, rec := range pg.recs {
-			writer.Write(rec)
+			if err := writer.Write(rec); err != nil {
+				return fmt.Errorf("writing record to output BAM: %w", err)
+			}
 		}
 		if countsWriter != nil && len(pg.countsLines) > 0 {
-			countsMu.Lock()
 			for _, line := range pg.countsLines {
-				fmt.Fprintln(countsWriter, line)
+				if _, err := fmt.Fprintln(countsWriter, line); err != nil {
+					return fmt.Errorf("writing umi-counts line: %w", err)
+				}
 			}
-			countsMu.Unlock()
 		}
-		totalReads.Add(int64(len(pg.recs)))
-		totalChanged.Add(int64(pg.readsChanged))
+		*totalReads += int64(len(pg.recs))
+		*totalChanged += int64(pg.readsChanged)
+		return nil
 	}
+
+	// writeErr is set by any writeGroup/submitComponent failure. The
+	// closures check it (and no-op once set) and the main read loop
+	// bails out on the next iteration.
+	var writeErr error
 
 	submitComponent := func(root int) {
 		reads := componentReads[root]
 		delete(componentReads, root)
 		delete(activeCount, root)
 		pg := processGroup(reads)
-		writeGroup(pg)
-	}
-
-	ejectRead := func(b *bufferedRead) {
-		root := uf.find(b.id)
-		componentReads[root] = append(componentReads[root], b)
-		activeCount[root]--
-		if activeCount[root] == 0 {
-			submitComponent(root)
+		if writeErr != nil {
+			return
 		}
-	}
-
-	ejectAll := func() {
-		for _, b := range buffer {
-			ejectRead(b)
+		if err := writeGroup(pg); err != nil {
+			writeErr = err
 		}
-		buffer = buffer[:0]
-	}
-
-	ejectExpired := func(curStart int) {
-		kept := 0
-		for _, b := range buffer {
-			shouldEject := false
-			if umiClusterMatchOneEnd {
-				shouldEject = curStart > b.end+umiClusterOverlap
-			} else {
-				shouldEject = curStart-b.start > umiClusterOverlap
-			}
-			if shouldEject {
-				ejectRead(b)
-			} else {
-				buffer[kept] = b
-				kept++
-			}
-		}
-		for i := kept; i < len(buffer); i++ {
-			buffer[i] = nil
-		}
-		buffer = buffer[:kept]
 	}
 
 	mergeComponents := func(newRoot, oldRoot int) {
@@ -484,6 +497,162 @@ func processChromosome(
 		if reads, ok := componentReads[oldRoot]; ok {
 			componentReads[newRoot] = append(componentReads[newRoot], reads...)
 			delete(componentReads, oldRoot)
+		}
+	}
+
+	// ejectExpired walks the low-numbered bins and ejects reads that
+	// have fallen behind the current position.
+	//
+	// Default mode: eject reads with start < curStart - overlap.
+	//   → walk startIndex bins from loStartBin upward.
+	// match-one-end mode: eject reads with end < curStart - overlap.
+	//   → walk endIndex bins from loEndBin upward.
+	//
+	// Complexity: O(number of reads ejected) amortized, because each
+	// read is ejected exactly once and the watermark only moves forward.
+	ejectExpired := func(curStart int) {
+		threshold := curStart - overlap
+		threshBin := threshold / overlap
+
+		if umiClusterMatchOneEnd {
+			// Eject by end position: reads whose end is too far
+			// behind can no longer match any future read's 3'-end,
+			// and future reads' 5'-starts have already passed them.
+			for bin := loEndBin; bin < threshBin; bin++ {
+				for _, b := range endIndex[bin] {
+					// Remove from startIndex + active only (endIndex
+					// bin will be deleted wholesale below).
+					sBin := b.start / overlap
+					startIndex[sBin] = removeFromBin(startIndex[sBin], b.id)
+					if len(startIndex[sBin]) == 0 {
+						delete(startIndex, sBin)
+					}
+					delete(active, b.id)
+					// Union-find bookkeeping.
+					root := uf.find(b.id)
+					componentReads[root] = append(componentReads[root], b)
+					activeCount[root]--
+					if activeCount[root] == 0 {
+						submitComponent(root)
+					}
+				}
+				delete(endIndex, bin)
+			}
+			// Partial bin at the threshold boundary: check individual reads.
+			if reads, ok := endIndex[threshBin]; ok {
+				kept := 0
+				for _, b := range reads {
+					if b.end < threshold {
+						sBin := b.start / overlap
+						startIndex[sBin] = removeFromBin(startIndex[sBin], b.id)
+						if len(startIndex[sBin]) == 0 {
+							delete(startIndex, sBin)
+						}
+						delete(active, b.id)
+						root := uf.find(b.id)
+						componentReads[root] = append(componentReads[root], b)
+						activeCount[root]--
+						if activeCount[root] == 0 {
+							submitComponent(root)
+						}
+					} else {
+						reads[kept] = b
+						kept++
+					}
+				}
+				for i := kept; i < len(reads); i++ {
+					reads[i] = nil
+				}
+				if kept == 0 {
+					delete(endIndex, threshBin)
+				} else {
+					endIndex[threshBin] = reads[:kept]
+				}
+			}
+			loEndBin = threshBin
+		} else {
+			// Default mode: eject by start position. Since BAM is
+			// coordinate-sorted, all reads in low start-bins have
+			// starts too far behind curStart to match any future
+			// read's 5'-end — and the buffer only contains reads
+			// whose 5' check passes.
+			for bin := loStartBin; bin < threshBin; bin++ {
+				for _, b := range startIndex[bin] {
+					eBin := b.end / overlap
+					endIndex[eBin] = removeFromBin(endIndex[eBin], b.id)
+					if len(endIndex[eBin]) == 0 {
+						delete(endIndex, eBin)
+					}
+					delete(active, b.id)
+					root := uf.find(b.id)
+					componentReads[root] = append(componentReads[root], b)
+					activeCount[root]--
+					if activeCount[root] == 0 {
+						submitComponent(root)
+					}
+				}
+				delete(startIndex, bin)
+			}
+			// Partial bin at threshold boundary.
+			if reads, ok := startIndex[threshBin]; ok {
+				kept := 0
+				for _, b := range reads {
+					if b.start < threshold {
+						eBin := b.end / overlap
+						endIndex[eBin] = removeFromBin(endIndex[eBin], b.id)
+						if len(endIndex[eBin]) == 0 {
+							delete(endIndex, eBin)
+						}
+						delete(active, b.id)
+						root := uf.find(b.id)
+						componentReads[root] = append(componentReads[root], b)
+						activeCount[root]--
+						if activeCount[root] == 0 {
+							submitComponent(root)
+						}
+					} else {
+						reads[kept] = b
+						kept++
+					}
+				}
+				for i := kept; i < len(reads); i++ {
+					reads[i] = nil
+				}
+				if kept == 0 {
+					delete(startIndex, threshBin)
+				} else {
+					startIndex[threshBin] = reads[:kept]
+				}
+			}
+			loStartBin = threshBin
+		}
+	}
+
+	// ejectAll drains every remaining active read. Called after the last
+	// record in the region has been read.
+	ejectAll := func() {
+		for _, b := range active {
+			if writeErr != nil {
+				return
+			}
+			// Inline the union-find bookkeeping (don't call
+			// removeFromIndex — we're about to wipe the maps).
+			root := uf.find(b.id)
+			componentReads[root] = append(componentReads[root], b)
+			activeCount[root]--
+			if activeCount[root] == 0 {
+				submitComponent(root)
+			}
+		}
+		// Wipe all indices.
+		for k := range startIndex {
+			delete(startIndex, k)
+		}
+		for k := range endIndex {
+			delete(endIndex, k)
+		}
+		for k := range active {
+			delete(active, k)
 		}
 	}
 
@@ -498,6 +667,9 @@ func processChromosome(
 	}
 
 	for {
+		if writeErr != nil {
+			return writeErr
+		}
 		rec, err := reader.Next()
 		if err == io.EOF {
 			break
@@ -507,8 +679,6 @@ func processChromosome(
 		}
 
 		if rec.IsUnmapped() || rec.Cigar == "*" {
-			// Unmapped reads in a region query — pass through.
-			writeGroup(&processedGroup{recs: []*htsio.SamRecord{rec}})
 			continue
 		}
 
@@ -531,42 +701,94 @@ func processChromosome(
 
 		activeCount[br.id] = 1
 
-		for _, b := range buffer {
-			if b.strand != br.strand {
-				continue
-			}
+		// Query the bin indices for overlapping reads. In default mode
+		// (match-both-ends), all active reads already pass the 5' check
+		// (the start-based ejection guarantees it), so we only query the
+		// end index. In match-one-end mode, we query both indices and
+		// take the union (via union-find short-circuit on duplicates).
+		//
+		// Each index query touches at most 3 bins (target ± 1), so the
+		// work per read is O(matches) instead of O(buffer_size).
 
-			var matches bool
-			if umiClusterMatchOneEnd {
-				fivePrime := br.start-b.start <= umiClusterOverlap
-				diff := br.end - b.end
-				if diff < 0 {
-					diff = -diff
-				}
-				threePrime := diff <= umiClusterOverlap
-				matches = fivePrime || threePrime
-			} else {
-				diff := br.end - b.end
-				if diff < 0 {
-					diff = -diff
-				}
-				matches = diff <= umiClusterOverlap
-			}
+		endLo := (br.end - overlap) / overlap
+		endHi := (br.end + overlap) / overlap
 
-			if matches {
-				newRoot, oldRoot, merged := uf.union(br.id, b.id)
-				if merged {
-					mergeComponents(newRoot, oldRoot)
+		if umiClusterMatchOneEnd {
+			// 3'-end matches.
+			for bin := endLo; bin <= endHi; bin++ {
+				for _, b := range endIndex[bin] {
+					if b.strand != br.strand {
+						continue
+					}
+					diff := br.end - b.end
+					if diff < 0 {
+						diff = -diff
+					}
+					if diff <= overlap {
+						newRoot, oldRoot, merged := uf.union(br.id, b.id)
+						if merged {
+							mergeComponents(newRoot, oldRoot)
+						}
+					}
+				}
+			}
+			// 5'-start matches: reads with start in
+			// [br.start - overlap, br.start]. Since BAM is
+			// coordinate-sorted, b.start <= br.start for all
+			// buffered reads, so we query
+			// [br.start - overlap, br.start].
+			startLo := (br.start - overlap) / overlap
+			startHi := br.start / overlap
+			for bin := startLo; bin <= startHi; bin++ {
+				for _, b := range startIndex[bin] {
+					if b.strand != br.strand {
+						continue
+					}
+					if br.start-b.start <= overlap {
+						newRoot, oldRoot, merged := uf.union(br.id, b.id)
+						if merged {
+							mergeComponents(newRoot, oldRoot)
+						}
+					}
+				}
+			}
+		} else {
+			// Default mode (match-both-ends): all active reads
+			// already pass the 5' check (start-based ejection
+			// enforces it). Only the 3'-end proximity matters.
+			for bin := endLo; bin <= endHi; bin++ {
+				for _, b := range endIndex[bin] {
+					if b.strand != br.strand {
+						continue
+					}
+					diff := br.end - b.end
+					if diff < 0 {
+						diff = -diff
+					}
+					if diff <= overlap {
+						newRoot, oldRoot, merged := uf.union(br.id, b.id)
+						if merged {
+							mergeComponents(newRoot, oldRoot)
+						}
+					}
 				}
 			}
 		}
 
-		buffer = append(buffer, br)
+		// Insert into indices.
+		sBin := br.start / overlap
+		startIndex[sBin] = append(startIndex[sBin], br)
+		eBin := br.end / overlap
+		endIndex[eBin] = append(endIndex[eBin], br)
+		active[br.id] = br
 	}
 
 	ejectAll()
+	if writeErr != nil {
+		return writeErr
+	}
 
-	fmt.Fprintf(os.Stderr, "Finished %s\n", chromName)
+	fmt.Fprintf(os.Stderr, "Finished %s\n", region)
 	return nil
 }
 
@@ -588,6 +810,16 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 		return fmt.Errorf("no header found in BAM file")
 	}
 
+	// Build a set for O(1) skip-ref lookups.
+	skipSet := make(map[string]bool, len(skipRefs))
+	for _, r := range skipRefs {
+		skipSet[r] = true
+	}
+
+	// Pass 1: collect UMI counts from mapped reads on non-skipped refs.
+	// Unmapped reads have no position and shouldn't influence whole-
+	// genome clustering; skipped refs are passed through unchanged in
+	// pass 2.
 	for {
 		rec, err := reader.Next()
 		if err == io.EOF {
@@ -596,13 +828,11 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 		if err != nil {
 			return err
 		}
-		if umiClusterSkipUnmapped && (rec.IsUnmapped() || rec.Cigar == "*") {
+		if rec.IsUnmapped() || rec.Cigar == "*" {
 			continue
 		}
-		for i := range skipRefs {
-			if rec.RefName == skipRefs[i] {
-				continue
-			}
+		if skipSet[rec.RefName] {
+			continue
 		}
 		if umi := getUMI(rec); umi != "" {
 			umiCounts[umi]++
@@ -612,7 +842,7 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 
 	// Cluster
 	globalRepresentative := make(map[string]string)
-	results := clusterUMIs(umiCounts, globalRepresentative, umiVerbose)
+	results := clusterUMIs(umiCounts, globalRepresentative, umiClusterThreads)
 	representativeCount := countRepresentative(results)
 	fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d representative\n", len(umiCounts), representativeCount)
 
@@ -624,17 +854,23 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 		return err
 	}
 
-	opts := htsio.SamWriterOptions(header).BAM().SortCoord()
-
-	if umiClusterThreads > 1 {
-		opts = opts.Threads(2)
-	}
+	// Keep writer threads consistent with overlap mode: always pass 2 so
+	// samtools sort can compress in parallel when it wants to. The cost
+	// at --threads 1 is negligible.
+	opts := htsio.SamWriterOptions(header).BAM().SortCoord().Threads(2)
 
 	writer, err := htsio.NewSamWriter(umiClusterOutput, opts)
 	if err != nil {
+		reader2.Close()
 		return err
 	}
 
+	// Pass 2: rewrite BAM. Unmapped reads and skipped-ref reads are
+	// passed through unchanged; everything else has its UMI tag
+	// rewritten to the cluster representative.
+	//
+	// Every error return below this point must close both reader2 and
+	// writer to avoid leaking an orphan samtools sort child process.
 	changed := 0
 	total := 0
 	for {
@@ -643,19 +879,27 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 			break
 		}
 		if err != nil {
+			reader2.Close()
+			writer.Close()
 			return err
 		}
 		total++
 
-		if umiClusterSkipUnmapped && (rec.IsUnmapped() || rec.Cigar == "*") {
-			writer.Write(rec)
+		if rec.IsUnmapped() || rec.Cigar == "*" {
+			if err := writer.Write(rec); err != nil {
+				reader2.Close()
+				writer.Close()
+				return fmt.Errorf("writing unmapped record: %w", err)
+			}
 			continue
 		}
-		for i := range skipRefs {
-			if rec.RefName == skipRefs[i] {
-				writer.Write(rec)
-				continue
+		if skipSet[rec.RefName] {
+			if err := writer.Write(rec); err != nil {
+				reader2.Close()
+				writer.Close()
+				return fmt.Errorf("writing skipped-ref record: %w", err)
 			}
+			continue
 		}
 
 		if updateRecordUMI(rec, globalRepresentative) {
@@ -663,7 +907,9 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 		}
 
 		if err := writer.Write(rec); err != nil {
-			return err
+			reader2.Close()
+			writer.Close()
+			return fmt.Errorf("writing record: %w", err)
 		}
 	}
 	reader2.Close()
@@ -699,15 +945,27 @@ func buildUMIClusterCounts(item *groupWorkItem, results []umiClusterResult, repT
 		}
 	}
 
+	// Output format is BED6+ (standard BED6 columns followed by extras):
+	//   chrom, start, end, name, score, strand,
+	//   representative, numUMIs, maxEditDist, umis
+	// where `name` is the molecule ID and `score` is the total read count
+	// for the cluster. BED convention caps score at 1000, but downstream
+	// tools (bedtools, IGV) accept larger values, and preserving the full
+	// count is more useful than clamping.
 	var lines []string
 	for _, ci := range clusters {
-		lines = append(lines, fmt.Sprintf("%s\t%d\t%d\t%s\t%s\t%s\t%d\t%d\t%d\t%s",
-			item.rname, item.minStart, item.maxEnd, ci.mi, item.strand,
-			ci.representative, ci.numReads, len(ci.umis), ci.maxEditDist,
+		lines = append(lines, fmt.Sprintf("%s\t%d\t%d\t%s\t%d\t%s\t%s\t%d\t%d\t%s",
+			item.rname, item.minStart, item.maxEnd, ci.mi, ci.numReads, item.strand,
+			ci.representative, len(ci.umis), ci.maxEditDist,
 			strings.Join(ci.umis, ",")))
 	}
 	return lines
 }
+
+// umiCountsHeaderLine is the commented column header written to the top of
+// the --umi-counts file. Prefixed with '#' so BED parsers treat it as a
+// comment and skip it.
+const umiCountsHeaderLine = "#chrom\tstart\tend\tname\tscore\tstrand\trepresentative\tnumUMIs\tmaxEditDist\tumis"
 
 func getUMI(rec *htsio.SamRecord) string {
 	tag, ok := rec.Tags[umiClusterTag]
@@ -782,8 +1040,28 @@ type levBuf struct {
 	curr []int
 }
 
-// levDist computes Levenshtein edit distance reusing the provided buffers.
-func levDist(a, b string, buf *levBuf) int {
+// levDist computes the Levenshtein edit distance between a and b, optionally
+// bounded by maxDist. A negative maxDist means "no bound" — compute the full
+// distance.
+//
+// When maxDist >= 0, the function uses Ukkonen's cutoff: after filling each
+// DP row it checks the row minimum, and if that minimum already exceeds
+// maxDist it returns maxDist+1 immediately. The correctness argument is the
+// monotonicity invariant "min(row i+1) >= min(row i)" — once the row
+// minimum climbs above the bound, no subsequent row can drop back below
+// it, so the final distance is provably > maxDist.
+//
+// This bound makes a massive difference for UMI clustering where the
+// edit-distance threshold is small (e.g. 3) and the vast majority of
+// pairs are far apart: instead of a full 20x20 = 400-cell DP, we exit
+// after 3–4 rows on most pairs.
+//
+// When the distance actually exceeds the bound, the returned value is
+// `maxDist + 1` (a sentinel meaning "greater than maxDist") — callers
+// that just need the ≤ maxDist check can compare `dist <= maxDist`, and
+// callers that want an exact-but-capped number can clamp the return to
+// maxDist.
+func levDist(a, b string, buf *levBuf, maxDist int) int {
 	m, n := len(a), len(b)
 	if m == 0 {
 		return n
@@ -803,23 +1081,31 @@ func levDist(a, b string, buf *levBuf) int {
 	}
 	for i := 1; i <= m; i++ {
 		buf.curr[0] = i
+		rowMin := i
 		for j := 1; j <= n; j++ {
 			if a[i-1] == b[j-1] {
 				buf.curr[j] = buf.prev[j-1]
 			} else {
 				buf.curr[j] = 1 + min(buf.prev[j], buf.curr[j-1], buf.prev[j-1])
 			}
+			if buf.curr[j] < rowMin {
+				rowMin = buf.curr[j]
+			}
+		}
+		// Ukkonen cutoff: if the best value in this row already exceeds
+		// maxDist, no cell in any subsequent row can drop back below it.
+		if maxDist >= 0 && rowMin > maxDist {
+			return maxDist + 1
 		}
 		buf.prev, buf.curr = buf.curr, buf.prev
 	}
 	return buf.prev[n]
 }
 
-// computeRepresentativeUMI picks the representative UMI from a set of cluster
-// members using multiple sequence alignment followed by majority vote per
 // computeRepresentativeUMI picks the representative UMI for a cluster.
-// The most common UMI (by read count) is chosen. Ties are broken by longer
-// normalized length, then by lexicographic order.
+// The most common UMI (by read count) is chosen. Ties are broken first by
+// longer normalized length and then lexicographically so the choice is
+// deterministic across runs.
 func computeRepresentativeUMI(members []umiCount) string {
 	if len(members) == 0 {
 		return ""
@@ -847,7 +1133,6 @@ type umiClusterResult struct {
 	umi               string
 	representative    string
 	count             int
-	editDist          int // Levenshtein edit distance from this UMI to the cluster representative
 	maxIntraClustDist int // maximum pairwise edit distance between any two members of this cluster
 }
 
@@ -856,23 +1141,31 @@ type umiCount struct {
 	count int
 }
 
-// clusterUMIs clusters UMIs using the configured thread count for the
-// all-pairs edit distance computation (suitable for whole-genome mode
-// where there is a single large group).
-func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]string, verbose bool) []umiClusterResult {
-	return clusterUMIsParallel(umiCounts, globalRepresentative, verbose, umiClusterThreads)
-}
-
 // umiEdge represents a pair of UMIs within the edit distance threshold.
 type umiEdge struct{ i, j, dist int }
 
-func clusterUMIsParallel(umiCounts map[string]int, globalRepresentative map[string]string, verbose bool, numThreads int) []umiClusterResult {
+// clusterUMIs clusters a set of UMI strings using all-pairs Levenshtein
+// edit distance followed by single-linkage union-find. Pairs within
+// umiClusterEditThreshold become edges; connected components become
+// clusters. For each cluster, a representative UMI is chosen (the most
+// common one; see computeRepresentativeUMI) and recorded in
+// globalRepresentative (orig UMI -> representative UMI).
+//
+// numThreads controls the parallelism of the all-pairs loop. Pass 1 for a
+// serial run; pass umiClusterThreads (or another positive value) to split
+// the work across workers.
+func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]string, numThreads int) []umiClusterResult {
 	if len(umiCounts) <= 1 {
-		// Single UMI or empty, nothing to cluster
+		// Single UMI or empty, nothing to cluster. Normalize the
+		// representative so single-member clusters produce the same
+		// separator encoding as multi-member clusters (the multi-UMI
+		// path below runs every representative through
+		// computeRepresentativeUMI → normalizeUMISeparator).
 		var results []umiClusterResult
 		for umi, count := range umiCounts {
-			globalRepresentative[umi] = umi
-			results = append(results, umiClusterResult{umi: umi, representative: umi, count: count})
+			norm := normalizeUMISeparator(umi)
+			globalRepresentative[umi] = norm
+			results = append(results, umiClusterResult{umi: umi, representative: norm, count: count})
 		}
 		return results
 	}
@@ -904,13 +1197,18 @@ func clusterUMIsParallel(umiCounts map[string]int, globalRepresentative map[stri
 	// Compute all-pairs edit distances; collect edges within threshold.
 	// Partition rows across workers so each worker processes a contiguous
 	// block of rows without channel overhead per pair.
+	//
+	// Every levDist call here is bounded by umiClusterEditThreshold: we
+	// only care about pairs that pass the cluster threshold, so the
+	// Ukkonen cutoff lets the DP bail out after just a few rows on
+	// dissimilar UMIs. This is the main speedup for large components.
 	var edges []umiEdge
 
 	if numThreads <= 1 || n < 4 {
 		var buf levBuf
 		for i := range n {
 			for j := i + 1; j < n; j++ {
-				dist := levDist(normalized[i], normalized[j], &buf)
+				dist := levDist(normalized[i], normalized[j], &buf, umiClusterEditThreshold)
 				if dist <= umiClusterEditThreshold {
 					edges = append(edges, umiEdge{i, j, dist})
 				}
@@ -932,7 +1230,7 @@ func clusterUMIsParallel(umiCounts map[string]int, globalRepresentative map[stri
 				var local []umiEdge
 				for i := workerID; i < n; i += numThreads {
 					for j := i + 1; j < n; j++ {
-						dist := levDist(normalized[i], normalized[j], &buf)
+						dist := levDist(normalized[i], normalized[j], &buf, umiClusterEditThreshold)
 						if dist <= umiClusterEditThreshold {
 							local = append(local, umiEdge{i, j, dist})
 						}
@@ -970,30 +1268,37 @@ func clusterUMIsParallel(umiCounts map[string]int, globalRepresentative map[stri
 		union(e.i, e.j)
 	}
 
-	// Group UMIs by component root; track max intra-cluster distance per component.
-	compMembers := make(map[int][]umiCount)
+	// Group UMIs by component root. We store indices into the `umis` /
+	// `normalized` slices so we can look up both the umiCount and the
+	// normalized string for a member without any additional passes.
+	compMembers := make(map[int][]int)
 	for i := range umis {
 		root := find(i)
-		compMembers[root] = append(compMembers[root], umis[i])
+		compMembers[root] = append(compMembers[root], i)
 	}
+
 	// Compute max pairwise edit distance within each component.
+	//
+	// Single-linkage clustering means a component can be wider than the
+	// per-edge threshold — chained A–B–C with d(A,B) <= T and d(B,C) <= T
+	// can still have d(A,C) > T. We want to report that width, but we
+	// cap it at 3 x umiClusterEditThreshold: beyond that we don't care
+	// about the exact number, and capping keeps a pathological cluster
+	// from wasting hours on unbounded DPs in a 100k-read component.
+	//
+	// The returned "max" is min(true_max, 3*threshold + 1) — callers can
+	// treat any value of 3*threshold+1 as "at least 3*threshold+1".
 	compMaxDist := make(map[int]int)
-	for root, compMems := range compMembers {
-		if len(compMems) <= 1 {
+	intraMaxBound := 3 * umiClusterEditThreshold
+	var buf levBuf
+	for root, indices := range compMembers {
+		if len(indices) <= 1 {
 			continue
 		}
-		// Collect indices into the normalized array for this component.
-		var indices []int
-		for i := range umis {
-			if find(i) == root {
-				indices = append(indices, i)
-			}
-		}
-		var buf levBuf
 		maxDist := 0
 		for a := 0; a < len(indices); a++ {
 			for b := a + 1; b < len(indices); b++ {
-				d := levDist(normalized[indices[a]], normalized[indices[b]], &buf)
+				d := levDist(normalized[indices[a]], normalized[indices[b]], &buf, intraMaxBound)
 				if d > maxDist {
 					maxDist = d
 				}
@@ -1002,14 +1307,19 @@ func clusterUMIsParallel(umiCounts map[string]int, globalRepresentative map[stri
 		compMaxDist[root] = maxDist
 	}
 
-	// Compute representative per component (most common UMI).
+	// Compute representative per component (most common UMI). We build a
+	// temporary umiCount slice from the stored indices; allocation is
+	// negligible compared to the O(n^2) distance work above.
 	compRepresentative := make(map[int]string)
-	for root, members := range compMembers {
+	for root, indices := range compMembers {
+		members := make([]umiCount, len(indices))
+		for i, idx := range indices {
+			members[i] = umis[idx]
+		}
 		compRepresentative[root] = computeRepresentativeUMI(members)
 	}
 
 	// Build results and populate globalRepresentative map.
-	var buf levBuf
 	results := make([]umiClusterResult, n)
 	for k := range umis {
 		root := find(k)
@@ -1019,7 +1329,6 @@ func clusterUMIsParallel(umiCounts map[string]int, globalRepresentative map[stri
 			umi:               umis[k].umi,
 			representative:    cons,
 			count:             umis[k].count,
-			editDist:          levDist(normalized[k], normalizeUMISeparator(cons), &buf),
 			maxIntraClustDist: compMaxDist[root],
 		}
 	}
@@ -1046,9 +1355,7 @@ var umiClusterMI bool
 var umiClusterMatchOneEnd bool
 var umiClusterThreads int
 var umiClusterSkipRefs string
-var umiClusterSkipUnmapped bool
-
-var umiVerbose bool
+var umiClusterRegion string
 
 func init() {
 	ontUmiClusterCmd.Flags().StringVarP(&umiClusterOutput, "output", "o", "", "Output BAM file path (required)")
@@ -1057,12 +1364,11 @@ func init() {
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterOverlap, "overlap", 50, "Maximum gap (bp) between reads to group them together")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterWholeGenome, "whole-genome", false, "Process all UMIs as a single group (ignore coordinates)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterNoStrand, "no-strand", false, "Ignore strand when grouping reads (default: group by strand)")
-	ontUmiClusterCmd.Flags().BoolVarP(&umiVerbose, "verbose", "v", false, "Verbose logging")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterSkipRefs, "ignore-refs", "", "References to ignore (reads will be passed through with original UMI) (comma-separated)")
-	ontUmiClusterCmd.Flags().BoolVar(&umiClusterSkipUnmapped, "ignore-unmapped", false, "Ignore unmapped reads (reads will be passed through with original UMI)")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterEditThreshold, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to cluster two UMIs")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterCountsFilename, "umi-counts", "", "Write per-component UMI summary to this file")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMI, "mi", false, "Add MI tag with molecule group ID to output reads")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchOneEnd, "match-one-end", false, "Match reads if EITHER 5' or 3' ends are within gap (default: require BOTH ends)")
 	ontUmiClusterCmd.Flags().IntVarP(&umiClusterThreads, "threads", "t", 1, "Threads for UMI clustering")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterRegion, "region", "", "Process only this region (e.g. 'chr19' or 'chr19:1000-2000'); disables the skipped-ref and unmapped passes")
 }

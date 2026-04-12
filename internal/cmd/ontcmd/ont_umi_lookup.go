@@ -49,7 +49,9 @@ func (r *umiClusterRecord) matchesUMI(queryUMI string, maxDist int) bool {
 	norm := normalizeUMISeparator(queryUMI)
 	var buf levBuf
 	for _, umi := range r.umis {
-		if levDist(norm, normalizeUMISeparator(umi), &buf) <= maxDist {
+		// Bounded: we only care whether the distance is <= maxDist, so
+		// the Ukkonen cutoff lets us bail out early on non-matches.
+		if levDist(norm, normalizeUMISeparator(umi), &buf, maxDist) <= maxDist {
 			return true
 		}
 	}
