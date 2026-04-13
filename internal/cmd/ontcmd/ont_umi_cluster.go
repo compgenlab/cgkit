@@ -1403,48 +1403,10 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 		distFn = levDistHP
 	}
 
-	// Determine the effective edit distance threshold. When
-	// --adaptive-threshold is set, reduce the threshold for large
-	// components where random collisions at higher distances become
-	// likely. The collision probability for two independent UMIs of
-	// length L at distance ≤ d is:
-	//   P(d) ≈ Σ_{k=0}^{d} C(L,k) × 3^k / 4^L
-	// The expected number of false pairs at distance ≤ d in a
-	// component of N unique UMIs is:
-	//   E = N×(N-1)/2 × P(d)
-	// We reduce the threshold until E < maxFalsePairs (default 1).
+	// Compute all-pairs edit distances; collect edges within threshold.
+	// The Ukkonen cutoff bails out after a few DP rows on dissimilar
+	// pairs, so the bound directly affects performance.
 	edgeThreshold := umiClusterEditThreshold
-	if umiClusterAdaptiveThreshold && n > 1 {
-		// Auto-detect UMI length from the first normalized string,
-		// excluding separator characters.
-		umiLen := 0
-		for _, c := range normalized[0] {
-			if c != '/' {
-				umiLen++
-			}
-		}
-		if umiLen > 0 {
-			nPairs := float64(n) * float64(n-1) / 2.0
-			for d := edgeThreshold; d >= 1; d-- {
-				p := collisionProb(umiLen, d)
-				expectedFalse := nPairs * p
-				if expectedFalse > umiClusterMaxFalsePairs {
-					edgeThreshold = d - 1
-				}
-			}
-			if edgeThreshold < umiClusterEditThreshold {
-				fmt.Fprintf(os.Stderr, "  adaptive threshold: %d -> %d (N=%d, expected false at %d: %.1f)\n",
-					umiClusterEditThreshold, edgeThreshold, n,
-					edgeThreshold+1, nPairs*collisionProb(umiLen, edgeThreshold+1))
-			}
-		}
-	}
-
-	// Compute all-pairs edit distances; collect edges within the
-	// (possibly adaptive) threshold. The Ukkonen cutoff bails out
-	// after a few DP rows on dissimilar pairs, so the bound directly
-	// affects performance — a tighter edgeThreshold means faster
-	// edge-finding.
 	var edges []umiEdge
 
 	if numThreads <= 1 || n < 4 {
@@ -1486,6 +1448,69 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 
 		for _, localEdges := range workerEdges {
 			edges = append(edges, localEdges...)
+		}
+	}
+
+	// Adaptive threshold: post-filter edges by per-distance FPR.
+	//
+	// For each distance d, compute:
+	//   FPR(d) = E_false(d) / actual_edges(d)
+	// where E_false(d) = N*(N-1)/2 * P(exactly d) is the expected
+	// number of random pairs at exactly distance d, and actual_edges(d)
+	// is the number of edges found at that distance.
+	//
+	// If FPR(d) exceeds --max-fdr (default 0.05), all edges at that
+	// distance are discarded. This naturally scales with component
+	// size: small components keep all distances, large components drop
+	// higher distances where random collisions dominate.
+	if umiClusterAdaptiveThreshold && n > 1 && len(edges) > 0 {
+		// Auto-detect UMI length from the first normalized string,
+		// excluding separator characters.
+		umiLen := 0
+		for _, c := range normalized[0] {
+			if c != '/' {
+				umiLen++
+			}
+		}
+		if umiLen > 0 {
+			nPairs := float64(n) * float64(n-1) / 2.0
+
+			// Count actual edges per distance.
+			edgeCountByDist := make(map[int]int)
+			for _, e := range edges {
+				edgeCountByDist[e.dist]++
+			}
+
+			// Determine which distances to exclude based on FPR.
+			excludeDist := make(map[int]bool)
+			for d := 1; d <= edgeThreshold; d++ {
+				actual := edgeCountByDist[d]
+				if actual == 0 {
+					continue
+				}
+				// P(exactly d) = C(L,d) * 3^d / 4^L
+				// (collisionProb gives cumulative ≤ d, so subtract ≤ d-1)
+				pExact := collisionProb(umiLen, d) - collisionProb(umiLen, d-1)
+				expectedFalse := nPairs * pExact
+				fdr := expectedFalse / float64(actual)
+				if fdr > umiClusterAdaptiveAlpha {
+					excludeDist[d] = true
+					fmt.Fprintf(os.Stderr, "  adaptive: excluding d=%d edges (FPR=%.1f%%, %d edges, %.0f expected false)\n",
+						d, fdr*100, actual, expectedFalse)
+				}
+			}
+
+			// Filter edges.
+			if len(excludeDist) > 0 {
+				kept := 0
+				for _, e := range edges {
+					if !excludeDist[e.dist] {
+						edges[kept] = e
+						kept++
+					}
+				}
+				edges = edges[:kept]
+			}
 		}
 	}
 
@@ -1811,24 +1836,24 @@ var umiClusterRegion string
 var umiClusterHPDist bool
 var umiClusterMethod string
 var umiClusterAdaptiveThreshold bool
-var umiClusterMaxFalsePairs float64
+var umiClusterAdaptiveAlpha float64
 
 func init() {
 	ontUmiClusterCmd.Flags().StringVarP(&umiClusterOutput, "output", "o", "", "Output BAM file path (required)")
-	ontUmiClusterCmd.Flags().StringVar(&umiClusterTag, "umi-tag", "RX", "SAM tag containing UMI sequence")
-	ontUmiClusterCmd.Flags().StringVar(&umiClusterOrigTag, "orig-umi-tag", "OX", "SAM tag to store original UMI before correction")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterTag, "tag-umi", "RX", "SAM tag containing UMI sequence")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterOrigTag, "tag-orig", "OX", "SAM tag to store original UMI before correction")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterOverlap, "overlap", 50, "Maximum gap (bp) between reads to group them together")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterWholeGenome, "whole-genome", false, "Process all UMIs as a single group (ignore coordinates)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterNoStrand, "no-strand", false, "Ignore strand when grouping reads (default: group by strand)")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterSkipRefs, "ignore-refs", "", "References to ignore (reads will be passed through with original UMI) (comma-separated)")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterEditThreshold, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to cluster two UMIs")
-	ontUmiClusterCmd.Flags().StringVar(&umiClusterCountsFilename, "umi-counts", "", "Write per-component UMI summary to this file")
-	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMI, "mi", false, "Add MI tag with molecule group ID to output reads")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterCountsFilename, "summary-counts", "", "Write per-cluster UMI summary to this file")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMI, "tag-mi", false, "Add MI tag with molecule group ID to output reads")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchOneEnd, "match-one-end", false, "Match reads if EITHER 5' or 3' ends are within gap (default: require BOTH ends)")
 	ontUmiClusterCmd.Flags().IntVarP(&umiClusterThreads, "threads", "t", 1, "Threads for UMI clustering")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterRegion, "region", "", "Process only this region (e.g. 'chr19' or 'chr19:1000-2000'); disables the skipped-ref and unmapped passes")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterHPDist, "hp-dist", false, "Use HP-aware edit distance where homopolymer indels cost 0 (handles ONT HP-length errors without distorting non-HP mutations)")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterMethod, "umi-cluster-method", "adjacency", "UMI clustering method: connected (single-linkage), adjacency (greedy, no chaining), directional (PCR error count model), tiered (distance-attenuated BFS clustering)")
-	ontUmiClusterCmd.Flags().BoolVar(&umiClusterAdaptiveThreshold, "adaptive-threshold", false, "Reduce edit distance threshold for large components to limit random collisions")
-	ontUmiClusterCmd.Flags().Float64Var(&umiClusterMaxFalsePairs, "max-false-pairs", 1.0, "Maximum expected random false pairs allowed before reducing threshold (used with --adaptive-threshold)")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterAdaptiveThreshold, "adaptive-threshold", false, "Discard edges at distances where random collisions exceed the FPR threshold")
+	ontUmiClusterCmd.Flags().Float64Var(&umiClusterAdaptiveAlpha, "adaptive-alpha", 0.05, "Maximum false positive rate per edit distance level (used with --adaptive-threshold)")
 }
