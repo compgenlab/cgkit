@@ -3,6 +3,7 @@ package ontcmd
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -1199,6 +1200,107 @@ func levDist(a, b string, buf *levBuf, maxDist int) int {
 	return buf.prev[n]
 }
 
+// levDistHP computes an HP-aware Levenshtein edit distance. It uses the
+// same bounded DP as levDist, but insertions and deletions within a
+// homopolymer run cost 0 instead of 1. Specifically:
+//
+//   - Deleting a[i] costs 0 if a[i] == a[i-1] (shrinking an HP run in a)
+//   - Inserting b[j] costs 0 if b[j] == b[j-1] (shrinking an HP run in b)
+//   - Substitutions always cost 1 (or 0 for a match)
+//
+// This correctly handles ONT's most common error mode (HP-length
+// variation) without the distortion that full HP compression causes.
+// For example:
+//
+//	AAGA vs AAAA: substitution G→A = distance 1 (correct, not inflated)
+//	AAACG vs AACG: HP indel = distance 0 (HP error collapsed)
+//	AAGA vs AAGGA: HP indel in G run = distance 0 (HP error collapsed)
+func levDistHP(a, b string, buf *levBuf, maxDist int) int {
+	m, n := len(a), len(b)
+	if m == 0 {
+		return n
+	}
+	if n == 0 {
+		return m
+	}
+	if cap(buf.prev) <= n {
+		buf.prev = make([]int, n+1)
+		buf.curr = make([]int, n+1)
+	} else {
+		buf.prev = buf.prev[:n+1]
+		buf.curr = buf.curr[:n+1]
+	}
+	// Initialize row 0: inserting b[0..j-1]. HP indels in b cost 0.
+	buf.prev[0] = 0
+	for j := 1; j <= n; j++ {
+		cost := 1
+		if j >= 2 && b[j-1] == b[j-2] {
+			cost = 0 // HP indel in b
+		}
+		buf.prev[j] = buf.prev[j-1] + cost
+	}
+	for i := 1; i <= m; i++ {
+		// Cost of deleting a[i-1] (row header).
+		delCostA := 1
+		if i >= 2 && a[i-1] == a[i-2] {
+			delCostA = 0 // HP indel in a
+		}
+		buf.curr[0] = buf.prev[0] + delCostA
+		rowMin := buf.curr[0]
+		for j := 1; j <= n; j++ {
+			if a[i-1] == b[j-1] {
+				// Match: no cost.
+				buf.curr[j] = buf.prev[j-1]
+			} else {
+				// Deletion cost: removing a[i-1]. Free if it extends
+				// an HP run in a (a[i-1] == a[i-2]).
+				del := buf.prev[j] + delCostA
+				// Insertion cost: inserting b[j-1]. Free if it extends
+				// an HP run in b (b[j-1] == b[j-2]).
+				insCostB := 1
+				if j >= 2 && b[j-1] == b[j-2] {
+					insCostB = 0
+				}
+				ins := buf.curr[j-1] + insCostB
+				// Substitution: always costs 1.
+				sub := buf.prev[j-1] + 1
+				buf.curr[j] = min(del, ins, sub)
+			}
+			if buf.curr[j] < rowMin {
+				rowMin = buf.curr[j]
+			}
+		}
+		if maxDist >= 0 && rowMin > maxDist {
+			return maxDist + 1
+		}
+		buf.prev, buf.curr = buf.curr, buf.prev
+	}
+	return buf.prev[n]
+}
+
+// collisionProb returns the probability that two independent random UMIs
+// of length L (over a 4-letter alphabet) are within Levenshtein edit
+// distance d of each other, using the substitution-only approximation:
+//
+//	P(dist ≤ d) ≈ Σ_{k=0}^{d} C(L,k) × 3^k / 4^L
+//
+// This is an upper bound (indels expand the neighborhood slightly) but
+// a good approximation for short UMIs where most errors are substitutions
+// or short HP indels.
+func collisionProb(L, d int) float64 {
+	total := 0.0
+	choose := 1.0 // C(L, k) computed iteratively
+	pow3 := 1.0   // 3^k
+	pow4L := math.Pow(4.0, float64(L))
+	for k := 0; k <= d; k++ {
+		total += choose * pow3 / pow4L
+		// Update for next k: C(L, k+1) = C(L, k) * (L-k) / (k+1)
+		choose *= float64(L-k) / float64(k+1)
+		pow3 *= 3.0
+	}
+	return total
+}
+
 // computeRepresentativeUMI picks the representative UMI for a cluster.
 // The most common UMI (by read count) is chosen. Ties are broken first by
 // longer normalized length and then lexicographically so the choice is
@@ -1291,22 +1393,66 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 		normalized[i] = normalizeUMISeparator(u.umi)
 	}
 
-	// Compute all-pairs edit distances; collect edges within threshold.
-	// Partition rows across workers so each worker processes a contiguous
-	// block of rows without channel overhead per pair.
-	//
-	// Every levDist call here is bounded by umiClusterEditThreshold: we
-	// only care about pairs that pass the cluster threshold, so the
-	// Ukkonen cutoff lets the DP bail out after just a few rows on
-	// dissimilar UMIs. This is the main speedup for large components.
+	// Select the distance function. When --hp-dist is set, use an
+	// HP-aware Levenshtein where insertions/deletions within a
+	// homopolymer run cost 0 instead of 1. This correctly handles
+	// ONT's most common error mode (HP-length variation) without the
+	// distortion that full HP compression causes on non-HP mutations.
+	distFn := levDist
+	if umiClusterHPDist {
+		distFn = levDistHP
+	}
+
+	// Determine the effective edit distance threshold. When
+	// --adaptive-threshold is set, reduce the threshold for large
+	// components where random collisions at higher distances become
+	// likely. The collision probability for two independent UMIs of
+	// length L at distance ≤ d is:
+	//   P(d) ≈ Σ_{k=0}^{d} C(L,k) × 3^k / 4^L
+	// The expected number of false pairs at distance ≤ d in a
+	// component of N unique UMIs is:
+	//   E = N×(N-1)/2 × P(d)
+	// We reduce the threshold until E < maxFalsePairs (default 1).
+	edgeThreshold := umiClusterEditThreshold
+	if umiClusterAdaptiveThreshold && n > 1 {
+		// Auto-detect UMI length from the first normalized string,
+		// excluding separator characters.
+		umiLen := 0
+		for _, c := range normalized[0] {
+			if c != '/' {
+				umiLen++
+			}
+		}
+		if umiLen > 0 {
+			nPairs := float64(n) * float64(n-1) / 2.0
+			for d := edgeThreshold; d >= 1; d-- {
+				p := collisionProb(umiLen, d)
+				expectedFalse := nPairs * p
+				if expectedFalse > umiClusterMaxFalsePairs {
+					edgeThreshold = d - 1
+				}
+			}
+			if edgeThreshold < umiClusterEditThreshold {
+				fmt.Fprintf(os.Stderr, "  adaptive threshold: %d -> %d (N=%d, expected false at %d: %.1f)\n",
+					umiClusterEditThreshold, edgeThreshold, n,
+					edgeThreshold+1, nPairs*collisionProb(umiLen, edgeThreshold+1))
+			}
+		}
+	}
+
+	// Compute all-pairs edit distances; collect edges within the
+	// (possibly adaptive) threshold. The Ukkonen cutoff bails out
+	// after a few DP rows on dissimilar pairs, so the bound directly
+	// affects performance — a tighter edgeThreshold means faster
+	// edge-finding.
 	var edges []umiEdge
 
 	if numThreads <= 1 || n < 4 {
 		var buf levBuf
 		for i := range n {
 			for j := i + 1; j < n; j++ {
-				dist := levDist(normalized[i], normalized[j], &buf, umiClusterEditThreshold)
-				if dist <= umiClusterEditThreshold {
+				dist := distFn(normalized[i], normalized[j], &buf, edgeThreshold)
+				if dist <= edgeThreshold {
 					edges = append(edges, umiEdge{i, j, dist})
 				}
 			}
@@ -1327,8 +1473,8 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 				var local []umiEdge
 				for i := workerID; i < n; i += numThreads {
 					for j := i + 1; j < n; j++ {
-						dist := levDist(normalized[i], normalized[j], &buf, umiClusterEditThreshold)
-						if dist <= umiClusterEditThreshold {
+						dist := distFn(normalized[i], normalized[j], &buf, edgeThreshold)
+						if dist <= edgeThreshold {
 							local = append(local, umiEdge{i, j, dist})
 						}
 					}
@@ -1343,35 +1489,190 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 		}
 	}
 
-	// Union-Find: find connected components.
-	parent := make([]int, n)
-	for i := range parent {
-		parent[i] = i
-	}
-	var find func(int) int
-	find = func(x int) int {
-		if parent[x] != x {
-			parent[x] = find(parent[x]) // path compression
-		}
-		return parent[x]
-	}
-	union := func(x, y int) {
-		px, py := find(x), find(y)
-		if px != py {
-			parent[px] = py
-		}
-	}
-	for _, e := range edges {
-		union(e.i, e.j)
-	}
-
-	// Group UMIs by component root. We store indices into the `umis` /
-	// `normalized` slices so we can look up both the umiCount and the
-	// normalized string for a member without any additional passes.
+	// ---------------------------------------------------------------
+	// Cluster UMIs from edges using the selected method.
+	//
+	// All methods produce the same output: compMembers, a map from
+	// cluster ID → list of member indices into umis/normalized.
+	//
+	//   connected  : single-linkage via union-find on all edges.
+	//                Can chain (A↔B↔C even if d(A,C) >> threshold).
+	//   adjacency  : greedy assignment. Highest-count UMI becomes a
+	//                center, all its direct neighbors join. No chaining.
+	//   directional: filter edges by PCR error count model, then
+	//                union-find on filtered edges. Only low-count UMIs
+	//                merge into high-count ones.
+	//   tiered     : BFS from centers with decreasing edit distance
+	//                per hop. More permissive than adjacency (multiple
+	//                hops) but prevents chaining at high distances.
+	// ---------------------------------------------------------------
 	compMembers := make(map[int][]int)
-	for i := range umis {
-		root := find(i)
-		compMembers[root] = append(compMembers[root], i)
+
+	switch umiClusterMethod {
+	case "adjacency":
+		// Build adjacency list from edges.
+		neighbors := make(map[int][]int, n)
+		for _, e := range edges {
+			neighbors[e.i] = append(neighbors[e.i], e.j)
+			neighbors[e.j] = append(neighbors[e.j], e.i)
+		}
+		// Greedy assignment: process UMIs in count-descending order
+		// (umis is already sorted by count desc, ties by umi asc).
+		// Each unassigned UMI becomes a cluster center; all its
+		// unassigned direct neighbors join that cluster.
+		clusterOf := make([]int, n)
+		for i := range clusterOf {
+			clusterOf[i] = -1
+		}
+		for i := range umis {
+			if clusterOf[i] != -1 {
+				continue
+			}
+			clusterOf[i] = i // new cluster center
+			for _, j := range neighbors[i] {
+				if clusterOf[j] == -1 {
+					clusterOf[j] = i
+				}
+			}
+		}
+		for i, center := range clusterOf {
+			if center == -1 {
+				center = i // isolated UMI, no edges
+			}
+			compMembers[center] = append(compMembers[center], i)
+		}
+
+	case "directional":
+		// Filter edges by PCR error count model: only keep edge (i,j)
+		// if the lower-count UMI could plausibly be a PCR/sequencing
+		// error of the higher-count one. The formula from UMI-tools
+		// (Smith et al. 2017) is:
+		//   count(low) ≤ 2 × count(high) × (1/4)^distance
+		// which models the expected number of errors at `distance`
+		// substitutions with a per-base error rate of 1/4.
+		var filtered []umiEdge
+		for _, e := range edges {
+			lo, hi := e.i, e.j
+			if umis[lo].count > umis[hi].count {
+				lo, hi = hi, lo
+			}
+			maxErrorCount := 2.0 * float64(umis[hi].count) * math.Pow(0.25, float64(e.dist))
+			if float64(umis[lo].count) <= maxErrorCount {
+				filtered = append(filtered, e)
+			}
+		}
+		// Union-find on the filtered edges.
+		parent := make([]int, n)
+		for i := range parent {
+			parent[i] = i
+		}
+		var find func(int) int
+		find = func(x int) int {
+			if parent[x] != x {
+				parent[x] = find(parent[x])
+			}
+			return parent[x]
+		}
+		for _, e := range filtered {
+			px, py := find(e.i), find(e.j)
+			if px != py {
+				parent[px] = py
+			}
+		}
+		for i := range umis {
+			compMembers[find(i)] = append(compMembers[find(i)], i)
+		}
+
+	case "tiered":
+		// BFS from high-count centers with decreasing edit distance
+		// threshold at each hop. With --umi-edit-distance T:
+		//   Hop 0: center (highest-count unassigned UMI)
+		//   Hop 1: neighbors at d ≤ T
+		//   Hop 2: neighbors at d ≤ T-1
+		//   Hop k: neighbors at d ≤ T-k (stop when T-k < 1)
+		//
+		// This is more permissive than adjacency (which is one hop)
+		// but prevents chaining at high distances: you can't go
+		// center→A(d=3)→B(d=3) because hop 2 requires d≤2.
+
+		// Build adjacency list with distance annotations.
+		type neighbor struct {
+			idx  int
+			dist int
+		}
+		neighbors := make(map[int][]neighbor, n)
+		for _, e := range edges {
+			neighbors[e.i] = append(neighbors[e.i], neighbor{e.j, e.dist})
+			neighbors[e.j] = append(neighbors[e.j], neighbor{e.i, e.dist})
+		}
+
+		clusterOf := make([]int, n)
+		for i := range clusterOf {
+			clusterOf[i] = -1
+		}
+
+		// Process UMIs in count-descending order (umis already sorted).
+		for i := range umis {
+			if clusterOf[i] != -1 {
+				continue
+			}
+			// This UMI is a new cluster center.
+			clusterOf[i] = i
+
+			// BFS with decreasing threshold per hop.
+			type bfsEntry struct {
+				idx int
+				hop int
+			}
+			queue := []bfsEntry{{i, 0}}
+			for len(queue) > 0 {
+				cur := queue[0]
+				queue = queue[1:]
+				nextHop := cur.hop + 1
+				maxDist := edgeThreshold - cur.hop
+				if maxDist < 1 {
+					continue // no more hops allowed
+				}
+				for _, nb := range neighbors[cur.idx] {
+					if clusterOf[nb.idx] != -1 {
+						continue
+					}
+					if nb.dist <= maxDist {
+						clusterOf[nb.idx] = i
+						queue = append(queue, bfsEntry{nb.idx, nextHop})
+					}
+				}
+			}
+		}
+
+		for i, center := range clusterOf {
+			if center == -1 {
+				center = i
+			}
+			compMembers[center] = append(compMembers[center], i)
+		}
+
+	default: // "connected" — current single-linkage behavior
+		parent := make([]int, n)
+		for i := range parent {
+			parent[i] = i
+		}
+		var find func(int) int
+		find = func(x int) int {
+			if parent[x] != x {
+				parent[x] = find(parent[x])
+			}
+			return parent[x]
+		}
+		for _, e := range edges {
+			px, py := find(e.i), find(e.j)
+			if px != py {
+				parent[px] = py
+			}
+		}
+		for i := range umis {
+			compMembers[find(i)] = append(compMembers[find(i)], i)
+		}
 	}
 
 	// Compute max pairwise edit distance within each component.
@@ -1404,7 +1705,7 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 			maxDist := 0
 			for a := 0; a < nIdx; a++ {
 				for b := a + 1; b < nIdx; b++ {
-					d := levDist(normalized[indices[a]], normalized[indices[b]], &buf, intraMaxBound)
+					d := distFn(normalized[indices[a]], normalized[indices[b]], &buf, intraMaxBound)
 					if d > maxDist {
 						maxDist = d
 					}
@@ -1423,7 +1724,7 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 					localMax := 0
 					for a := workerID; a < nIdx; a += numThreads {
 						for b := a + 1; b < nIdx; b++ {
-							d := levDist(normalized[indices[a]], normalized[indices[b]], &buf, intraMaxBound)
+							d := distFn(normalized[indices[a]], normalized[indices[b]], &buf, intraMaxBound)
 							if d > localMax {
 								localMax = d
 							}
@@ -1443,29 +1744,36 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 		}
 	}
 
-	// Compute representative per component (most common UMI). We build a
-	// temporary umiCount slice from the stored indices; allocation is
-	// negligible compared to the O(n^2) distance work above.
+	// Pick the representative for each cluster: the highest-count member.
+	// Since umis is sorted by count desc (ties broken by umi asc), the
+	// member with the smallest index is the highest-count UMI in the
+	// cluster. We normalize its separator for consistent output.
 	compRepresentative := make(map[int]string)
 	for root, indices := range compMembers {
-		members := make([]umiCount, len(indices))
-		for i, idx := range indices {
-			members[i] = umis[idx]
+		bestIdx := indices[0]
+		for _, idx := range indices[1:] {
+			if idx < bestIdx {
+				bestIdx = idx
+			}
 		}
-		compRepresentative[root] = computeRepresentativeUMI(members)
+		compRepresentative[root] = normalizeUMISeparator(umis[bestIdx].umi)
 	}
 
-	// Build results and populate globalRepresentative map.
+	// Build results and populate globalRepresentative map. We iterate
+	// compMembers (not a find() call) because the union-find is only
+	// defined inside the switch branches above.
 	results := make([]umiClusterResult, n)
-	for k := range umis {
-		root := find(k)
+	for root, indices := range compMembers {
 		cons := compRepresentative[root]
-		globalRepresentative[umis[k].umi] = cons
-		results[k] = umiClusterResult{
-			umi:               umis[k].umi,
-			representative:    cons,
-			count:             umis[k].count,
-			maxIntraClustDist: compMaxDist[root],
+		maxDist := compMaxDist[root]
+		for _, k := range indices {
+			globalRepresentative[umis[k].umi] = cons
+			results[k] = umiClusterResult{
+				umi:               umis[k].umi,
+				representative:    cons,
+				count:             umis[k].count,
+				maxIntraClustDist: maxDist,
+			}
 		}
 	}
 	return results
@@ -1500,6 +1808,10 @@ var umiClusterMatchOneEnd bool
 var umiClusterThreads int
 var umiClusterSkipRefs string
 var umiClusterRegion string
+var umiClusterHPDist bool
+var umiClusterMethod string
+var umiClusterAdaptiveThreshold bool
+var umiClusterMaxFalsePairs float64
 
 func init() {
 	ontUmiClusterCmd.Flags().StringVarP(&umiClusterOutput, "output", "o", "", "Output BAM file path (required)")
@@ -1515,4 +1827,8 @@ func init() {
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchOneEnd, "match-one-end", false, "Match reads if EITHER 5' or 3' ends are within gap (default: require BOTH ends)")
 	ontUmiClusterCmd.Flags().IntVarP(&umiClusterThreads, "threads", "t", 1, "Threads for UMI clustering")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterRegion, "region", "", "Process only this region (e.g. 'chr19' or 'chr19:1000-2000'); disables the skipped-ref and unmapped passes")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterHPDist, "hp-dist", false, "Use HP-aware edit distance where homopolymer indels cost 0 (handles ONT HP-length errors without distorting non-HP mutations)")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterMethod, "umi-cluster-method", "adjacency", "UMI clustering method: connected (single-linkage), adjacency (greedy, no chaining), directional (PCR error count model), tiered (distance-attenuated BFS clustering)")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterAdaptiveThreshold, "adaptive-threshold", false, "Reduce edit distance threshold for large components to limit random collisions")
+	ontUmiClusterCmd.Flags().Float64Var(&umiClusterMaxFalsePairs, "max-false-pairs", 1.0, "Maximum expected random false pairs allowed before reducing threshold (used with --adaptive-threshold)")
 }
