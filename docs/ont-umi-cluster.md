@@ -93,6 +93,18 @@ Greedy assignment. UMIs are processed in count-descending order. Each unassigned
 
 This is the recommended method for ONT data. Two high-count UMIs that are close (e.g., 2 edits apart) always merge — whichever has the higher count grabs the other. This handles the ONT error model where two well-amplified copies of the same molecule can have independent sequencing errors.
 
+Because adjacency is strictly one-hop, UMIs that are only reachable through intermediate nodes are not clustered, even if those intermediates are close. For example, with `--umi-edit-distance 3` and these edges:
+
+```
+A(100)—d=1—B(40)    B—d=1—C(15)    C—d=2—D(8)    A—d=3—D    D—d=1—E(3)
+```
+
+A becomes center and grabs its direct neighbors B (d=1) and D (d=3). C and E have no edge to A, so they are not claimed. C becomes its own center next (count 15), but its neighbors B and D are already assigned — so C is a singleton. E likewise becomes a singleton.
+
+Result: {A, B, D}, {C}, {E}.
+
+By contrast, tiered with the same edges produces {A, B, C, D, E}: B and D each pull in their neighbors on hop 2 (with `maxDist = 2`), reaching C and E that adjacency cannot.
+
 #### `directional`
 
 Edges are filtered by a PCR error count model before union-find:
@@ -101,7 +113,9 @@ Edges are filtered by a PCR error count model before union-find:
 count(low) <= 2 * count(high) * (1/4)^distance
 ```
 
-Only low-count UMIs that could plausibly be PCR/sequencing errors of a high-count UMI create edges. Two equally-expressed UMIs do not merge. This model is from UMI-tools (Smith et al., Genome Research 2017) and is calibrated for Illumina error rates (~0.1%). It is generally **too conservative for ONT** where per-base error rates are 5-15%.
+Only low-count UMIs that could plausibly be PCR/sequencing errors of a high-count UMI create edges. Two equally-expressed UMIs do not merge. This is a two-step process: first, edges that fail the count-ratio test are removed; then, union-find is applied to the surviving edges with full transitive closure (the same as `connected`). Chaining can still occur — if A–B and B–C both pass the count filter, A and C end up in the same cluster regardless of d(A,C) — but the count filter makes it harder for edges to survive, reducing chaining in practice.
+
+This model is from UMI-tools (Smith et al., Genome Research 2017) and is calibrated for Illumina error rates (~0.1%). It is generally **too conservative for ONT** where per-base error rates are 5-15%.
 
 #### `tiered` (distance-attenuated BFS clustering)
 
@@ -117,6 +131,77 @@ With --umi-edit-distance 3:
 ```
 
 This is more permissive than adjacency (which is one hop only) but prevents chaining at high distances: a chain center-A(d=3)-B(d=3) is blocked because hop 2 requires d <= 2. Very similar UMIs (d=1) can chain up to 3 hops deep, capturing errors-of-errors, while distant UMIs (d=3) are limited to direct neighbors of the center.
+
+##### Worked example
+
+Consider two independent groups of UMIs (e.g., from different molecules) with `--umi-edit-distance 3`:
+
+```
+Group 1                          Group 2
+UMI  Count                       UMI  Count
+ A    100                         L    90
+ B     40                         M    35
+ C     15                         N    12
+ D      8                         O     6
+ E      3                         P     2
+
+Edges (group 1):                 Edges (group 2):
+ A—B: d=1                        L—M: d=1
+ B—C: d=1                        M—N: d=1
+ C—D: d=2                        N—O: d=2
+ A—D: d=3                        L—O: d=3
+ D—E: d=1                        O—P: d=1
+```
+
+No edges exist between the two groups.
+
+**Processing order** (by count descending): A(100), L(90), B(40), M(35), ...
+
+**Step 1 — A becomes center, BFS runs to completion:**
+
+| Queue entry | maxDist (= 3 − hop) | Outcome |
+|---|---|---|
+| A, hop 0 | 3 | Neighbors: B (d=1 ≤ 3 ✓), D (d=3 ≤ 3 ✓). Both join cluster A at hop 1. |
+| B, hop 1 | 2 | Neighbors: C (d=1 ≤ 2 ✓). C joins at hop 2. |
+| D, hop 1 | 2 | Neighbors: C (assigned, skip), E (d=1 ≤ 2 ✓). E joins at hop 2. |
+| C, hop 2 | 1 | Neighbors: D (assigned, skip). No new members. |
+| E, hop 2 | 1 | No unassigned neighbors. |
+
+Cluster A = {A, B, C, D, E}. BFS is complete.
+
+**Step 2 — L becomes center, BFS runs to completion:**
+
+The same process repeats independently: L claims M, N, O, P via BFS with the same hop logic. Cluster L = {L, M, N, O, P}.
+
+**Result:** Two separate clusters. No merging occurs between them — clusters are never combined after formation.
+
+##### Comparison to other methods on a chain topology
+
+Now consider a chain where every link is d=3:
+
+```
+A (100) —d=3— B (5) —d=3— C (2)
+```
+
+| Method | Result | Why |
+|---|---|---|
+| **connected** | {A, B, C} | Union-find merges transitively: A–B and B–C ⇒ A–B–C. |
+| **adjacency** | {A, B}, {C} | One hop only: A grabs B, but C is not A's neighbor. |
+| **tiered** | {A, B}, {C} | A→B at hop 1 uses full budget (d=3 ≤ 3). B→C at hop 2 requires d ≤ 2, but d=3 > 2. Blocked. |
+
+If the chain uses d=1 edges instead:
+
+```
+A (100) —d=1— B (5) —d=1— C (2)
+```
+
+| Method | Result | Why |
+|---|---|---|
+| **connected** | {A, B, C} | Same as before. |
+| **adjacency** | {A, B}, {C} | Still one hop — C is not a direct neighbor of A. |
+| **tiered** | {A, B, C} | A→B at hop 1 (d=1 ≤ 3). B→C at hop 2 (d=1 ≤ 2). Allowed. |
+
+This illustrates the key property of tiered: close UMIs (d=1) can chain through multiple hops, capturing errors-of-errors, while distant UMIs (d=3) cannot chain beyond the center.
 
 ### Adaptive threshold (`--adaptive-threshold`)
 
