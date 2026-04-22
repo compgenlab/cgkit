@@ -367,7 +367,7 @@ func processReads(
 					}
 				}
 				representative := make(map[string]string)
-				results := clusterUMIs(umiCounts, representative, umiClusterThreads)
+				results, effectiveThreshold := clusterUMIs(umiCounts, representative, umiClusterThreads)
 
 				// Build per-UMI coordinate bounding boxes BEFORE
 				// updateRecordUMI rewrites the tags — the map must be
@@ -462,7 +462,7 @@ func processReads(
 				}
 
 				if firstErr == nil && countsWriter != nil && len(results) > 0 {
-					cl := buildUMIClusterCounts(rname, strand, results, repToMI, coordsByUMI)
+					cl := buildUMIClusterCounts(rname, strand, results, repToMI, coordsByUMI, effectiveThreshold)
 					ioMu.Lock()
 					for _, line := range cl {
 						if _, err := fmt.Fprintln(countsWriter, line); err != nil {
@@ -921,7 +921,7 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 
 	// Cluster
 	globalRepresentative := make(map[string]string)
-	results := clusterUMIs(umiCounts, globalRepresentative, umiClusterThreads)
+	results, _ := clusterUMIs(umiCounts, globalRepresentative, umiClusterThreads)
 	representativeCount, maxClustSize := clusterStats(results)
 	fmt.Fprintf(os.Stderr, "whole-genome: %d unique UMIs -> %d representative (max cluster: %d)\n", len(umiCounts), representativeCount, maxClustSize)
 
@@ -1011,6 +1011,7 @@ func buildUMIClusterCounts(
 	results []umiClusterResult,
 	repToMI map[string]string,
 	coordsByUMI map[string]umiCoords,
+	effectiveThreshold int,
 ) []string {
 	// Group results by representative UMI and compute per-cluster
 	// bounding boxes by merging the coordinates of each member UMI.
@@ -1053,14 +1054,14 @@ func buildUMIClusterCounts(
 
 	// Output format is BED6+ (standard BED6 columns followed by extras):
 	//   chrom, start, end, name, score, strand,
-	//   representative, numUMIs, maxEditDist, umis
+	//   representative, numUMIs, maxEditDist, effectiveThreshold, umis
 	// Coordinates are per-cluster (not per-component), so each cluster's
 	// BED interval reflects where its reads actually map.
 	var lines []string
 	for _, ci := range clusters {
-		lines = append(lines, fmt.Sprintf("%s\t%d\t%d\t%s\t%d\t%s\t%s\t%d\t%d\t%s",
+		lines = append(lines, fmt.Sprintf("%s\t%d\t%d\t%s\t%d\t%s\t%s\t%d\t%d\t%d\t%s",
 			rname, ci.minStart, ci.maxEnd, ci.mi, ci.numReads, strand,
-			ci.representative, len(ci.umis), ci.maxEditDist,
+			ci.representative, len(ci.umis), ci.maxEditDist, effectiveThreshold,
 			strings.Join(ci.umis, ",")))
 	}
 	return lines
@@ -1509,7 +1510,13 @@ type umiEdge struct{ i, j, dist int }
 // numThreads controls the parallelism of the all-pairs loop. Pass 1 for a
 // serial run; pass umiClusterThreads (or another positive value) to split
 // the work across workers.
-func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]string, numThreads int) []umiClusterResult {
+// clusterUMIs returns the per-UMI clustering results and the effective
+// edit distance threshold after adaptive filtering. When adaptive
+// thresholding is disabled or no distances are excluded, effectiveThreshold
+// equals the configured --umi-edit-distance.
+func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]string, numThreads int) ([]umiClusterResult, int) {
+	edgeThreshold := umiClusterEditThreshold
+
 	if len(umiCounts) <= 1 {
 		// Single UMI or empty, nothing to cluster. Normalize the
 		// representative so single-member clusters produce the same
@@ -1522,7 +1529,7 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 			globalRepresentative[umi] = norm
 			results = append(results, umiClusterResult{umi: umi, representative: norm, count: count})
 		}
-		return results
+		return results, edgeThreshold
 	}
 
 	if numThreads <= 0 {
@@ -1562,7 +1569,6 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 	// Compute all-pairs edit distances; collect edges within threshold.
 	// The Ukkonen cutoff bails out after a few DP rows on dissimilar
 	// pairs, so the bound directly affects performance.
-	edgeThreshold := umiClusterEditThreshold
 	var edges []umiEdge
 
 	if numThreads <= 1 || n < 4 {
@@ -1656,7 +1662,7 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 				}
 			}
 
-			// Filter edges.
+			// Filter edges and compute effective threshold.
 			if len(excludeDist) > 0 {
 				kept := 0
 				for _, e := range edges {
@@ -1666,6 +1672,13 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 					}
 				}
 				edges = edges[:kept]
+				// Effective threshold is the highest distance not excluded.
+				for d := edgeThreshold; d >= 0; d-- {
+					if !excludeDist[d] {
+						edgeThreshold = d
+						break
+					}
+				}
 			}
 		}
 	}
@@ -1957,7 +1970,7 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 			}
 		}
 	}
-	return results
+	return results, edgeThreshold
 }
 
 // clusterStats returns the number of distinct representative UMIs

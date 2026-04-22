@@ -315,7 +315,8 @@ A tab-delimited BED6+ file with one row per UMI cluster per read-overlap-group. 
 | 7 | representative | Chosen representative UMI (slash-separated) |
 | 8 | numUMIs | Number of distinct original UMIs in the cluster |
 | 9 | maxEditDist | Max pairwise edit distance within the cluster (-1 if skipped for large clusters) |
-| 10 | umis | Comma-separated list of original UMIs |
+| 10 | effectiveThreshold | Effective edit distance threshold after adaptive filtering (equals `--umi-edit-distance` when adaptive threshold is disabled or no distances were excluded) |
+| 11 | umis | Comma-separated list of original UMIs |
 
 ## Performance
 
