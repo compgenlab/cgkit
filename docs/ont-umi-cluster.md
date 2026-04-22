@@ -63,21 +63,26 @@ UMI similarity is measured by Levenshtein edit distance on the normalized (slash
 
 ### HP-aware edit distance (`--hp-dist`)
 
-When `--hp-dist` is set, homopolymer indels cost 0 instead of 1. Specifically:
+When `--hp-dist` is set, one HP indel per UMI segment is free. The free is shared between insertions and deletions — only one HP indel per segment is discounted, regardless of direction. The free resets when either string crosses a `/` separator boundary. Substitutions and non-HP indels always cost 1.
 
-- Deleting `a[i]` costs 0 if `a[i] == a[i-1]` (shrinking an HP run)
-- Inserting `b[j]` costs 0 if `b[j] == b[j-1]` (shrinking an HP run)
-- Substitutions always cost 1
+This is implemented as an augmented Levenshtein DP with state `dp[i][j][f]` where `f ∈ {0, 1}` tracks whether the single free HP indel for the current segment has been consumed.
 
-This correctly handles ONT's most common error mode (homopolymer-length variation) without the distortion that full homopolymer compression causes. For example:
+This correctly handles ONT's most common error mode (±1 homopolymer-length variation) while preventing long HP runs from collapsing arbitrarily. For example:
 
-| UMI_A | UMI_B | Standard distance | HP-aware distance |
-|-------|-------|-------------------|-------------------|
-| AAGA  | AAAA  | 1 (G to A)       | 1 (substitution preserved) |
-| AAACG | AACG  | 1 (HP indel)     | 0 (HP indel discounted) |
-| AAGA  | AAGGA | 1 (HP indel)     | 0 (HP indel discounted) |
+| UMI_A | UMI_B | Standard distance | HP-aware distance | Notes |
+|-------|-------|-------------------|-------------------|-------|
+| AAGA  | AAAA  | 1 | 1 | Substitution preserved |
+| AAACG | AACG  | 1 | 0 | ±1 in A-run, free |
+| AAGA  | AAGGA | 1 | 0 | ±1 in G-run, free |
+| AACC  | AAC   | 1 | 0 | ±1 in A-run, free |
+| AACC  | AC    | 2 | 1 | One free + one paid (shared budget per segment) |
+| CCGA  | CGAA  | 2 | 1 | One free (del C) + one paid (ins A), shared |
+| AAAA  | AA    | 2 | 1 | ±1 free, second HP indel costs 1 |
+| AAAA  | A     | 3 | 2 | ±1 free, two more cost 1 each |
+| GGGG  | G     | 3 | 2 | Long HP collapse no longer free |
+| CGGC  | CCCC  | 2 | 2 | Pure substitutions, no HP discount |
 
-Full HP compression would distort the first case: `AAGA` compresses to `AGA`, `AAAA` to `A`, inflating the distance from 1 to 2. The HP-aware distance avoids this by modifying the DP cost model rather than the input strings.
+Full HP compression distorts substitutions: `AAGA` compresses to `AGA`, `AAAA` to `A`, inflating the distance from 1 to 2. Making all HP indels cost 0 (as in an earlier version of `--hp-dist`) is too lenient — sequences like `AAAA/GGGG/CCGA/CCCC` and `CCCC/AAAA/CCGA/GGGG` (standard distance 12) appeared at HP-distance 3 because all HP indels were free, causing false clustering. The per-segment first-free model avoids both problems: substitutions are preserved, ±1 HP errors are tolerated, and long HP collapses are penalized.
 
 ### Clustering methods (`--umi-cluster-method`)
 
@@ -293,7 +298,7 @@ Reads already matching the representative are unchanged. The output is coordinat
 
 ### Molecule ID (`--tag-mi`)
 
-When `--tag-mi` is set, each read receives an `MI` tag with a unique molecule group identifier (e.g., `mi_000000001`). All reads in the same UMI cluster share the same MI value.
+When `--tag-mi` is set, each read receives an `MI` tag with a two-level molecule group identifier: `mi_COMP.CLUST` (e.g., `mi_000001.001`). The first number identifies the read-overlap group (component) and the second identifies the UMI cluster within that component. All reads in the same UMI cluster share the same MI value. Clusters that were considered together during UMI clustering (i.e., in the same overlap group) share the same component number, making it possible to identify which clusters were compared against each other.
 
 ### UMI counts (`--summary-counts`, optional)
 
@@ -304,7 +309,7 @@ A tab-delimited BED6+ file with one row per UMI cluster per read-overlap-group. 
 | 1 | chrom | Reference name |
 | 2 | start | 0-based start of the cluster's reads |
 | 3 | end | 0-based end (exclusive) of the cluster's reads |
-| 4 | name | Molecule ID (e.g., `mi_000000001`) |
+| 4 | name | Molecule ID (e.g., `mi_000001.001` — component.cluster) |
 | 5 | score | Total read count in the cluster |
 | 6 | strand | `+`, `-`, or `.` |
 | 7 | representative | Chosen representative UMI (slash-separated) |
@@ -334,7 +339,7 @@ The all-pairs max-intra-cluster-distance computation is capped at 10,000 members
 |------|---------|-------------|
 | `--adaptive-alpha` | 0.05 | Maximum false positive rate per edit distance level |
 | `--adaptive-threshold` | false | Discard edges at distances exceeding the false positive rate threshold |
-| `--hp-dist` | false | HP-aware edit distance (HP indels cost 0) |
+| `--hp-dist` | false | HP-aware edit distance: one free HP indel per UMI segment (between separators) |
 | `--ignore-refs` | | References to pass through without clustering (comma-separated) |
 | `--match-one-end` | false | Match reads if EITHER 5' or 3' ends are within gap |
 | `--no-strand` | false | Ignore strand when grouping reads |

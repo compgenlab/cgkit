@@ -205,7 +205,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 		return err
 	}
 
-	var nextMI int64 = 1
+	var nextComponent int64 = 1
 	var totalReads int64
 	var totalChanged int64
 
@@ -232,7 +232,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 	}
 
 	if err := processReads(reader, writer, skipSet,
-		&nextMI, &totalReads, &totalChanged, countsWriter); err != nil {
+		&nextComponent, &totalReads, &totalChanged, countsWriter); err != nil {
 		reader.Close()
 		writer.Close()
 		return err
@@ -257,7 +257,7 @@ func processReads(
 	reader htsio.SamReader,
 	writer *htsio.SamtoolsSamWriter,
 	skipSet map[string]bool,
-	nextMI *int64,
+	nextComponent *int64,
 	totalReads *int64,
 	totalChanged *int64,
 	countsWriter io.Writer,
@@ -305,7 +305,7 @@ func processReads(
 	// channel) and to countsWriter (serialized via ioMu).
 	//
 	// Shared state that's mutated by workers:
-	//   - nextMI: unique MI counter (atomic.Int64 for lock-free increment)
+	//   - nextComponent: overlap-group counter (atomic.Int64 for lock-free increment)
 	//   - totalReads/totalChanged: summary counters (atomic.Int64)
 	//   - countsWriter: serialized via ioMu
 	//   - stderr log lines: serialized via ioMu
@@ -322,8 +322,8 @@ func processReads(
 	var ioMu sync.Mutex     // serializes countsWriter, stderr, and counts-related I/O
 	var writeErr atomic.Value // first error from a worker (nil or error)
 
-	var atomicNextMI atomic.Int64
-	atomicNextMI.Store(*nextMI)
+	var atomicNextComp atomic.Int64
+	atomicNextComp.Store(*nextComponent)
 	var atomicTotalReads atomic.Int64
 	var atomicTotalChanged atomic.Int64
 
@@ -422,10 +422,12 @@ func processReads(
 
 				ioMu.Lock()
 				if umiClusterMI || countsWriter != nil {
+					compID := atomicNextComp.Add(1) - 1
+					clusterIdx := 1
 					for _, r := range results {
 						if _, ok := repToMI[r.representative]; !ok {
-							mi := atomicNextMI.Add(1) - 1
-							repToMI[r.representative] = fmt.Sprintf("mi_%09d", mi)
+							repToMI[r.representative] = fmt.Sprintf("mi_%06d.%03d", compID, clusterIdx)
+							clusterIdx++
 						}
 					}
 				}
@@ -855,7 +857,7 @@ func processReads(
 
 	// Propagate atomic counters back to the caller's plain int64 pointers.
 	// This is safe because workers are done by this point.
-	*nextMI = atomicNextMI.Load()
+	*nextComponent = atomicNextComp.Load()
 	*totalReads += atomicTotalReads.Load()
 	*totalChanged += atomicTotalChanged.Load()
 
@@ -1200,21 +1202,27 @@ func levDist(a, b string, buf *levBuf, maxDist int) int {
 	return buf.prev[n]
 }
 
-// levDistHP computes an HP-aware Levenshtein edit distance. It uses the
-// same bounded DP as levDist, but insertions and deletions within a
-// homopolymer run cost 0 instead of 1. Specifically:
+// levDistHP computes an HP-aware Levenshtein edit distance where the
+// first ±1 HP-length change per UMI segment is free, but additional HP
+// indels in the same segment cost 1. Substitutions and non-HP indels
+// always cost 1. Segments are delimited by '/' separators.
 //
-//   - Deleting a[i] costs 0 if a[i] == a[i-1] (shrinking an HP run in a)
-//   - Inserting b[j] costs 0 if b[j] == b[j-1] (shrinking an HP run in b)
-//   - Substitutions always cost 1 (or 0 for a match)
+// The DP uses augmented state dp[i][j][f] where f tracks whether the
+// single free HP indel has been consumed for the current segment. The
+// free is shared between insertions and deletions — only one HP indel
+// per segment is discounted. f resets when either string crosses a '/'
+// separator boundary.
 //
-// This correctly handles ONT's most common error mode (HP-length
-// variation) without the distortion that full HP compression causes.
-// For example:
+// For example (using / as segment separator):
 //
-//	AAGA vs AAAA: substitution G→A = distance 1 (correct, not inflated)
-//	AAACG vs AACG: HP indel = distance 0 (HP error collapsed)
-//	AAGA vs AAGGA: HP indel in G run = distance 0 (HP error collapsed)
+//	AAGA vs AAAA: sub G→A = distance 1 (substitution preserved)
+//	AAACG vs AACG: ±1 HP in segment = distance 0 (free HP indel)
+//	AAGA vs AAGGA: ±1 HP in segment = distance 0 (free HP indel)
+//	AAAA vs AA: ±1 free + 1 paid = distance 1 (long HP change limited)
+//	AAAA vs A: ±1 free + 2 paid = distance 2 (long HP change limited)
+//	AACC vs AC: ±1 free + 1 paid = distance 1 (one free per segment)
+//	CCGA vs CGAA: ±1 free + 1 paid = distance 1 (shared free across both strings)
+//	CCGA/CCCC vs CGAA/CGGC: 1 + 1 = distance 2 (each segment gets its own free)
 func levDistHP(a, b string, buf *levBuf, maxDist int) int {
 	m, n := len(a), len(b)
 	if m == 0 {
@@ -1223,59 +1231,207 @@ func levDistHP(a, b string, buf *levBuf, maxDist int) int {
 	if n == 0 {
 		return m
 	}
-	if cap(buf.prev) <= n {
-		buf.prev = make([]int, n+1)
-		buf.curr = make([]int, n+1)
-	} else {
-		buf.prev = buf.prev[:n+1]
-		buf.curr = buf.curr[:n+1]
+
+	// dp[j][f] — two rows (prev, curr) for the i dimension.
+	// f ∈ {0, 1}: whether the single free HP indel for the current
+	// segment has been used (shared across deletions and insertions).
+	// Resets when either string crosses a '/' boundary.
+	type cell [2]int
+	prev := make([]cell, n+1)
+	curr := make([]cell, n+1)
+
+	const inf = 1<<31 - 1
+
+	for j := 0; j <= n; j++ {
+		prev[j][0] = inf
+		prev[j][1] = inf
+		curr[j][0] = inf
+		curr[j][1] = inf
 	}
-	// Initialize row 0: inserting b[0..j-1]. HP indels in b cost 0.
-	buf.prev[0] = 0
+
+	prev[0][0] = 0
+
+	// Fill boundary dp[0][j] — inserting b[0..j-1].
 	for j := 1; j <= n; j++ {
-		cost := 1
-		if j >= 2 && b[j-1] == b[j-2] {
-			cost = 0 // HP indel in b
-		}
-		buf.prev[j] = buf.prev[j-1] + cost
-	}
-	for i := 1; i <= m; i++ {
-		// Cost of deleting a[i-1] (row header).
-		delCostA := 1
-		if i >= 2 && a[i-1] == a[i-2] {
-			delCostA = 0 // HP indel in a
-		}
-		buf.curr[0] = buf.prev[0] + delCostA
-		rowMin := buf.curr[0]
-		for j := 1; j <= n; j++ {
-			if a[i-1] == b[j-1] {
-				// Match: no cost.
-				buf.curr[j] = buf.prev[j-1]
-			} else {
-				// Deletion cost: removing a[i-1]. Free if it extends
-				// an HP run in a (a[i-1] == a[i-2]).
-				del := buf.prev[j] + delCostA
-				// Insertion cost: inserting b[j-1]. Free if it extends
-				// an HP run in b (b[j-1] == b[j-2]).
-				insCostB := 1
-				if j >= 2 && b[j-1] == b[j-2] {
-					insCostB = 0
+		isHPb := j >= 2 && b[j-1] == b[j-2] && b[j-1] != '/'
+		isSepB := b[j-1] == '/'
+		for f := 0; f < 2; f++ {
+			src := prev[j-1][f]
+			if src == inf {
+				continue
+			}
+			if isSepB {
+				v := src + 1
+				if v < prev[j][0] {
+					prev[j][0] = v // reset f at separator
 				}
-				ins := buf.curr[j-1] + insCostB
-				// Substitution: always costs 1.
-				sub := buf.prev[j-1] + 1
-				buf.curr[j] = min(del, ins, sub)
-			}
-			if buf.curr[j] < rowMin {
-				rowMin = buf.curr[j]
+			} else if isHPb {
+				if f == 0 {
+					if src < prev[j][1] {
+						prev[j][1] = src // free HP ins
+					}
+				} else {
+					v := src + 1
+					if v < prev[j][1] {
+						prev[j][1] = v // paid HP ins
+					}
+				}
+			} else {
+				v := src + 1
+				if v < prev[j][f] {
+					prev[j][f] = v // non-HP ins, f carries
+				}
 			}
 		}
+	}
+
+	for i := 1; i <= m; i++ {
+		for j := 0; j <= n; j++ {
+			curr[j][0] = inf
+			curr[j][1] = inf
+		}
+
+		isHPa := i >= 2 && a[i-1] == a[i-2] && a[i-1] != '/'
+		isSepA := a[i-1] == '/'
+
+		// Fill boundary curr[0] — deleting a[0..i-1].
+		for f := 0; f < 2; f++ {
+			src := prev[0][f]
+			if src == inf {
+				continue
+			}
+			if isSepA {
+				v := src + 1
+				if v < curr[0][0] {
+					curr[0][0] = v
+				}
+			} else if isHPa {
+				if f == 0 {
+					if src < curr[0][1] {
+						curr[0][1] = src
+					}
+				} else {
+					v := src + 1
+					if v < curr[0][1] {
+						curr[0][1] = v
+					}
+				}
+			} else {
+				v := src + 1
+				if v < curr[0][f] {
+					curr[0][f] = v
+				}
+			}
+		}
+
+		rowMin := inf
+		for j := 1; j <= n; j++ {
+			isHPb := j >= 2 && b[j-1] == b[j-2] && b[j-1] != '/'
+			isSepB := b[j-1] == '/'
+
+			// Match / Substitution (diagonal).
+			for f := 0; f < 2; f++ {
+				src := prev[j-1][f]
+				if src == inf {
+					continue
+				}
+				var cost int
+				if a[i-1] == b[j-1] {
+					cost = 0
+				} else {
+					cost = 1
+				}
+				// f resets at either separator boundary.
+				f2 := f
+				if isSepA || isSepB {
+					f2 = 0
+				}
+				v := src + cost
+				if v < curr[j][f2] {
+					curr[j][f2] = v
+				}
+			}
+
+			// Deletion of a[i] (from prev row, same column).
+			for f := 0; f < 2; f++ {
+				src := prev[j][f]
+				if src == inf {
+					continue
+				}
+				if isSepA {
+					v := src + 1
+					if v < curr[j][0] {
+						curr[j][0] = v
+					}
+				} else if isHPa {
+					if f == 0 {
+						if src < curr[j][1] {
+							curr[j][1] = src // free HP del
+						}
+					} else {
+						v := src + 1
+						if v < curr[j][1] {
+							curr[j][1] = v // paid HP del
+						}
+					}
+				} else {
+					v := src + 1
+					if v < curr[j][f] {
+						curr[j][f] = v
+					}
+				}
+			}
+
+			// Insertion of b[j] (from same row, prev column).
+			for f := 0; f < 2; f++ {
+				src := curr[j-1][f]
+				if src == inf {
+					continue
+				}
+				if isSepB {
+					v := src + 1
+					if v < curr[j][0] {
+						curr[j][0] = v
+					}
+				} else if isHPb {
+					if f == 0 {
+						if src < curr[j][1] {
+							curr[j][1] = src // free HP ins
+						}
+					} else {
+						v := src + 1
+						if v < curr[j][1] {
+							curr[j][1] = v // paid HP ins
+						}
+					}
+				} else {
+					v := src + 1
+					if v < curr[j][f] {
+						curr[j][f] = v
+					}
+				}
+			}
+
+			// Track row minimum for Ukkonen cutoff.
+			if curr[j][0] < rowMin {
+				rowMin = curr[j][0]
+			}
+			if curr[j][1] < rowMin {
+				rowMin = curr[j][1]
+			}
+		}
+
 		if maxDist >= 0 && rowMin > maxDist {
 			return maxDist + 1
 		}
-		buf.prev, buf.curr = buf.curr, buf.prev
+		prev, curr = curr, prev
 	}
-	return buf.prev[n]
+
+	best := prev[n][0]
+	if prev[n][1] < best {
+		best = prev[n][1]
+	}
+	return best
 }
 
 // collisionProb returns the probability that two independent random UMIs
@@ -1394,10 +1550,10 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 	}
 
 	// Select the distance function. When --hp-dist is set, use an
-	// HP-aware Levenshtein where insertions/deletions within a
-	// homopolymer run cost 0 instead of 1. This correctly handles
-	// ONT's most common error mode (HP-length variation) without the
-	// distortion that full HP compression causes on non-HP mutations.
+	// HP-aware Levenshtein where one HP indel per UMI segment (between
+	// '/' separators) is free, shared across insertions and deletions.
+	// This tolerates ONT's most common error (±1 HP length) while
+	// preventing long HP runs from collapsing arbitrarily.
 	distFn := levDist
 	if umiClusterHPDist {
 		distFn = levDistHP
@@ -1852,7 +2008,7 @@ func init() {
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchOneEnd, "match-one-end", false, "Match reads if EITHER 5' or 3' ends are within gap (default: require BOTH ends)")
 	ontUmiClusterCmd.Flags().IntVarP(&umiClusterThreads, "threads", "t", 1, "Threads for UMI clustering")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterRegion, "region", "", "Process only this region (e.g. 'chr19' or 'chr19:1000-2000'); disables the skipped-ref and unmapped passes")
-	ontUmiClusterCmd.Flags().BoolVar(&umiClusterHPDist, "hp-dist", false, "Use HP-aware edit distance where homopolymer indels cost 0 (handles ONT HP-length errors without distorting non-HP mutations)")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterHPDist, "hp-dist", false, "Use HP-aware edit distance: one free HP indel per UMI segment (between separators)")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterMethod, "umi-cluster-method", "adjacency", "UMI clustering method: connected (single-linkage), adjacency (greedy, no chaining), directional (PCR error count model), tiered (distance-attenuated BFS clustering)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterAdaptiveThreshold, "adaptive-threshold", false, "Discard edges at distances where random collisions exceed the FPR threshold")
 	ontUmiClusterCmd.Flags().Float64Var(&umiClusterAdaptiveAlpha, "adaptive-alpha", 0.05, "Maximum false positive rate per edit distance level (used with --adaptive-threshold)")
