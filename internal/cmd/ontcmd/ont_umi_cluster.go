@@ -64,13 +64,22 @@ var ontUmiClusterCmd = &cobra.Command{
 
 // bufferedRead holds a read in the overlap buffer along with precomputed
 // coordinate fields and a union-find identifier.
+// spliceJunction represents a single intron (N operation in CIGAR).
+// donor is the reference position where the intron starts (0-based),
+// acceptor is the position where the next exon begins (donor + N_length).
+type spliceJunction struct {
+	donor    int
+	acceptor int
+}
+
 type bufferedRead struct {
-	id     int // global sequential ID for union-find
-	rec    *htsio.SamRecord
-	rname  string
-	strand string // "+", "-", or "." for --no-strand
-	start  int    // 0-based
-	end    int    // 0-based, exclusive (start + CigarRefLen)
+	id        int // global sequential ID for union-find
+	rec       *htsio.SamRecord
+	rname     string
+	strand    string // "+", "-", or "." for --no-strand
+	start     int    // 0-based
+	end       int    // 0-based, exclusive (start + CigarRefLen)
+	junctions []spliceJunction // splice junctions from CIGAR N ops (nil if disabled or none)
 }
 
 // unionFind implements a disjoint-set data structure with path compression
@@ -122,6 +131,124 @@ func (uf *unionFind) union(x, y int) (newRoot, oldRoot int, merged bool) {
 		uf.rank[px]++
 	}
 	return px, py, true
+}
+
+// extractJunctions parses CIGAR N operations and returns splice junctions
+// in reference-coordinate order. refStart is the 0-based alignment start.
+func extractJunctions(cigar string, refStart int) []spliceJunction {
+	var junctions []spliceJunction
+	pos := refStart
+	num := 0
+	for i := 0; i < len(cigar); i++ {
+		c := cigar[i]
+		if c >= '0' && c <= '9' {
+			num = num*10 + int(c-'0')
+		} else {
+			switch c {
+			case 'N':
+				junctions = append(junctions, spliceJunction{
+					donor:    pos,
+					acceptor: pos + num,
+				})
+				pos += num
+			case 'M', 'D', '=', 'X':
+				pos += num
+			// I, S, H, P do not consume reference
+			}
+			num = 0
+		}
+	}
+	return junctions
+}
+
+// mergeAdjacentJunctions collapses junctions separated by ≤ window bases
+// into a single spanning junction. Handles missed small exons in ONT
+// alignments where one read has two junctions flanking a tiny exon and
+// another read has a single junction spanning both.
+func mergeAdjacentJunctions(junctions []spliceJunction, window int) []spliceJunction {
+	if len(junctions) <= 1 {
+		return junctions
+	}
+	merged := []spliceJunction{junctions[0]}
+	for i := 1; i < len(junctions); i++ {
+		last := &merged[len(merged)-1]
+		gap := junctions[i].donor - last.acceptor
+		if gap <= window {
+			last.acceptor = junctions[i].acceptor
+		} else {
+			merged = append(merged, junctions[i])
+		}
+	}
+	return merged
+}
+
+// junctionsCompatible returns true if two reads have compatible splice
+// junctions. When matchOneEnd is false, junction sets must match exactly
+// (same count, each paired within ±window). When matchOneEnd is true,
+// one read's junctions may be a contiguous sub-sequence of the other's,
+// anchored at the matching end (3' match → suffix, 5' match → prefix).
+func junctionsCompatible(a, b *bufferedRead, window int, matchOneEnd bool, overlap int) bool {
+	aj, bj := a.junctions, b.junctions
+	if len(aj) == 0 && len(bj) == 0 {
+		return true
+	}
+	if len(aj) == 0 || len(bj) == 0 {
+		return false
+	}
+	if !matchOneEnd {
+		return junctionSliceMatch(aj, bj, window)
+	}
+	// match-one-end: determine which end is anchored.
+	shorter, longer := a, b
+	sj, lj := aj, bj
+	if len(aj) > len(bj) {
+		shorter, longer = b, a
+		sj, lj = bj, aj
+	}
+	// 3' ends match → junctions anchored at 3' end → suffix of longer.
+	endDiff := shorter.end - longer.end
+	if endDiff < 0 {
+		endDiff = -endDiff
+	}
+	if endDiff <= overlap {
+		offset := len(lj) - len(sj)
+		if junctionSliceMatch(sj, lj[offset:], window) {
+			return true
+		}
+	}
+	// 5' starts match → junctions anchored at 5' end → prefix of longer.
+	startDiff := shorter.start - longer.start
+	if startDiff < 0 {
+		startDiff = -startDiff
+	}
+	if startDiff <= overlap {
+		if junctionSliceMatch(sj, lj[:len(sj)], window) {
+			return true
+		}
+	}
+	return false
+}
+
+// junctionSliceMatch returns true if two equal-length junction slices
+// match pairwise within ±window for both donor and acceptor positions.
+func junctionSliceMatch(a, b []spliceJunction, window int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		dd := a[i].donor - b[i].donor
+		if dd < 0 {
+			dd = -dd
+		}
+		da := a[i].acceptor - b[i].acceptor
+		if da < 0 {
+			da = -da
+		}
+		if dd > window || da > window {
+			return false
+		}
+	}
+	return true
 }
 
 // removeFromBin removes the bufferedRead with the given id from a bin
@@ -755,6 +882,10 @@ func processReads(
 			start:  readStart,
 			end:    readEnd,
 		}
+		if umiClusterMatchJunctions {
+			junctions := extractJunctions(rec.Cigar, readStart)
+			br.junctions = mergeAdjacentJunctions(junctions, umiClusterJunctionWindow)
+		}
 		uf.grow(globalID + 1)
 		globalID++
 
@@ -785,6 +916,9 @@ func processReads(
 						diff = -diff
 					}
 					if diff <= overlap {
+						if umiClusterMatchJunctions && !junctionsCompatible(br, b, umiClusterJunctionWindow, umiClusterMatchOneEnd, overlap) {
+							continue
+						}
 						newRoot, oldRoot, merged := uf.union(br.id, b.id)
 						if merged {
 							mergeComponents(newRoot, oldRoot)
@@ -805,6 +939,9 @@ func processReads(
 						continue
 					}
 					if br.start-b.start <= overlap {
+						if umiClusterMatchJunctions && !junctionsCompatible(br, b, umiClusterJunctionWindow, umiClusterMatchOneEnd, overlap) {
+							continue
+						}
 						newRoot, oldRoot, merged := uf.union(br.id, b.id)
 						if merged {
 							mergeComponents(newRoot, oldRoot)
@@ -830,6 +967,9 @@ func processReads(
 						diff = -diff
 					}
 					if diff <= overlap {
+						if umiClusterMatchJunctions && !junctionsCompatible(br, b, umiClusterJunctionWindow, false, overlap) {
+							continue
+						}
 						newRoot, oldRoot, merged := uf.union(br.id, b.id)
 						if merged {
 							mergeComponents(newRoot, oldRoot)
@@ -1223,7 +1363,7 @@ func levDist(a, b string, buf *levBuf, maxDist int) int {
 //	AAAA vs A: ±1 free + 2 paid = distance 2 (long HP change limited)
 //	AACC vs AC: ±1 free + 1 paid = distance 1 (one free per segment)
 //	CCGA vs CGAA: ±1 free + 1 paid = distance 1 (shared free across both strings)
-//	CCGA/CCCC vs CGAA/CGGC: 1 + 1 = distance 2 (each segment gets its own free)
+//	CCGA/CCCC vs CGAA/CGGC: 1 + 2 = distance 3 (segment 1: free HP del + paid HP ins; segment 2: two subs)
 func levDistHP(a, b string, buf *levBuf, maxDist int) int {
 	m, n := len(a), len(b)
 	if m == 0 {
@@ -1436,24 +1576,26 @@ func levDistHP(a, b string, buf *levBuf, maxDist int) int {
 }
 
 // collisionProb returns the probability that two independent random UMIs
-// of length L (over a 4-letter alphabet) are within Levenshtein edit
-// distance d of each other, using the substitution-only approximation:
+// of length L (over a 3-letter alphabet, as used by ONT UMIs) are within
+// Levenshtein edit distance d of each other, using the substitution-only
+// approximation:
 //
-//	P(dist ≤ d) ≈ Σ_{k=0}^{d} C(L,k) × 3^k / 4^L
+//	P(dist ≤ d) ≈ Σ_{k=0}^{d} C(L,k) × 2^k / 3^L
 //
-// This is an upper bound (indels expand the neighborhood slightly) but
-// a good approximation for short UMIs where most errors are substitutions
-// or short HP indels.
+// The 2^k term accounts for the 2 possible wrong bases at each mutated
+// position in a 3-letter alphabet. This is an upper bound (indels expand
+// the neighborhood slightly) but a good approximation for short UMIs
+// where most errors are substitutions or short HP indels.
 func collisionProb(L, d int) float64 {
 	total := 0.0
 	choose := 1.0 // C(L, k) computed iteratively
-	pow3 := 1.0   // 3^k
-	pow4L := math.Pow(4.0, float64(L))
+	powWrong := 1.0 // (alphabet-1)^k = 2^k
+	powAlphaL := math.Pow(3.0, float64(L))
 	for k := 0; k <= d; k++ {
-		total += choose * pow3 / pow4L
+		total += choose * powWrong / powAlphaL
 		// Update for next k: C(L, k+1) = C(L, k) * (L-k) / (k+1)
 		choose *= float64(L-k) / float64(k+1)
-		pow3 *= 3.0
+		powWrong *= 2.0
 	}
 	return total
 }
@@ -2006,6 +2148,8 @@ var umiClusterHPDist bool
 var umiClusterMethod string
 var umiClusterAdaptiveThreshold bool
 var umiClusterAdaptiveAlpha float64
+var umiClusterMatchJunctions bool
+var umiClusterJunctionWindow int
 
 func init() {
 	ontUmiClusterCmd.Flags().StringVarP(&umiClusterOutput, "output", "o", "", "Output BAM file path (required)")
@@ -2025,4 +2169,6 @@ func init() {
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterMethod, "umi-cluster-method", "adjacency", "UMI clustering method: connected (single-linkage), adjacency (greedy, no chaining), directional (PCR error count model), tiered (distance-attenuated BFS clustering)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterAdaptiveThreshold, "adaptive-threshold", false, "Discard edges at distances where random collisions exceed the FPR threshold")
 	ontUmiClusterCmd.Flags().Float64Var(&umiClusterAdaptiveAlpha, "adaptive-alpha", 0.05, "Maximum false positive rate per edit distance level (used with --adaptive-threshold)")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchJunctions, "junction-match", false, "Require compatible splice junctions (CIGAR N ops) when grouping reads")
+	ontUmiClusterCmd.Flags().IntVar(&umiClusterJunctionWindow, "junction-window", 20, "Tolerance (bp) for matching junction positions and merging adjacent junctions")
 }
