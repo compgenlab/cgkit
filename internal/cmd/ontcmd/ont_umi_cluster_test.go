@@ -424,3 +424,135 @@ func TestValidateCoordinateSorted(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractJunctions(t *testing.T) {
+	tests := []struct {
+		name     string
+		cigar    string
+		refStart int
+		want     []spliceJunction
+	}{
+		{"no junctions", "100M", 0, nil},
+		{"single junction", "50M1000N50M", 100, []spliceJunction{{150, 1150}}},
+		{"two junctions", "30M500N20M200N40M", 0, []spliceJunction{{30, 530}, {550, 750}}},
+		{"junction with soft clip", "5S50M1000N50M", 100, []spliceJunction{{150, 1150}}},
+		{"junction with insertion", "30M5I20M1000N50M", 0, []spliceJunction{{50, 1050}}},
+		{"junction with deletion", "30M5D20M1000N50M", 0, []spliceJunction{{55, 1055}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractJunctions(tt.cigar, tt.refStart)
+			if len(got) != len(tt.want) {
+				t.Fatalf("extractJunctions(%q, %d) = %v, want %v", tt.cigar, tt.refStart, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("junction[%d] = %v, want %v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestMergeAdjacentJunctions(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  []spliceJunction
+		window int
+		want   []spliceJunction
+	}{
+		{"nil", nil, 10, nil},
+		{"single", []spliceJunction{{100, 200}}, 10, []spliceJunction{{100, 200}}},
+		{"far apart", []spliceJunction{{100, 200}, {300, 400}}, 10, []spliceJunction{{100, 200}, {300, 400}}},
+		{"small exon merged", []spliceJunction{{100, 200}, {208, 400}}, 10, []spliceJunction{{100, 400}}},
+		{"exact window", []spliceJunction{{100, 200}, {210, 400}}, 10, []spliceJunction{{100, 400}}},
+		{"just outside window", []spliceJunction{{100, 200}, {211, 400}}, 10, []spliceJunction{{100, 200}, {211, 400}}},
+		{"three merged to one", []spliceJunction{{100, 200}, {205, 300}, {305, 500}}, 10, []spliceJunction{{100, 500}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeAdjacentJunctions(tt.input, tt.window)
+			if len(got) != len(tt.want) {
+				t.Fatalf("mergeAdjacentJunctions() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("junction[%d] = %v, want %v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestJunctionsCompatible(t *testing.T) {
+	mkRead := func(start, end int, junctions []spliceJunction) *bufferedRead {
+		return &bufferedRead{start: start, end: end, junctions: junctions}
+	}
+
+	t.Run("both empty", func(t *testing.T) {
+		a := mkRead(0, 100, nil)
+		b := mkRead(0, 100, nil)
+		if !junctionsCompatible(a, b, 10, false, 50) {
+			t.Error("both empty should be compatible")
+		}
+	})
+
+	t.Run("one empty one not", func(t *testing.T) {
+		a := mkRead(0, 100, nil)
+		b := mkRead(0, 100, []spliceJunction{{50, 150}})
+		if junctionsCompatible(a, b, 10, false, 50) {
+			t.Error("one empty, one not should be incompatible")
+		}
+	})
+
+	t.Run("exact match default mode", func(t *testing.T) {
+		a := mkRead(0, 200, []spliceJunction{{50, 150}})
+		b := mkRead(0, 200, []spliceJunction{{55, 148}})
+		if !junctionsCompatible(a, b, 10, false, 50) {
+			t.Error("within window should match")
+		}
+	})
+
+	t.Run("outside window default mode", func(t *testing.T) {
+		a := mkRead(0, 200, []spliceJunction{{50, 150}})
+		b := mkRead(0, 200, []spliceJunction{{65, 150}})
+		if junctionsCompatible(a, b, 10, false, 50) {
+			t.Error("outside window should not match")
+		}
+	})
+
+	t.Run("different count default mode", func(t *testing.T) {
+		a := mkRead(0, 200, []spliceJunction{{50, 150}})
+		b := mkRead(0, 200, []spliceJunction{{50, 150}, {200, 300}})
+		if junctionsCompatible(a, b, 10, false, 50) {
+			t.Error("different junction count should not match in default mode")
+		}
+	})
+
+	t.Run("match-one-end suffix (3' anchor)", func(t *testing.T) {
+		// Reads share 3' end, shorter read has suffix of junctions
+		a := mkRead(0, 1000, []spliceJunction{{100, 200}, {400, 600}, {700, 900}})
+		b := mkRead(300, 1000, []spliceJunction{{400, 600}, {700, 900}})
+		if !junctionsCompatible(a, b, 10, true, 50) {
+			t.Error("suffix match with 3' anchor should be compatible")
+		}
+	})
+
+	t.Run("match-one-end prefix (5' anchor)", func(t *testing.T) {
+		// Reads share 5' start, shorter read has prefix of junctions
+		a := mkRead(0, 1000, []spliceJunction{{100, 200}, {400, 600}, {700, 900}})
+		b := mkRead(0, 650, []spliceJunction{{100, 200}, {400, 600}})
+		if !junctionsCompatible(a, b, 10, true, 50) {
+			t.Error("prefix match with 5' anchor should be compatible")
+		}
+	})
+
+	t.Run("match-one-end no anchor match", func(t *testing.T) {
+		// Neither end matches within overlap
+		a := mkRead(0, 1000, []spliceJunction{{100, 200}, {400, 600}, {700, 900}})
+		b := mkRead(200, 800, []spliceJunction{{400, 600}})
+		if junctionsCompatible(a, b, 10, true, 50) {
+			t.Error("no anchor match should be incompatible")
+		}
+	})
+}

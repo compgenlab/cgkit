@@ -55,6 +55,37 @@ Each incoming read queries at most 3 bins (target +/- 1) per index. Combined wit
 
 Process only a single samtools region (e.g., `chr19` or `chr19:1000-2000`). Skipped-ref and unmapped read pass-through is disabled in this mode, allowing the user to orchestrate per-region jobs externally (e.g., one SLURM task per chromosome). Without `--region`, the entire BAM is read in a single pass with automatic chromosome-transition detection.
 
+### Splice junction matching (`--junction-match`)
+
+When `--junction-match` is set, reads must have compatible splice junctions (from CIGAR `N` operations) in addition to positional overlap to be grouped together. This is intended for RNA-seq data where reads from different transcript isoforms may overlap positionally but represent distinct molecules.
+
+#### Junction extraction and pre-merging
+
+Splice junctions are extracted from each read's CIGAR string. Each `N` operation produces a junction with a donor position (where the intron starts) and an acceptor position (where the next exon begins). Adjacent junctions separated by ≤ `--junction-window` bp (default 20) are pre-merged into a single spanning junction. This handles cases where a very small exon is present in one read's alignment but missed in another — a common occurrence with Oxford Nanopore alignments. For example:
+
+```
+Read 1: 50M──N(1000bp)──8M──N(500bp)──50M   → 2 junctions
+Read 2: 50M──N(1508bp)──50M                  → 1 junction
+```
+
+After pre-merging (gap of 8bp ≤ 10bp window), read 1's two junctions collapse into one spanning junction that matches read 2's single junction.
+
+#### Compatibility rules
+
+- **No junctions + no junctions**: compatible (unspliced reads group together).
+- **No junctions + has junctions**: incompatible (an unspliced read and a spliced read at the same locus are likely different molecules).
+- **Both have junctions, default mode**: junction sets must match exactly — same count, with each junction's donor and acceptor positions within ±`--junction-window` bp.
+- **Both have junctions, `--match-one-end` mode**: one read's junction set may be a contiguous sub-sequence of the other's, anchored at the matching end. When 3' ends match (suffix anchor), the shorter read's junctions must match a suffix of the longer read's junctions. When 5' starts match (prefix anchor), the shorter read's junctions must match a prefix. This handles 5' truncation where the shorter molecule is missing junctions from the truncated end.
+
+#### Example (`--match-one-end` with 5' truncation)
+
+```
+Read 1 (full):      junctions A, B, C, D     start=100, end=5000
+Read 2 (truncated): junctions    B, C, D     start=800, end=5000
+```
+
+The 3' ends match (both at 5000). Read 2's junctions [B, C, D] are a suffix of read 1's [A, B, C, D] — compatible. Junction A is missing because read 2 starts after the first exon-intron boundary.
+
 ## UMI clustering
 
 ### Edit distance
@@ -223,17 +254,17 @@ Rather than choosing a fixed threshold that works for all component sizes, the a
 
 #### Method
 
-After all-pairs edge-finding, the adaptive filter computes a per-distance false positive rate. The expected number of random pairs at exactly distance d between N independent UMIs of length L over a 4-letter alphabet is:
+After all-pairs edge-finding, the adaptive filter computes a per-distance false positive rate. The expected number of random pairs at exactly distance d between N independent UMIs of length L over a 3-letter alphabet (as used by ONT UMIs) is:
 
 ```
-P(exactly d) = C(L, d) * 3^d / 4^L
+P(exactly d) = C(L, d) * 2^d / 3^L
 E_false(d) = N * (N-1) / 2 * P(exactly d)
 ```
 
 Where:
 - `C(L, d)` is "L choose d" — the number of ways to pick d positions to mutate
-- `3^d` accounts for the 3 possible wrong bases at each mutated position
-- `4^L` is the total UMI sequence space
+- `2^d` accounts for the 2 possible wrong bases at each mutated position (3-letter alphabet)
+- `3^L` is the total UMI sequence space
 
 This is a substitution-only approximation. Indels slightly expand the collision neighborhood, so the true collision probability is marginally higher — making this a conservative (slightly permissive) estimate.
 
@@ -245,35 +276,35 @@ FPR(d) = E_false(d) / actual_edges(d)
 
 where `actual_edges(d)` is the number of edges found at exactly distance d by the all-pairs computation. If `FPR(d)` exceeds `--adaptive-alpha` (default 0.05), all edges at distance d are discarded before clustering.
 
-#### Concrete example (L=16 bases)
+#### Concrete example (L=16 bases, 3-letter alphabet)
 
 The per-pair collision probabilities are:
 
 | Distance d | P(exactly d) | Interpretation |
 |---|---|---|
-| 1 | 1.1 x 10^-8 | ~1 in 90 million |
-| 2 | 2.5 x 10^-7 | ~1 in 4 million |
-| 3 | 3.5 x 10^-6 | ~1 in 286,000 |
+| 1 | 7.4 x 10^-7 | ~1 in 1.3 million |
+| 2 | 1.1 x 10^-5 | ~1 in 90,000 |
+| 3 | 1.0 x 10^-4 | ~1 in 9,600 |
 
 Expected false pairs at each component size:
 
 | N (unique UMIs) | d=1 expected false | d=2 expected false | d=3 expected false |
 |---|---|---|---|
-| 100 | ~0 | ~0 | 0.02 |
-| 1,000 | 0.006 | 0.13 | 1.8 |
-| 10,000 | 0.6 | 13 | 176 |
-| 100,000 | 56 | 1,257 | 17,600 |
+| 100 | ~0 | 0.1 | 0.5 |
+| 1,000 | 0.4 | 5.6 | 52 |
+| 5,000 | 9.3 | 139 | 1,301 |
+| 10,000 | 37 | 558 | 5,203 |
 
 At 5% FPR, the minimum number of real edges needed at each distance to survive filtering is `E_false / 0.05`:
 
 | N | d=1 min edges | d=2 min edges | d=3 min edges |
 |---|---|---|---|
-| 100 | 1 | 1 | 1 |
-| 1,000 | 1 | 3 | 36 |
-| 10,000 | 12 | 252 | 3,520 |
-| 100,000 | 1,118 | 25,140 | 352,000 |
+| 100 | 1 | 1 | 10 |
+| 1,000 | 7 | 111 | 1,040 |
+| 5,000 | 186 | 2,787 | 26,013 |
+| 10,000 | 743 | 11,150 | 104,063 |
 
-In practice: components with N <= 1,000 keep all distances. Components with N >= 10,000 progressively lose higher distances. A component with 86,000 unique UMIs (observed in real ONT data) had 17,600 expected random pairs at d=3 — these false edges caused single-linkage to create an 81,655-member mega-cluster. The adaptive threshold would have excluded d=3 (and possibly d=2) edges, preventing the false chaining entirely.
+The 3-letter alphabet (ONT UMIs use only A, C, G) has a much smaller sequence space (3^16 ≈ 43 million) compared to a 4-letter alphabet (4^16 ≈ 4.3 billion), making random collisions 20-67× more likely. With the default alpha of 0.05 and ~1 real neighbor per UMI at d=3, the adaptive threshold begins excluding d=3 edges at around N ≈ 1,000 unique UMIs.
 
 #### Properties
 
@@ -342,6 +373,8 @@ The all-pairs max-intra-cluster-distance computation is capped at 10,000 members
 | `--adaptive-threshold` | false | Discard edges at distances exceeding the false positive rate threshold |
 | `--hp-dist` | false | HP-aware edit distance: one free HP indel per UMI segment (between separators) |
 | `--ignore-refs` | | References to pass through without clustering (comma-separated) |
+| `--junction-window` | 20 | Tolerance (bp) for matching junction positions and merging adjacent junctions |
+| `--junction-match` | false | Require compatible splice junctions (CIGAR N ops) when grouping reads |
 | `--match-one-end` | false | Match reads if EITHER 5' or 3' ends are within gap |
 | `--no-strand` | false | Ignore strand when grouping reads |
 | `-o`, `--output` | (required) | Output BAM file path |
