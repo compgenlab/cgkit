@@ -7,13 +7,16 @@ LDFLAGS := -X 'github.com/compgen-io/cgltk/internal/cmd.Version=$(VERSION)' \
 
 .PHONY: build clean test
 
-build: $(BIN_DIR)/cgltk.darwin_arm64 $(BIN_DIR)/cgltk.linux_arm64 $(BIN_DIR)/cgltk.linux_amd64
+build: $(BIN_DIR)/cgltk.darwin_arm64 $(BIN_DIR)/cgltk.darwin_amd64 $(BIN_DIR)/cgltk.linux_arm64 $(BIN_DIR)/cgltk.linux_amd64
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 $(BIN_DIR)/cgltk.darwin_arm64: $(GO_SOURCES) | $(BIN_DIR)
 	GOOS=darwin GOARCH=arm64 go build -buildvcs=false -ldflags "$(LDFLAGS)" -o $@ .
+
+$(BIN_DIR)/cgltk.darwin_amd64: $(GO_SOURCES) | $(BIN_DIR)
+	GOOS=darwin GOARCH=amd64 go build -buildvcs=false -ldflags "$(LDFLAGS)" -o $@ .
 
 $(BIN_DIR)/cgltk.linux_arm64: $(GO_SOURCES) | $(BIN_DIR)
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -buildvcs=false -ldflags "$(LDFLAGS)" -o $@ .
