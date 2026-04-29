@@ -382,7 +382,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 // (they're another job's concern).
 func processReads(
 	reader htsio.SamReader,
-	writer *htsio.SamtoolsSamWriter,
+	writer htsio.SamWriter,
 	skipSet map[string]bool,
 	nextComponent *int64,
 	totalReads *int64,
