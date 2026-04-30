@@ -340,31 +340,38 @@ func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []
 	// region; otherwise we read the entire file in one pass and let
 	// processReads handle chromosome transitions, skip-ref pass-
 	// through, and unmapped pass-through inline.
+	baseReader, err := htsio.NewSamReader(inputFile)
+	if err != nil {
+		writer.Close()
+		return err
+	}
+	defer baseReader.Close()
+
 	var reader htsio.SamReader
 	if umiClusterRegion != "" {
-		ropts := htsio.NewSamReaderOpts().Region(umiClusterRegion)
-		r, err := htsio.NewSamReader(inputFile, ropts)
+		ref, start, end, err := htsio.ParseRegion(umiClusterRegion)
 		if err != nil {
 			writer.Close()
 			return err
 		}
-		reader = r
+		if end < 0 {
+			end = 1<<30 - 1
+		}
+		records, err := baseReader.Query(ref, start, end)
+		if err != nil {
+			writer.Close()
+			return fmt.Errorf("query %q: %w", umiClusterRegion, err)
+		}
+		reader = htsio.IterReader(records, header)
 	} else {
-		r, err := htsio.NewSamReader(inputFile)
-		if err != nil {
-			writer.Close()
-			return err
-		}
-		reader = r
+		reader = baseReader
 	}
 
 	if err := processReads(reader, writer, skipSet,
 		&nextComponent, &totalReads, &totalChanged, countsWriter); err != nil {
-		reader.Close()
 		writer.Close()
 		return err
 	}
-	reader.Close()
 
 	fmt.Fprintf(os.Stderr, "Total reads: %d, UMIs corrected: %d\n",
 		totalReads, totalChanged)
