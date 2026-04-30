@@ -39,17 +39,40 @@ Smith-Waterman based alignment with affine gap penalties and Oxford Nanopore-awa
 
 ### htsio — SAM/BAM/CRAM I/O
 
-Reading and writing alignment files via samtools integration.
+Native reading and writing of SAM, BAM, and tabix-indexed files. Samtools is only required for CRAM.
 
-- `SamReader` — read SAM/BAM/CRAM with region, flag, MAPQ, and tag filters
-- `SamWriter` — write SAM, BAM, or CRAM with optional coordinate/name sorting and multithreaded compression
+**Reading:**
+- `SamReader` — interface with `Next()`, `Header()`, `Query()`, `Close()`
+- `NewSamReader()` — auto-detects format: `.bam` → native BAM reader, `.sam`/`.sam.gz` → native text reader, `.cram` → samtools
+- `Query(ref, start, end)` — returns `iter.Seq2[*SamRecord, error]` for indexed region queries (BAM via BAI, CRAM via samtools)
+- Flag, MAPQ, and tag filtering via `SamReaderOpts`
+
+**Writing:**
+- `SamWriter` — interface with `Write()`, `Close()`
+- `NewSamWriter()` — native BAM output (unsorted or coordinate/name sorted with merge sort), samtools for CRAM
+- Sorted BAM writer buffers ~768MB, flushes to temp files, merge-sorts on Close
+
+**Tabix:**
+- `TabixReader` — query tabix-indexed BGZF files (BED, VCF, GFF) with TBI or CSI index auto-detection
+- `TabixWriter` — sorted BGZF output with optional `.tbi` index generation; presets for BED, VCF, GFF
+- Both use `iter.Seq2` for query results with 0-based half-open coordinates
+
+**Index support:**
+- BAI, TBI, CSI index parsers with shared `Query()` interface
+- `ParseRegion()` — converts samtools-style region strings (`chr1:1000-2000`) to 0-based half-open
+
+**Core types:**
 - `SamRecord` — full SAM record with flag accessors (`IsUnmapped()`, `IsReverse()`, etc.) and typed tag access
-- `SamHeader` — header manipulation including `@PG` line generation with auto-versioning
+- `SamHeader` — header manipulation including `@PG` line generation
 - `TagFilter` — flexible tag-based filtering with comparison operators
 
-### tabix — BGZF compression
+### htsio/bgzf — BGZF compression
 
-- `BGZipWriter` — block-gzipped output compatible with tabix indexing
+Low-level BGZF (Blocked GNU Zip Format) support used by BAM and tabix.
+
+- `Reader` / `Writer` — streaming BGZF read/write with virtual offset tracking
+- `IndexedReader` — random access with LRU block cache (default 64 blocks); supports virtual offset seeking and `.gzi` index for uncompressed offset seeking
+- `NewBGZipFile()` — convenience constructor for file-backed BGZF output
 
 ### support packages
 
