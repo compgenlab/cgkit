@@ -176,13 +176,17 @@ func (f *samReaderFlags) buildReaderOpts() (*htsio.SamReaderOpts, error) {
 	if f.minMapQ > 0 {
 		opts.MinMapQ(f.minMapQ)
 	}
-	if f.region != "" {
-		opts.Region(f.region)
-	} else if f.ref != "" {
-		opts.Region(f.ref)
-	}
 	for _, tf := range tagFilters {
 		opts.AddTagFilter(tf)
 	}
 	return opts, nil
+}
+
+// queryRegion returns the region string from --region or --ref flags.
+// Returns empty string if neither is set.
+func (f *samReaderFlags) queryRegion() string {
+	if f.region != "" {
+		return f.region
+	}
+	return f.ref
 }
