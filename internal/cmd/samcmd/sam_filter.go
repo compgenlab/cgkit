@@ -52,6 +52,31 @@ var samFilterCmd = &cobra.Command{
 		}
 		defer writer.Close()
 
+		// If a region is specified, use Query() to iterate the subset.
+		if regionStr := samFilterReaderFlags.queryRegion(); regionStr != "" {
+			ref, start, end, err := htsio.ParseRegion(regionStr)
+			if err != nil {
+				return err
+			}
+			if end < 0 {
+				end = 1<<30 - 1
+			}
+			records, err := reader.Query(ref, start, end)
+			if err != nil {
+				return fmt.Errorf("query %q: %w", regionStr, err)
+			}
+			for rec, err := range records {
+				if err != nil {
+					return err
+				}
+				if err := writer.Write(rec); err != nil {
+					return fmt.Errorf("write record: %w", err)
+				}
+			}
+			return nil
+		}
+
+		// No region — stream all records.
 		for {
 			rec, err := reader.Next()
 			if err == io.EOF {
@@ -60,7 +85,6 @@ var samFilterCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-
 			if err := writer.Write(rec); err != nil {
 				return fmt.Errorf("write record: %w", err)
 			}

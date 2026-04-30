@@ -12,7 +12,7 @@ import (
 
 	"github.com/compgen-io/cgltk/align"
 	"github.com/compgen-io/cgltk/seqio"
-	"github.com/compgen-io/cgltk/tabix"
+	"github.com/compgen-io/cgltk/htsio/bgzf"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +31,7 @@ func openWriter(filename string, preferBGZip ...bool) (io.Writer, func() error, 
 
 	useBGZip := len(preferBGZip) > 0 && preferBGZip[0]
 	if useBGZip && (strings.HasSuffix(filename, ".gz") || strings.HasSuffix(filename, ".bgz")) {
-		bgz, err := tabix.NewBGZipFile(filename)
+		bgz, err := bgzf.NewBGZipFile(filename)
 		if err != nil {
 			return nil, nil, err
 		}
