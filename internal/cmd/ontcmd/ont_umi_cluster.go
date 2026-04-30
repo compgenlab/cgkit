@@ -14,6 +14,43 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// lineWriter is a simple interface for writing tab-delimited lines.
+type lineWriter interface {
+	WriteLine(line string) error
+	Close() error
+}
+
+// plainLineWriter wraps an io.Writer for plain text output.
+type plainLineWriter struct {
+	w     io.Writer
+	close func() error
+}
+
+func (p *plainLineWriter) WriteLine(line string) error {
+	_, err := fmt.Fprintln(p.w, line)
+	return err
+}
+
+func (p *plainLineWriter) Close() error {
+	if p.close != nil {
+		return p.close()
+	}
+	return nil
+}
+
+// tabixLineWriter wraps a TabixWriter for sorted, indexed BGZF output.
+type tabixLineWriter struct {
+	tw *htsio.TabixWriter
+}
+
+func (t *tabixLineWriter) WriteLine(line string) error {
+	return t.tw.Write(line)
+}
+
+func (t *tabixLineWriter) Close() error {
+	return t.tw.Close()
+}
+
 var ontUmiClusterCmd = &cobra.Command{
 	GroupID: "ontcmd",
 	Use:     "ont-umi-cluster <input.bam>",
@@ -37,19 +74,24 @@ var ontUmiClusterCmd = &cobra.Command{
 			skipRefs = strings.Split(umiClusterSkipRefs, ",")
 		}
 
-		// Open counts writer if requested and emit the BED6+ header. The
-		// header is a single '#'-prefixed line so downstream BED tools
-		// skip it as a comment.
-		var countsWriter io.Writer
-		var closeCounts func() error
+		// Open counts writer if requested. For .gz/.bgz files, use a
+		// TabixWriter with BED preset for sorted, indexed output.
+		// For plain text, use a simple io.Writer.
+		var countsWriter lineWriter
 		if umiClusterCountsFilename != "" {
-			var err error
-			countsWriter, closeCounts, err = openWriter(umiClusterCountsFilename, true)
-			if err != nil {
-				return fmt.Errorf("opening umi-counts: %w", err)
+			if strings.HasSuffix(umiClusterCountsFilename, ".gz") || strings.HasSuffix(umiClusterCountsFilename, ".bgz") {
+				opts := htsio.NewTabixWriterOpts().BED().AutoIndex().Meta('#')
+				tw := htsio.NewTabixWriter(umiClusterCountsFilename, opts)
+				countsWriter = &tabixLineWriter{tw: tw}
+			} else {
+				f, err := os.Create(umiClusterCountsFilename)
+				if err != nil {
+					return fmt.Errorf("opening umi-counts: %w", err)
+				}
+				countsWriter = &plainLineWriter{w: f, close: f.Close}
 			}
 			defer func() {
-				if err := closeCounts(); err != nil {
+				if err := countsWriter.Close(); err != nil {
 					fmt.Fprintf(os.Stderr, "error closing umi-counts: %v\n", err)
 				}
 			}()
@@ -282,7 +324,7 @@ func removeFromBin(bin []*bufferedRead, id int) []*bufferedRead {
 //     sequentially. The entire --threads budget is given to the per-group
 //     UMI clustering step (clusterUMIs), which is the real
 //     bottleneck. samtools sort is cheap and does not need many threads.
-func umiClusterOverlapMode(inputFile string, countsWriter io.Writer, skipRefs []string) error {
+func umiClusterOverlapMode(inputFile string, countsWriter lineWriter, skipRefs []string) error {
 	// Read header from the input file.
 	hdrReader, err := htsio.NewSamReader(inputFile)
 	if err != nil {
@@ -394,7 +436,7 @@ func processReads(
 	nextComponent *int64,
 	totalReads *int64,
 	totalChanged *int64,
-	countsWriter io.Writer,
+	countsWriter lineWriter,
 ) error {
 
 	// Per-region state. Reads are indexed by start and end position in
@@ -599,7 +641,7 @@ func processReads(
 					cl := buildUMIClusterCounts(rname, strand, results, repToMI, coordsByUMI, effectiveThreshold)
 					ioMu.Lock()
 					for _, line := range cl {
-						if _, err := fmt.Fprintln(countsWriter, line); err != nil {
+						if err := countsWriter.WriteLine(line); err != nil {
 							firstErr = fmt.Errorf("writing umi-counts line: %w", err)
 							break
 						}
