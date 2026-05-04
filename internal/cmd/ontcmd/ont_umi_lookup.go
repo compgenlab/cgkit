@@ -179,11 +179,7 @@ Both files must be sorted by coordinate.`,
 		matched := 0
 		total := 0
 
-		for {
-			rec, err := reader.Next()
-			if err == io.EOF {
-				break
-			}
+		for rec, err := range reader.Records() {
 			if err != nil {
 				return err
 			}
