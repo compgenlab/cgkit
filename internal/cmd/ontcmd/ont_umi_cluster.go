@@ -378,6 +378,14 @@ func umiClusterOverlapMode(inputFile string, countsWriter lineWriter, skipRefs [
 	var totalReads int64
 	var totalChanged int64
 
+	// When --region is set, encode the region into MI tags so that
+	// parallel per-region jobs produce non-overlapping MI values.
+	regionPrefix := ""
+	if umiClusterRegion != "" {
+		encoded := strings.NewReplacer(":", "_", "-", "_").Replace(umiClusterRegion)
+		regionPrefix = encoded + "_"
+	}
+
 	// Open the input reader. In --region mode we query a specific
 	// region; otherwise we read the entire file in one pass and let
 	// processReads handle chromosome transitions, skip-ref pass-
@@ -410,7 +418,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter lineWriter, skipRefs [
 	}
 
 	if err := processReads(reader, writer, skipSet,
-		&nextComponent, &totalReads, &totalChanged, countsWriter); err != nil {
+		&nextComponent, &totalReads, &totalChanged, countsWriter, regionPrefix); err != nil {
 		writer.Close()
 		return err
 	}
@@ -437,6 +445,7 @@ func processReads(
 	totalReads *int64,
 	totalChanged *int64,
 	countsWriter lineWriter,
+	regionPrefix string,
 ) error {
 
 	// Per-region state. Reads are indexed by start and end position in
@@ -602,7 +611,7 @@ func processReads(
 					clusterIdx := 1
 					for _, r := range results {
 						if _, ok := repToMI[r.representative]; !ok {
-							repToMI[r.representative] = fmt.Sprintf("mi_%06d.%03d", compID, clusterIdx)
+							repToMI[r.representative] = fmt.Sprintf("mi_%s%06d.%03d", regionPrefix, compID, clusterIdx)
 							clusterIdx++
 						}
 					}
