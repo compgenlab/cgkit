@@ -587,15 +587,6 @@ func processReads(
 					}
 				}
 
-				// Update UMI tags on records (each worker owns its own
-				// records, so no lock needed for the tag mutations).
-				changed := 0
-				for _, rec := range recs {
-					if updateRecordUMI(rec, representative) {
-						changed++
-					}
-				}
-
 				// Phase 2 (serialized via ioMu): assign MI values, build
 				// counts lines, print the log line. These touch shared
 				// counters and writers so they need the lock, but they're
@@ -625,7 +616,8 @@ func processReads(
 					len(recs), len(results), representativeCount, maxClustSize)
 				ioMu.Unlock()
 
-				// Set MI tags on records now that repToMI is populated.
+				// Set MI tags BEFORE updateRecordUMI rewrites RX, because
+				// the representative map is keyed by original UMI values.
 				if umiClusterMI {
 					for _, rec := range recs {
 						origUMI := getUMI(rec)
@@ -636,6 +628,15 @@ func processReads(
 								}
 							}
 						}
+					}
+				}
+
+				// Update UMI tags on records (each worker owns its own
+				// records, so no lock needed for the tag mutations).
+				changed := 0
+				for _, rec := range recs {
+					if updateRecordUMI(rec, representative) {
+						changed++
 					}
 				}
 

@@ -9,7 +9,7 @@ import (
 )
 
 var fastqTagCmd = &cobra.Command{
-	GroupID: "fastqcmd",
+	GroupID: "fastaqcmd",
 	Use:     "fastq-tag <tag> <input.fastq>",
 	Short:   "Add a tag to the comment field of FASTQ records",
 	RunE: func(cmd *cobra.Command, args []string) error {
