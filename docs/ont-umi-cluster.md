@@ -250,68 +250,110 @@ When clustering UMIs, the edit distance threshold determines which pairs of UMIs
 - In a small component (100 UMIs), a pair at distance 3 is almost certainly real — the probability of a random collision is negligible.
 - In a large component (100,000 UMIs), there are ~5 billion possible pairs. Even at the low per-pair collision probability of ~3.5 x 10^-6 for distance 3, the expected number of random close pairs is ~17,600. These false edges, when fed into any clustering method, cause incorrect merges.
 
-Rather than choosing a fixed threshold that works for all component sizes, the adaptive threshold lets the data decide: at each edit distance, it measures how many edges were actually found and compares against the expected number of random collisions. If the false positive rate exceeds a tolerance (default 5%), that distance is excluded.
+Rather than choosing a fixed threshold that works for all component sizes, the adaptive threshold lets the data decide: at each edit distance, it measures how many cumulative edges were actually found and compares against the expected number of random collisions. If the cumulative false positive rate exceeds a tolerance (default 10%), that distance and all higher distances are excluded.
 
 #### Method
 
-After all-pairs edge-finding, the adaptive filter computes a per-distance false positive rate. The expected number of random pairs at exactly distance d between N independent UMIs of length L over a 3-letter alphabet (as used by ONT UMIs) is:
+After all-pairs edge-finding, the adaptive filter computes a cumulative false positive rate. The cumulative probability that two independent random UMIs of length L over a 3-letter alphabet (as used by ONT UMIs) are within edit distance d is:
 
 ```
-P(exactly d) = C(L, d) * 2^d / 3^L
-E_false(d) = N * (N-1) / 2 * P(exactly d)
+P(≤d) = Σ_{k=0}^{d} C(L, k) * 2^k / 3^L
 ```
 
 Where:
-- `C(L, d)` is "L choose d" — the number of ways to pick d positions to mutate
-- `2^d` accounts for the 2 possible wrong bases at each mutated position (3-letter alphabet)
+- `C(L, k)` is "L choose k" — the number of ways to pick k positions to mutate
+- `2^k` accounts for the 2 possible wrong bases at each mutated position (3-letter alphabet)
 - `3^L` is the total UMI sequence space
 
 This is a substitution-only approximation. Indels slightly expand the collision neighborhood, so the true collision probability is marginally higher — making this a conservative (slightly permissive) estimate.
 
-The false positive rate at distance d is then:
+The expected number of false edges at cumulative distance ≤d among N UMIs is:
 
 ```
-FPR(d) = E_false(d) / actual_edges(d)
+E_false(≤d) = N * (N-1) / 2 * P(≤d)
 ```
 
-where `actual_edges(d)` is the number of edges found at exactly distance d by the all-pairs computation. If `FPR(d)` exceeds `--adaptive-alpha` (default 0.05), all edges at distance d are discarded before clustering.
+The cumulative false positive rate is then:
+
+```
+FPR(≤d) = E_false(≤d) / actual_edges(≤d)
+```
+
+where `actual_edges(≤d)` is the total number of edges found at distances 1 through d. If `FPR(≤d)` exceeds `--adaptive-alpha` (default 0.10), all edges at distance d and above are discarded before clustering.
+
+Because the filter uses cumulative counts, it is monotonic: once the FPR exceeds the threshold at some distance d, all higher distances are automatically excluded. This prevents the anomaly where a per-distance filter might exclude d=2 but keep d=3 due to an unusually high number of real edges at d=3.
 
 #### Concrete example (L=16 bases, 3-letter alphabet)
 
-The per-pair collision probabilities are:
+The cumulative collision probabilities are:
 
-| Distance d | P(exactly d) | Interpretation |
+| Distance | P(≤d) | Interpretation |
 |---|---|---|
-| 1 | 7.4 x 10^-7 | ~1 in 1.3 million |
-| 2 | 1.1 x 10^-5 | ~1 in 90,000 |
-| 3 | 1.0 x 10^-4 | ~1 in 9,600 |
+| ≤1 | 7.7 x 10^-7 | ~1 in 1.3 million |
+| ≤2 | 1.2 x 10^-5 | ~1 in 84,000 |
+| ≤3 | 1.2 x 10^-4 | ~1 in 8,600 |
 
-Expected false pairs at each component size:
+Each level is ~10-15× more likely than the previous.
 
-| N (unique UMIs) | d=1 expected false | d=2 expected false | d=3 expected false |
+Expected cumulative false edges at each component size:
+
+| N (unique UMIs) | nPairs | E_false(≤1) | E_false(≤2) | E_false(≤3) |
+|---|---|---|---|---|
+| 100 | 4,950 | 0.004 | 0.06 | 0.6 |
+| 1,000 | 499,500 | 0.4 | 6 | 58 |
+| 5,000 | 12.5M | 10 | 149 | 1,450 |
+| 10,000 | 50M | 38 | 595 | 5,800 |
+| 20,000 | 200M | 153 | 2,380 | 23,200 |
+
+At 10% FPR (default alpha), the minimum number of cumulative edges needed to survive filtering is `E_false / 0.10`:
+
+| N | min edges for d≤1 | min edges for d≤2 | min edges for d≤3 |
 |---|---|---|---|
-| 100 | ~0 | 0.1 | 0.5 |
-| 1,000 | 0.4 | 5.6 | 52 |
-| 5,000 | 9.3 | 139 | 1,301 |
-| 10,000 | 37 | 558 | 5,203 |
+| 100 | 1 | 1 | 6 |
+| 1,000 | 4 | 59 | 580 |
+| 5,000 | 96 | 1,487 | 14,500 |
+| 10,000 | 383 | 5,950 | 58,000 |
+| 20,000 | 1,533 | 23,800 | 232,000 |
 
-At 5% FPR, the minimum number of real edges needed at each distance to survive filtering is `E_false / 0.05`:
+The 3-letter alphabet (ONT UMIs use only A, C, G) has a much smaller sequence space (3^16 ≈ 43 million) compared to a 4-letter alphabet (4^16 ≈ 4.3 billion), making random collisions 20-67× more likely. With the default alpha of 0.10 and ~1-2 real neighbors per UMI, the adaptive threshold begins excluding d≤3 edges at around N ≈ 2,000-3,000 unique UMIs.
 
-| N | d=1 min edges | d=2 min edges | d=3 min edges |
+#### Worked example
+
+Consider a component with 100 unique UMIs (N=100) and UMI length L=12, with `--umi-edit-distance 3`:
+
+```
+nPairs = 100 × 99 / 2 = 4,950
+```
+
+Suppose the all-pairs computation found these edges:
+
+| Distance | Edges at this distance | Cumulative edges |
+|---|---|---|
+| 1 | 15 | 15 |
+| 2 | 8 | 23 |
+| 3 | 5 | 28 |
+
+The cumulative FPR at each level:
+
+| Level | E_false(≤d) | Cumulative edges | FPR |
 |---|---|---|---|
-| 100 | 1 | 1 | 10 |
-| 1,000 | 7 | 111 | 1,040 |
-| 5,000 | 186 | 2,787 | 26,013 |
-| 10,000 | 743 | 11,150 | 104,063 |
+| ≤1 | 0.22 | 15 | 0.22/15 = **1.5%** |
+| ≤2 | 2.4 | 23 | 2.4/23 = **10.4%** |
+| ≤3 | 15.3 | 28 | 15.3/28 = **54.7%** |
 
-The 3-letter alphabet (ONT UMIs use only A, C, G) has a much smaller sequence space (3^16 ≈ 43 million) compared to a 4-letter alphabet (4^16 ≈ 4.3 billion), making random collisions 20-67× more likely. With the default alpha of 0.05 and ~1 real neighbor per UMI at d=3, the adaptive threshold begins excluding d=3 edges at around N ≈ 1,000 unique UMIs.
+With alpha=10%:
+- **d≤1**: FPR 1.5% < 10% — keep
+- **d≤2**: FPR 10.4% > 10% — **exclude d=2 and d=3**
+
+The effective threshold drops to 1. All d=2 and d=3 edges are discarded before clustering. Because the filter is cumulative, there is no possibility of excluding d=2 while keeping d=3.
 
 #### Properties
 
 - **Independent of clustering method**: the adaptive threshold is a pre-filter on edges, applied before any of the four clustering methods (connected, adjacency, directional, tiered).
-- **Transparent**: when edges are excluded, a diagnostic message is printed to stderr showing the distance, FPR, edge count, and expected false count.
-- **Conservative default**: the 5% FPR default means up to 1 in 20 edges at a given distance may be a random collision. This is permissive enough to avoid discarding real edges in small components, while aggressive enough to catch the random-collision problem in large ones.
-- **Tunable**: `--adaptive-alpha` controls the tolerance. Lower values (e.g., 0.01) are more conservative (discard more aggressively); higher values (e.g., 0.10) are more permissive.
+- **Monotonic**: uses cumulative FPR, so once a distance is excluded, all higher distances are excluded too.
+- **Transparent**: when edges are excluded, a diagnostic message is printed to stderr showing the distance, cumulative FPR, cumulative edge count, and expected false count.
+- **Permissive default**: the 10% FPR default means up to 1 in 10 cumulative edges may be a random collision. This is permissive enough to avoid discarding real edges in small components, while aggressive enough to catch the random-collision problem in large ones.
+- **Tunable**: `--adaptive-alpha` controls the tolerance. Lower values (e.g., 0.01) are more conservative (discard more aggressively); higher values (e.g., 0.20) are more permissive.
 
 ### Representative selection
 
@@ -369,14 +411,15 @@ The all-pairs max-intra-cluster-distance computation is capped at 10,000 members
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--adaptive-alpha` | 0.05 | Maximum false positive rate per edit distance level |
-| `--adaptive-threshold` | false | Discard edges at distances exceeding the false positive rate threshold |
+| `--adaptive-alpha` | 0.10 | Maximum cumulative false positive rate per edit distance level |
+| `--adaptive-threshold` | false | Discard edges at distances where cumulative random collisions exceed the FPR threshold |
 | `--hp-dist` | false | HP-aware edit distance: one free HP indel per UMI segment (between separators) |
 | `--ignore-refs` | | References to pass through without clustering (comma-separated) |
 | `--junction-window` | 20 | Tolerance (bp) for matching junction positions and merging adjacent junctions |
 | `--junction-match` | false | Require compatible splice junctions (CIGAR N ops) when grouping reads |
 | `--match-one-end` | false | Match reads if EITHER 5' or 3' ends are within gap |
 | `--no-strand` | false | Ignore strand when grouping reads |
+| `--no-summary-counts-index` | false | Disable automatic tabix index generation for the summary counts file |
 | `-o`, `--output` | (required) | Output BAM file path |
 | `--overlap` | 50 | Maximum gap (bp) between reads to group them |
 | `--region` | | Process only this region |
