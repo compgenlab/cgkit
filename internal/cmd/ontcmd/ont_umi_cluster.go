@@ -80,7 +80,10 @@ var ontUmiClusterCmd = &cobra.Command{
 		var countsWriter lineWriter
 		if umiClusterCountsFilename != "" {
 			if strings.HasSuffix(umiClusterCountsFilename, ".gz") || strings.HasSuffix(umiClusterCountsFilename, ".bgz") {
-				opts := htsio.NewTabixWriterOpts().BED().AutoIndex().Meta('#')
+				opts := htsio.NewTabixWriterOpts().BED().Meta('#')
+				if !umiClusterNoCountsIndex {
+					opts = opts.AutoIndex()
+				}
 				tw := htsio.NewTabixWriter(umiClusterCountsFilename, opts)
 				countsWriter = &tabixLineWriter{tw: tw}
 			} else {
@@ -1831,23 +1834,29 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 				edgeCountByDist[e.dist]++
 			}
 
-			// Determine which distances to exclude based on FPR.
-			excludeDist := make(map[int]bool)
+			// Determine which distances to exclude based on cumulative FPR.
+			// At each distance d, compute FPR(≤d) = E_false(≤d) / actual_edges(≤d).
+			// Once the cumulative FPR exceeds alpha, that distance and all
+			// higher distances are excluded.
+			excludeAbove := edgeThreshold + 1 // nothing excluded by default
+			var cumActual int
 			for d := 1; d <= edgeThreshold; d++ {
-				actual := edgeCountByDist[d]
-				if actual == 0 {
+				cumActual += edgeCountByDist[d]
+				if cumActual == 0 {
 					continue
 				}
-				// P(exactly d) = C(L,d) * 3^d / 4^L
-				// (collisionProb gives cumulative ≤ d, so subtract ≤ d-1)
-				pExact := collisionProb(umiLen, d) - collisionProb(umiLen, d-1)
-				expectedFalse := nPairs * pExact
-				fdr := expectedFalse / float64(actual)
-				if fdr > umiClusterAdaptiveAlpha {
-					excludeDist[d] = true
-					fmt.Fprintf(os.Stderr, "  adaptive: excluding d=%d edges (FPR=%.1f%%, %d edges, %.0f expected false)\n",
-						d, fdr*100, actual, expectedFalse)
+				cumExpectedFalse := nPairs * collisionProb(umiLen, d)
+				fpr := cumExpectedFalse / float64(cumActual)
+				if fpr > umiClusterAdaptiveAlpha {
+					excludeAbove = d
+					fmt.Fprintf(os.Stderr, "  adaptive: excluding d>=%d edges (FPR=%.1f%%, %d cumulative edges, %.0f expected false)\n",
+						d, fpr*100, cumActual, cumExpectedFalse)
+					break
 				}
+			}
+			excludeDist := make(map[int]bool)
+			for d := excludeAbove; d <= edgeThreshold; d++ {
+				excludeDist[d] = true
 			}
 
 			// Filter edges and compute effective threshold.
@@ -2194,6 +2203,7 @@ var umiClusterHPDist bool
 var umiClusterMethod string
 var umiClusterAdaptiveThreshold bool
 var umiClusterAdaptiveAlpha float64
+var umiClusterNoCountsIndex bool
 var umiClusterMatchJunctions bool
 var umiClusterJunctionWindow int
 
@@ -2214,7 +2224,8 @@ func init() {
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterHPDist, "hp-dist", false, "Use HP-aware edit distance: one free HP indel per UMI segment (between separators)")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterMethod, "umi-cluster-method", "adjacency", "UMI clustering method: connected (single-linkage), adjacency (greedy, no chaining), directional (PCR error count model), tiered (distance-attenuated BFS clustering)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterAdaptiveThreshold, "adaptive-threshold", false, "Discard edges at distances where random collisions exceed the FPR threshold")
-	ontUmiClusterCmd.Flags().Float64Var(&umiClusterAdaptiveAlpha, "adaptive-alpha", 0.05, "Maximum false positive rate per edit distance level (used with --adaptive-threshold)")
+	ontUmiClusterCmd.Flags().Float64Var(&umiClusterAdaptiveAlpha, "adaptive-alpha", 0.10, "Maximum cumulative false positive rate per edit distance level (used with --adaptive-threshold)")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterNoCountsIndex, "no-summary-counts-index", false, "Disable automatic tabix index generation for the summary counts file")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchJunctions, "junction-match", false, "Require compatible splice junctions (CIGAR N ops) when grouping reads")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterJunctionWindow, "junction-window", 20, "Tolerance (bp) for matching junction positions and merging adjacent junctions")
 }

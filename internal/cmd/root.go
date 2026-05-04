@@ -9,6 +9,7 @@ import (
 	"github.com/compgen-io/cgltk/internal/cmd/ontcmd"
 	"github.com/compgen-io/cgltk/internal/cmd/samcmd"
 	"github.com/compgen-io/cgltk/internal/cmd/seqcmd"
+	"github.com/compgen-io/cgltk/internal/cmd/tabcmd"
 	"github.com/spf13/cobra"
 )
 
@@ -58,4 +59,5 @@ func init() {
 	fastqcmd.InitCmd(rootCmd)
 	samcmd.InitCmd(rootCmd)
 	seqcmd.InitCmd(rootCmd)
+	tabcmd.InitCmd(rootCmd)
 }
