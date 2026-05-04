@@ -92,11 +92,7 @@ var samExportCmd = &cobra.Command{
 		headerParts = append(headerParts, tags...)
 		fmt.Fprintln(out, strings.Join(headerParts, "\t"))
 
-		for {
-			rec, err := reader.Next()
-			if err == io.EOF {
-				break
-			}
+		for rec, err := range reader.Records() {
 			if err != nil {
 				return err
 			}

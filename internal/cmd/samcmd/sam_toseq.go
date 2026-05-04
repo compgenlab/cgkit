@@ -2,7 +2,6 @@ package samcmd
 
 import (
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/compgen-io/cgltk/htsio"
@@ -68,11 +67,7 @@ var samToSeqCmd = &cobra.Command{
 			}
 		}
 
-		for {
-			rec, err := reader.Next()
-			if err == io.EOF {
-				break
-			}
+		for rec, err := range reader.Records() {
 			if err != nil {
 				return err
 			}

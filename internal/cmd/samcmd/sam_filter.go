@@ -2,7 +2,6 @@ package samcmd
 
 import (
 	"fmt"
-	"io"
 
 	"github.com/compgen-io/cgltk/htsio"
 	"github.com/spf13/cobra"
@@ -77,11 +76,7 @@ var samFilterCmd = &cobra.Command{
 		}
 
 		// No region — stream all records.
-		for {
-			rec, err := reader.Next()
-			if err == io.EOF {
-				break
-			}
+		for rec, err := range reader.Records() {
 			if err != nil {
 				return err
 			}

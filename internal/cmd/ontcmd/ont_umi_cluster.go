@@ -858,15 +858,11 @@ func processReads(
 	// active buffer (different chromosomes can't share coordinates).
 	currentChrom := ""
 
-	for {
+	for rec, err := range reader.Records() {
 		if e := writeErr.Load(); e != nil {
 			close(workCh)
 			workerWg.Wait()
 			return e.(error)
-		}
-		rec, err := reader.Next()
-		if err == io.EOF {
-			break
 		}
 		if err != nil {
 			close(workCh)
@@ -1097,11 +1093,7 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 	// Unmapped reads have no position and shouldn't influence whole-
 	// genome clustering; skipped refs are passed through unchanged in
 	// pass 2.
-	for {
-		rec, err := reader.Next()
-		if err == io.EOF {
-			break
-		}
+	for rec, err := range reader.Records() {
 		if err != nil {
 			return err
 		}
@@ -1150,11 +1142,7 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 	// writer to avoid leaking an orphan samtools sort child process.
 	changed := 0
 	total := 0
-	for {
-		rec, err := reader2.Next()
-		if err == io.EOF {
-			break
-		}
+	for rec, err := range reader2.Records() {
 		if err != nil {
 			reader2.Close()
 			writer.Close()
