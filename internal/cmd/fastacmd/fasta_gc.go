@@ -10,7 +10,7 @@ import (
 
 // fastagcCmd implements the initial counting entrypoint.
 var fastaGCCmd = &cobra.Command{
-	GroupID: "fastacmd",
+	GroupID: "fastaqcmd",
 	Use:     "fasta-gc <input.fasta>",
 	Short:   "Return the GC content of sequences in a FASTA file",
 	RunE: func(cmd *cobra.Command, args []string) error {

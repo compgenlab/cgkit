@@ -9,7 +9,7 @@ import (
 )
 
 var fastaWrapCmd = &cobra.Command{
-	GroupID: "fastacmd",
+	GroupID: "fastaqcmd",
 	Use:     "fasta-wrap <input.fasta>",
 	Short:   "Reformat the sequences in a FASTA file to a specified line width",
 	RunE: func(cmd *cobra.Command, args []string) error {
