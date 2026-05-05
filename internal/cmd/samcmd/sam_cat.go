@@ -2,7 +2,6 @@ package samcmd
 
 import (
 	"fmt"
-	"io"
 
 	"github.com/compgen-io/cgltk/htsio"
 	"github.com/spf13/cobra"
@@ -15,7 +14,7 @@ var samCatCmd = &cobra.Command{
 	Hidden:  true,
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		reader, err := htsio.NewSamReader(args[0], nil)
+		reader, err := htsio.NewSamReader(args[0])
 		if err != nil {
 			return fmt.Errorf("open %s: %w", args[0], err)
 		}
@@ -29,11 +28,7 @@ var samCatCmd = &cobra.Command{
 		writer := htsio.NewStdoutSamWriter(header)
 		defer writer.Close()
 
-		for {
-			rec, err := reader.Next()
-			if err == io.EOF {
-				break
-			}
+		for rec, err := range reader.Records() {
 			if err != nil {
 				return fmt.Errorf("read record: %w", err)
 			}
