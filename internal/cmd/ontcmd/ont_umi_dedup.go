@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/compgen-io/cgltk/htsio"
+	"github.com/compgen-io/cgltk/htsio/bam"
 	"github.com/spf13/cobra"
 )
 
@@ -407,8 +408,7 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 
 	header.AddPGLine("ont-umi-dedup", "cgltk", "DS:UMI deduplication")
 
-	wopts := htsio.SamWriterOptions(header).BAM().SortCoord().Threads(2)
-	writer, err := htsio.NewSamWriter(umiDedupOutput, wopts)
+	writer, err := bam.NewSortedWriter(umiDedupOutput, header, true)
 	if err != nil {
 		return err
 	}
