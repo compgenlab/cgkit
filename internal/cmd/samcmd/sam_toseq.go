@@ -5,6 +5,9 @@ import (
 	"os"
 
 	"github.com/compgen-io/cgltk/htsio"
+	_ "github.com/compgen-io/cgltk/htsio/bam"
+	_ "github.com/compgen-io/cgltk/htsio/cram"
+	_ "github.com/compgen-io/cgltk/htsio/sam"
 	"github.com/compgen-io/cgltk/seqio"
 	"github.com/compgen-io/cgltk/support/sequtils"
 	"github.com/compgen-io/cgltk/support/stringutils"
