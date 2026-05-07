@@ -127,6 +127,7 @@ func parseCounts(filename string) ([]umiClusterRecord, error) {
 
 var ontUmiLookupCmd = &cobra.Command{
 	GroupID: "ontcmd",
+	Hidden:  true,
 	Use:     "ont-umi-lookup <counts.bed.gz> <query.bam>",
 	Short:   "Check if reads in a BAM file match existing UMI clusters",
 	Long: `For each read in the query BAM file with a UMI tag, check the
