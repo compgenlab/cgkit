@@ -4,8 +4,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/compgen-io/cgltk/htsio"
-	"github.com/compgen-io/cgltk/htsio/bam"
+	"github.com/compgen-io/cgkit/htsio"
+	"github.com/compgen-io/cgkit/htsio/bam"
 )
 
 // makeTestBAM writes a coordinate-sorted BAM to path with the given records.
