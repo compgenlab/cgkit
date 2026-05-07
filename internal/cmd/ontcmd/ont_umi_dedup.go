@@ -2,12 +2,186 @@ package ontcmd
 
 import (
 	"fmt"
+	"math"
 	"os"
+	"sort"
 	"strconv"
 
 	"github.com/compgen-io/cgltk/htsio"
 	"github.com/spf13/cobra"
 )
+
+// dedupStats collects metrics during deduplication for the --stats report.
+type dedupStats struct {
+	totalReads   int64
+	totalPrimary int64
+	totalMIGroup int64
+	totalKept    int64
+	noMIReads    int64 // reads without MI tag (passed through)
+
+	// Per-MI-group sizes (number of primary reads per group).
+	groupSizes []int
+
+	// Tag values for kept and discarded primary reads, keyed by tag name.
+	keptTagValues     map[string][]float64
+	discardedTagValues map[string][]float64
+}
+
+func newDedupStats() *dedupStats {
+	return &dedupStats{
+		keptTagValues:      make(map[string][]float64),
+		discardedTagValues: make(map[string][]float64),
+	}
+}
+
+// recordGroup records stats for one flushed MI group.
+func (s *dedupStats) recordGroup(primaries []*htsio.SamRecord, bestIdx int, tagNames []string) {
+	s.totalMIGroup++
+	s.groupSizes = append(s.groupSizes, len(primaries))
+
+	for i, rec := range primaries {
+		for _, tag := range tagNames {
+			v, ok := numericTagValue(rec, tag)
+			if !ok {
+				continue
+			}
+			if i == bestIdx {
+				s.keptTagValues[tag] = append(s.keptTagValues[tag], v)
+			} else {
+				s.discardedTagValues[tag] = append(s.discardedTagValues[tag], v)
+			}
+		}
+		if i == bestIdx {
+			s.totalKept++
+		}
+	}
+}
+
+// writeReport writes the stats report to the given path.
+func (s *dedupStats) writeReport(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("creating stats file: %w", err)
+	}
+	defer f.Close()
+
+	fmt.Fprintf(f, "=== ont-umi-dedup stats ===\n\n")
+
+	// Summary counts.
+	discarded := s.totalPrimary - s.totalKept
+	dupRate := 0.0
+	if s.totalPrimary > 0 {
+		dupRate = float64(discarded) / float64(s.totalPrimary) * 100
+	}
+	fmt.Fprintf(f, "Total reads:        %d\n", s.totalReads)
+	fmt.Fprintf(f, "  Primary:          %d\n", s.totalPrimary)
+	fmt.Fprintf(f, "  No MI (passthru): %d\n", s.noMIReads)
+	fmt.Fprintf(f, "MI groups:          %d\n", s.totalMIGroup)
+	fmt.Fprintf(f, "Reads kept:         %d\n", s.totalKept)
+	fmt.Fprintf(f, "Reads discarded:    %d\n", discarded)
+	fmt.Fprintf(f, "Duplication rate:   %.1f%%\n", dupRate)
+
+	// Group size distribution.
+	fmt.Fprintf(f, "\n=== reads per MI group ===\n\n")
+	if len(s.groupSizes) > 0 {
+		sort.Ints(s.groupSizes)
+		hist := make(map[int]int)
+		for _, sz := range s.groupSizes {
+			hist[sz]++
+		}
+		// Collect and sort unique sizes.
+		sizes := make([]int, 0, len(hist))
+		for sz := range hist {
+			sizes = append(sizes, sz)
+		}
+		sort.Ints(sizes)
+		fmt.Fprintf(f, "  size\tcount\n")
+		for _, sz := range sizes {
+			fmt.Fprintf(f, "  %d\t%d\n", sz, hist[sz])
+		}
+		fmt.Fprintf(f, "\n")
+		fmt.Fprintf(f, "  min:    %d\n", s.groupSizes[0])
+		fmt.Fprintf(f, "  median: %d\n", s.groupSizes[len(s.groupSizes)/2])
+		fmt.Fprintf(f, "  max:    %d\n", s.groupSizes[len(s.groupSizes)-1])
+		fmt.Fprintf(f, "  mean:   %.1f\n", meanInts(s.groupSizes))
+	}
+
+	// Per-tag distributions for kept vs discarded.
+	allTags := make(map[string]bool)
+	for tag := range s.keptTagValues {
+		allTags[tag] = true
+	}
+	for tag := range s.discardedTagValues {
+		allTags[tag] = true
+	}
+	tagList := make([]string, 0, len(allTags))
+	for tag := range allTags {
+		tagList = append(tagList, tag)
+	}
+	sort.Strings(tagList)
+
+	for _, tag := range tagList {
+		fmt.Fprintf(f, "\n=== %s tag distribution ===\n\n", tag)
+		kept := s.keptTagValues[tag]
+		disc := s.discardedTagValues[tag]
+		fmt.Fprintf(f, "  %10s  %8s  %8s  %8s\n", "", "mean", "median", "stdev")
+		if len(kept) > 0 {
+			fmt.Fprintf(f, "  %10s  %8.1f  %8.1f  %8.1f\n", "kept",
+				meanFloats(kept), medianFloats(kept), stdevFloats(kept))
+		}
+		if len(disc) > 0 {
+			fmt.Fprintf(f, "  %10s  %8.1f  %8.1f  %8.1f\n", "discarded",
+				meanFloats(disc), medianFloats(disc), stdevFloats(disc))
+		}
+	}
+
+	return nil
+}
+
+func meanInts(v []int) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	sum := 0
+	for _, x := range v {
+		sum += x
+	}
+	return float64(sum) / float64(len(v))
+}
+
+func meanFloats(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, x := range v {
+		sum += x
+	}
+	return sum / float64(len(v))
+}
+
+func medianFloats(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	sorted := make([]float64, len(v))
+	copy(sorted, v)
+	sort.Float64s(sorted)
+	return sorted[len(sorted)/2]
+}
+
+func stdevFloats(v []float64) float64 {
+	if len(v) < 2 {
+		return 0
+	}
+	m := meanFloats(v)
+	sum := 0.0
+	for _, x := range v {
+		d := x - m
+		sum += d * d
+	}
+	return math.Sqrt(sum / float64(len(v)))
+}
 
 // selector is a single criterion for choosing the best read from a group.
 // Selectors are applied in order; each one narrows the candidates and the
@@ -201,11 +375,19 @@ Examples:
 			return fmt.Errorf("at least one selector is required (--best-tag and/or --longest)")
 		}
 
-		return runUmiDedup(args[0], selectors)
+		// Collect tag names from selectors for stats tracking.
+		var statTags []string
+		for _, s := range selectors {
+			if ts, ok := s.(*tagSelector); ok {
+				statTags = append(statTags, ts.tag)
+			}
+		}
+
+		return runUmiDedup(args[0], selectors, statTags)
 	},
 }
 
-func runUmiDedup(inputFile string, selectors []selector) error {
+func runUmiDedup(inputFile string, selectors []selector, statTags []string) error {
 	reader, err := htsio.NewSamReader(inputFile)
 	if err != nil {
 		return err
@@ -243,18 +425,12 @@ func runUmiDedup(inputFile string, selectors []selector) error {
 	pendingSecSupp := make(map[string][]*htsio.SamRecord)
 
 	currentChrom := ""
-
-	var totalReads int64
-	var totalPrimary int64
-	var totalKept int64
-	var totalMIGroups int64
+	stats := newDedupStats()
 
 	// flushGroup selects the best read from an MI group, writes it (and
 	// its secondary/supplementary reads) to the output, and handles
 	// duplicates according to --mark-duplicates.
 	flushGroup := func(mi string, g *miGroup) error {
-		totalMIGroups++
-
 		if len(g.primaries) == 0 {
 			// No primaries — write sec/supp through unchanged.
 			for _, rec := range g.secSupp {
@@ -274,7 +450,8 @@ func runUmiDedup(inputFile string, selectors []selector) error {
 		bestIdx := selectBest(g.primaries, selectors)
 		bestName := g.primaries[bestIdx].ReadName
 		selectedNames[bestName] = true
-		totalKept++
+
+		stats.recordGroup(g.primaries, bestIdx, statTags)
 
 		// Write primaries: best is kept, others are discarded or marked.
 		for i, rec := range g.primaries {
@@ -351,11 +528,12 @@ func runUmiDedup(inputFile string, selectors []selector) error {
 			writer.Close()
 			return err
 		}
-		totalReads++
+		stats.totalReads++
 
 		// Reads without MI tag: pass through unchanged.
 		miTag, hasMI := rec.Tags[umiDedupMITag]
 		if !hasMI || miTag.Value == "" {
+			stats.noMIReads++
 			if err := writer.Write(rec); err != nil {
 				writer.Close()
 				return err
@@ -400,7 +578,7 @@ func runUmiDedup(inputFile string, selectors []selector) error {
 		}
 
 		// Primary read.
-		totalPrimary++
+		stats.totalPrimary++
 
 		readStart := rec.Pos - 1 // 0-based
 		readEnd := readStart + htsio.CigarRefLen(rec.Cigar)
@@ -432,7 +610,14 @@ func runUmiDedup(inputFile string, selectors []selector) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Total reads: %d, primary: %d, MI groups: %d, kept: %d\n",
-		totalReads, totalPrimary, totalMIGroups, totalKept)
+		stats.totalReads, stats.totalPrimary, stats.totalMIGroup, stats.totalKept)
+
+	if umiDedupStatsFile != "" {
+		if err := stats.writeReport(umiDedupStatsFile); err != nil {
+			writer.Close()
+			return err
+		}
+	}
 
 	return writer.Close()
 }
@@ -442,6 +627,7 @@ var umiDedupBestTags []string
 var umiDedupLongest bool
 var umiDedupMarkDuplicates bool
 var umiDedupMITag string
+var umiDedupStatsFile string
 
 // tagArrayValue is a pflag.Value that collects repeated --best-tag flags
 // but displays as "tag" instead of "stringArray" in help text.
@@ -462,4 +648,5 @@ func init() {
 	ontUmiDedupCmd.Flags().BoolVar(&umiDedupLongest, "longest", false, "Use longest query sequence as a selector (applied after --best-tag selectors)")
 	ontUmiDedupCmd.Flags().BoolVar(&umiDedupMarkDuplicates, "mark-duplicates", false, "Set PCR duplicate flag (0x400) on non-selected reads instead of removing them")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupMITag, "mi-tag", "MI", "SAM tag containing molecule group ID")
+	ontUmiDedupCmd.Flags().StringVar(&umiDedupStatsFile, "stats", "", "Write deduplication statistics to this file")
 }
