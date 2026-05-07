@@ -6,7 +6,7 @@ import (
 	"github.com/compgen-io/cgltk/htsio"
 	_ "github.com/compgen-io/cgltk/htsio/bam"
 	_ "github.com/compgen-io/cgltk/htsio/cram"
-	_ "github.com/compgen-io/cgltk/htsio/sam"
+	"github.com/compgen-io/cgltk/htsio/sam"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +28,10 @@ var samCatCmd = &cobra.Command{
 			return fmt.Errorf("read header: %w", err)
 		}
 
-		writer := htsio.NewStdoutSamWriter(header)
+		writer, err := sam.NewWriter("-", header)
+		if err != nil {
+			return fmt.Errorf("create writer: %w", err)
+		}
 		defer writer.Close()
 
 		for rec, err := range reader.Records() {
