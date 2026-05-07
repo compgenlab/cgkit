@@ -11,6 +11,10 @@ import (
 	"sync/atomic"
 
 	"github.com/compgen-io/cgltk/htsio"
+	"github.com/compgen-io/cgltk/htsio/bam"
+	_ "github.com/compgen-io/cgltk/htsio/cram"
+	_ "github.com/compgen-io/cgltk/htsio/sam"
+	"github.com/compgen-io/cgltk/htsio/tabix"
 	"github.com/spf13/cobra"
 )
 
@@ -40,7 +44,7 @@ func (p *plainLineWriter) Close() error {
 
 // tabixLineWriter wraps a TabixWriter for sorted, indexed BGZF output.
 type tabixLineWriter struct {
-	tw *htsio.TabixWriter
+	tw *tabix.Writer
 }
 
 func (t *tabixLineWriter) WriteLine(line string) error {
@@ -80,11 +84,11 @@ var ontUmiClusterCmd = &cobra.Command{
 		var countsWriter lineWriter
 		if umiClusterCountsFilename != "" {
 			if strings.HasSuffix(umiClusterCountsFilename, ".gz") || strings.HasSuffix(umiClusterCountsFilename, ".bgz") {
-				opts := htsio.NewTabixWriterOpts().BED().Meta('#')
+				opts := tabix.NewWriterOpts().BED().Meta('#')
 				if !umiClusterNoCountsIndex {
 					opts = opts.AutoIndex()
 				}
-				tw := htsio.NewTabixWriter(umiClusterCountsFilename, opts)
+				tw := tabix.NewWriter(umiClusterCountsFilename, opts)
 				countsWriter = &tabixLineWriter{tw: tw}
 			} else {
 				f, err := os.Create(umiClusterCountsFilename)
@@ -371,8 +375,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter lineWriter, skipRefs [
 	// Open writer — samtools sort handles merging output. samtools itself
 	// uses very little CPU so we keep writer threads small and leave the
 	// compute budget for clusterUMIs.
-	wopts := htsio.SamWriterOptions(header).BAM().SortCoord().Threads(2)
-	writer, err := htsio.NewSamWriter(umiClusterOutput, wopts)
+	writer, err := bam.NewSortedWriter(umiClusterOutput, header, true)
 	if err != nil {
 		return err
 	}
@@ -1130,9 +1133,7 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 	// Keep writer threads consistent with overlap mode: always pass 2 so
 	// samtools sort can compress in parallel when it wants to. The cost
 	// at --threads 1 is negligible.
-	opts := htsio.SamWriterOptions(header).BAM().SortCoord().Threads(2)
-
-	writer, err := htsio.NewSamWriter(umiClusterOutput, opts)
+	writer, err := bam.NewSortedWriter(umiClusterOutput, header, true)
 	if err != nil {
 		reader2.Close()
 		return err

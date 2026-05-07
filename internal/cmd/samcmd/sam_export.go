@@ -7,6 +7,9 @@ import (
 	"strings"
 
 	"github.com/compgen-io/cgltk/htsio"
+	_ "github.com/compgen-io/cgltk/htsio/bam"
+	_ "github.com/compgen-io/cgltk/htsio/cram"
+	_ "github.com/compgen-io/cgltk/htsio/sam"
 	"github.com/spf13/cobra"
 )
 
