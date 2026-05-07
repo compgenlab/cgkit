@@ -1,8 +1,8 @@
-# cgltk
+# cgkit
 
 A Go toolkit for computational genomics research. Provides library packages for sequence I/O, alignment, and NGS data processing, along with CLI commands for common bioinformatics operations. Particular focus on Oxford Nanopore (long-read) sequencing workflows.
 
-**Module:** `github.com/compgen-io/cgltk`
+**Module:** `github.com/compgen-io/cgkit`
 
 ## Building
 
@@ -82,7 +82,7 @@ Low-level BGZF (Blocked GNU Zip Format) support used by BAM and tabix.
 
 ## CLI commands
 
-Usage: `cgltk [--profile=cpu.prof] <command>`
+Usage: `cgkit [--profile=cpu.prof] <command>`
 
 ### FASTA
 

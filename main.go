@@ -6,7 +6,7 @@ import (
 	"runtime/pprof"
 	"strings"
 
-	"github.com/compgen-io/cgltk/internal/cmd"
+	"github.com/compgen-io/cgkit/internal/cmd"
 )
 
 func main() {

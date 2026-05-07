@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/compgen-io/cgltk/htsio"
-	"github.com/compgen-io/cgltk/htsio/bam"
+	"github.com/compgen-io/cgkit/htsio"
+	"github.com/compgen-io/cgkit/htsio/bam"
 	"github.com/spf13/cobra"
 )
 
@@ -348,9 +348,9 @@ selects one representative read per MI group. Selection criteria are applied
 in order: each criterion narrows the candidates and the next breaks ties.
 
 Examples:
-  cgltk ont-umi-dedup -o dedup.bam --best-tag AS input.bam
-  cgltk ont-umi-dedup -o dedup.bam --best-tag AS --best-tag NM- --longest input.bam
-  cgltk ont-umi-dedup -o dedup.bam --best-tag AS --mark-duplicates input.bam`,
+  cgkit ont-umi-dedup -o dedup.bam --best-tag AS input.bam
+  cgkit ont-umi-dedup -o dedup.bam --best-tag AS --best-tag NM- --longest input.bam
+  cgkit ont-umi-dedup -o dedup.bam --best-tag AS --mark-duplicates input.bam`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -406,7 +406,7 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 		return err
 	}
 
-	header.AddPGLine("ont-umi-dedup", "cgltk", "DS:UMI deduplication")
+	header.AddPGLine("ont-umi-dedup", "cgkit", "DS:UMI deduplication")
 
 	writer, err := bam.NewSortedWriter(umiDedupOutput, header, true)
 	if err != nil {

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/compgen-io/cgltk/align"
-	"github.com/compgen-io/cgltk/seqio"
-	"github.com/compgen-io/cgltk/htsio/bgzf"
+	"github.com/compgen-io/cgkit/align"
+	"github.com/compgen-io/cgkit/seqio"
+	"github.com/compgen-io/cgkit/htsio/bgzf"
 	"github.com/spf13/cobra"
 )
 
