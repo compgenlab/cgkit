@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/compgen-io/cgltk/htsio"
+	"github.com/compgen-io/cgltk/htsio/tabix"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +28,7 @@ with --seq, --begin, --end.`,
 		}
 
 		// Build TabixWriter options.
-		opts := htsio.NewTabixWriterOpts()
+		opts := tabix.NewWriterOpts()
 		switch strings.ToLower(tabSortPreset) {
 		case "bed":
 			opts = opts.BED()
@@ -55,7 +55,7 @@ with --seq, --begin, --end.`,
 			opts = opts.AutoIndex()
 		}
 
-		tw := htsio.NewTabixWriter(tabSortOutput, opts)
+		tw := tabix.NewWriter(tabSortOutput, opts)
 
 		// Open input.
 		var scanner *bufio.Scanner

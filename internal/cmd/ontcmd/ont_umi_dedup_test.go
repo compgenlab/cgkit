@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/compgen-io/cgltk/htsio"
+	"github.com/compgen-io/cgltk/htsio/bam"
 )
 
 // makeTestBAM writes a coordinate-sorted BAM to path with the given records.
@@ -15,7 +16,7 @@ func makeTestBAM(t *testing.T, path string, records []*htsio.SamRecord) {
 	header.AddLine("@SQ\tSN:chr1\tLN:100000")
 	header.AddLine("@SQ\tSN:chr2\tLN:100000")
 
-	writer, err := htsio.NewSamWriter(path, htsio.SamWriterOptions(header).BAM())
+	writer, err := bam.NewWriter(path, header)
 	if err != nil {
 		t.Fatalf("NewSamWriter: %v", err)
 	}
@@ -36,7 +37,7 @@ func readAllBAM(t *testing.T, path string) []*htsio.SamRecord {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	reader, err := htsio.NewBamReader(f)
+	reader, err := bam.NewReader(f, path, nil)
 	if err != nil {
 		t.Fatalf("NewBamReader: %v", err)
 	}
