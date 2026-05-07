@@ -49,6 +49,7 @@ jobs:
           GOOS=darwin  GOARCH=amd64                go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.darwin_amd64  .
           GOOS=linux   GOARCH=arm64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.linux_arm64   .
           GOOS=linux   GOARCH=amd64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.linux_amd64   .
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.windows_amd64.exe .
 
       - name: Upload cgkit.darwin_arm64
         uses: actions/upload-artifact@v4
@@ -74,6 +75,18 @@ jobs:
           name: cgkit.linux_amd64
           path: bin/cgkit.linux_amd64
 
+      - name: Upload cgkit.windows_amd64
+        uses: actions/upload-artifact@v4
+        with:
+          name: cgkit.windows_amd64.exe
+          path: bin/cgkit.windows_amd64.exe
+
+      - name: Create source archive
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          mkdir -p dist
+          git archive --format=zip --prefix=cgkit-${VERSION}/ HEAD > dist/cgkit-${VERSION}-src.zip
+
       - name: Create tagged release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -83,6 +96,8 @@ jobs:
             bin/cgkit.darwin_amd64
             bin/cgkit.linux_arm64
             bin/cgkit.linux_amd64
+            bin/cgkit.windows_amd64.exe
+            dist/cgkit-*-src.zip
 
       - name: Create dev release
         if: github.ref == 'refs/heads/main'
@@ -102,3 +117,5 @@ jobs:
             bin/cgkit.darwin_amd64
             bin/cgkit.linux_arm64
             bin/cgkit.linux_amd64
+            bin/cgkit.windows_amd64.exe
+            dist/cgkit-*-src.zip

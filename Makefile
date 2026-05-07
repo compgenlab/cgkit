@@ -7,7 +7,7 @@ LDFLAGS := -X 'github.com/compgen-io/cgkit/internal/cmd.Version=$(VERSION)' \
 
 .PHONY: build clean test
 
-build: $(BIN_DIR)/cgkit.darwin_arm64 $(BIN_DIR)/cgkit.darwin_amd64 $(BIN_DIR)/cgkit.linux_arm64 $(BIN_DIR)/cgkit.linux_amd64
+build: $(BIN_DIR)/cgkit.darwin_arm64 $(BIN_DIR)/cgkit.darwin_amd64 $(BIN_DIR)/cgkit.linux_arm64 $(BIN_DIR)/cgkit.linux_amd64 $(BIN_DIR)/cgkit.windows_amd64.exe
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
@@ -23,6 +23,9 @@ $(BIN_DIR)/cgkit.linux_arm64: $(GO_SOURCES) | $(BIN_DIR)
 
 $(BIN_DIR)/cgkit.linux_amd64: $(GO_SOURCES) | $(BIN_DIR)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false -ldflags "$(LDFLAGS)" -o $@ .
+
+$(BIN_DIR)/cgkit.windows_amd64.exe: $(GO_SOURCES) | $(BIN_DIR)
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false -ldflags "$(LDFLAGS)" -o $@ .
 
 clean:
 	rm -rf $(BIN_DIR)
