@@ -4,6 +4,9 @@ import (
 	"fmt"
 
 	"github.com/compgen-io/cgltk/htsio"
+	"github.com/compgen-io/cgltk/htsio/bam"
+	_ "github.com/compgen-io/cgltk/htsio/cram"
+	_ "github.com/compgen-io/cgltk/htsio/sam"
 	"github.com/spf13/cobra"
 )
 
@@ -38,16 +41,17 @@ var samFilterCmd = &cobra.Command{
 		}
 
 		// Determine output format.
-		writerOpts := htsio.SamWriterOptions(header)
+		var writer htsio.SamWriter
 		if samFilterBAM {
-			writerOpts.BAM()
+			w, err := bam.NewWriter(outputFile, header)
+			if err != nil {
+				return err
+			}
+			writer = w
 		} else if samFilterCRAM {
-			writerOpts.CRAM(samFilterCRAMRef)
-		}
-
-		writer, err := htsio.NewSamWriter(outputFile, writerOpts)
-		if err != nil {
-			return err
+			return fmt.Errorf("CRAM output not yet supported in native writer")
+		} else {
+			writer = htsio.NewStdoutSamWriter(header)
 		}
 		defer writer.Close()
 
