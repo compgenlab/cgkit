@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/compgen-io/cgltk/seqio"
+	"github.com/compgen-io/cgkit/seqio"
 	"github.com/spf13/cobra"
 )
 

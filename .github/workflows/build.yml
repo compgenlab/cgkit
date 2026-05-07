@@ -41,48 +41,48 @@ jobs:
       - name: Build binaries
         env:
           LDFLAGS: >-
-            -X 'github.com/compgen-io/cgltk/internal/cmd.Version=${{ steps.version.outputs.version }}'
-            -X 'github.com/compgen-io/cgltk/internal/cmd.GitHash=${{ steps.version.outputs.git_hash }}'
+            -X 'github.com/compgen-io/cgkit/internal/cmd.Version=${{ steps.version.outputs.version }}'
+            -X 'github.com/compgen-io/cgkit/internal/cmd.GitHash=${{ steps.version.outputs.git_hash }}'
         run: |
           mkdir -p bin
-          GOOS=darwin  GOARCH=arm64                go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgltk.darwin_arm64  .
-          GOOS=darwin  GOARCH=amd64                go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgltk.darwin_amd64  .
-          GOOS=linux   GOARCH=arm64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgltk.linux_arm64   .
-          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgltk.linux_amd64   .
+          GOOS=darwin  GOARCH=arm64                go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.darwin_arm64  .
+          GOOS=darwin  GOARCH=amd64                go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.darwin_amd64  .
+          GOOS=linux   GOARCH=arm64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.linux_arm64   .
+          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.linux_amd64   .
 
-      - name: Upload cgltk.darwin_arm64
+      - name: Upload cgkit.darwin_arm64
         uses: actions/upload-artifact@v4
         with:
-          name: cgltk.darwin_arm64
-          path: bin/cgltk.darwin_arm64
+          name: cgkit.darwin_arm64
+          path: bin/cgkit.darwin_arm64
 
-      - name: Upload cgltk.darwin_amd64
+      - name: Upload cgkit.darwin_amd64
         uses: actions/upload-artifact@v4
         with:
-          name: cgltk.darwin_amd64
-          path: bin/cgltk.darwin_amd64
+          name: cgkit.darwin_amd64
+          path: bin/cgkit.darwin_amd64
 
-      - name: Upload cgltk.linux_arm64
+      - name: Upload cgkit.linux_arm64
         uses: actions/upload-artifact@v4
         with:
-          name: cgltk.linux_arm64
-          path: bin/cgltk.linux_arm64
+          name: cgkit.linux_arm64
+          path: bin/cgkit.linux_arm64
 
-      - name: Upload cgltk.linux_amd64
+      - name: Upload cgkit.linux_amd64
         uses: actions/upload-artifact@v4
         with:
-          name: cgltk.linux_amd64
-          path: bin/cgltk.linux_amd64
+          name: cgkit.linux_amd64
+          path: bin/cgkit.linux_amd64
 
       - name: Create tagged release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            bin/cgltk.darwin_arm64
-            bin/cgltk.darwin_amd64
-            bin/cgltk.linux_arm64
-            bin/cgltk.linux_amd64
+            bin/cgkit.darwin_arm64
+            bin/cgkit.darwin_amd64
+            bin/cgkit.linux_arm64
+            bin/cgkit.linux_amd64
 
       - name: Create dev release
         if: github.ref == 'refs/heads/main'
@@ -98,7 +98,7 @@ jobs:
             **Commit:** ${{ github.sha }}
             **Version:** ${{ steps.version.outputs.version }}
           files: |
-            bin/cgltk.darwin_arm64
-            bin/cgltk.darwin_amd64
-            bin/cgltk.linux_arm64
-            bin/cgltk.linux_amd64
+            bin/cgkit.darwin_arm64
+            bin/cgkit.darwin_amd64
+            bin/cgkit.linux_arm64
+            bin/cgkit.linux_amd64
