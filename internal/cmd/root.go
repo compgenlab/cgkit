@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/compgen-io/cgltk/internal/cmd/fastacmd"
-	"github.com/compgen-io/cgltk/internal/cmd/fastqcmd"
-	"github.com/compgen-io/cgltk/internal/cmd/ontcmd"
-	"github.com/compgen-io/cgltk/internal/cmd/samcmd"
-	"github.com/compgen-io/cgltk/internal/cmd/seqcmd"
-	"github.com/compgen-io/cgltk/internal/cmd/tabcmd"
+	"github.com/compgen-io/cgkit/internal/cmd/fastacmd"
+	"github.com/compgen-io/cgkit/internal/cmd/fastqcmd"
+	"github.com/compgen-io/cgkit/internal/cmd/ontcmd"
+	"github.com/compgen-io/cgkit/internal/cmd/samcmd"
+	"github.com/compgen-io/cgkit/internal/cmd/seqcmd"
+	"github.com/compgen-io/cgkit/internal/cmd/tabcmd"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +28,7 @@ func versionString() string {
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:     "cgltk",
+	Use:     "cgkit",
 	Short:   "Toolkit for computational genomics research",
 	Version: "", // set in init()
 	Long: `Utility toolkit for computational genomics research,
@@ -52,7 +52,7 @@ func init() {
 
 	// Add version footer to all help output.
 	defaultHelp := rootCmd.HelpTemplate()
-	rootCmd.SetHelpTemplate(defaultHelp + "\ncgltk " + versionString() + "\n")
+	rootCmd.SetHelpTemplate(defaultHelp + "\ncgkit " + versionString() + "\n")
 
 	ontcmd.InitCmd(rootCmd)
 	fastacmd.InitCmd(rootCmd)
