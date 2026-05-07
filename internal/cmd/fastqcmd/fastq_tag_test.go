@@ -19,7 +19,7 @@ func TestFastqTag(t *testing.T) {
 	tmp.Close()
 
 	root := &cobra.Command{}
-	root.AddGroup(&cobra.Group{ID: "fastqcmd", Title: "FASTQ"})
+	root.AddGroup(&cobra.Group{ID: "fastaqcmd", Title: "FASTA/Q"})
 	root.AddCommand(fastqTagCmd)
 
 	buf := new(bytes.Buffer)

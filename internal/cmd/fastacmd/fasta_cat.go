@@ -10,7 +10,7 @@ import (
 
 // fastagcCmd implements the initial counting entrypoint.
 var fastaCatCmd = &cobra.Command{
-	GroupID: "fastacmd",
+	GroupID: "fastaqcmd",
 	Use:     "fasta-cat <input.fasta>",
 	Short:   "Write the sequences in a FASTA file without any wrapping",
 	Hidden:  true,

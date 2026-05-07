@@ -1,0 +1,113 @@
+package samcmd
+
+import (
+	"fmt"
+
+	"github.com/compgen-io/cgltk/htsio"
+	"github.com/compgen-io/cgltk/htsio/bam"
+	_ "github.com/compgen-io/cgltk/htsio/cram"
+	"github.com/compgen-io/cgltk/htsio/sam"
+	"github.com/spf13/cobra"
+)
+
+var samFilterCmd = &cobra.Command{
+	GroupID: "samcmd",
+	Use:     "sam-filter <input.bam> <output.bam>",
+	Short:   "Filter SAM/BAM/CRAM reads and write to a new file",
+	Long:    "Filter reads from a SAM/BAM/CRAM file and write passing reads to a new SAM/BAM/CRAM file.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) < 2 {
+			cmd.Help()
+			return nil
+		}
+
+		opts, err := samFilterReaderFlags.buildReaderOpts()
+		if err != nil {
+			return err
+		}
+
+		inputFile := args[0]
+		outputFile := args[1]
+
+		reader, err := htsio.NewSamReader(inputFile, opts)
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+
+		header, err := reader.Header()
+		if err != nil {
+			return fmt.Errorf("reading header: %w", err)
+		}
+
+		// Determine output format.
+		var writer htsio.SamWriter
+		if samFilterBAM {
+			w, err := bam.NewWriter(outputFile, header)
+			if err != nil {
+				return err
+			}
+			writer = w
+		} else if samFilterCRAM {
+			return fmt.Errorf("CRAM output not yet supported in native writer")
+		} else {
+			w, err := sam.NewWriter("-", header)
+			if err != nil {
+				return err
+			}
+			writer = w
+		}
+		defer writer.Close()
+
+		// If a region is specified, use Query() to iterate the subset.
+		if regionStr := samFilterReaderFlags.queryRegion(); regionStr != "" {
+			ref, start, end, err := htsio.ParseRegion(regionStr)
+			if err != nil {
+				return err
+			}
+			if end < 0 {
+				end = 1<<30 - 1
+			}
+			records, err := reader.Query(ref, start, end)
+			if err != nil {
+				return fmt.Errorf("query %q: %w", regionStr, err)
+			}
+			for rec, err := range records {
+				if err != nil {
+					return err
+				}
+				if err := writer.Write(rec); err != nil {
+					return fmt.Errorf("write record: %w", err)
+				}
+			}
+			return nil
+		}
+
+		// No region — stream all records.
+		for rec, err := range reader.Records() {
+			if err != nil {
+				return err
+			}
+			if err := writer.Write(rec); err != nil {
+				return fmt.Errorf("write record: %w", err)
+			}
+		}
+
+		return nil
+	},
+}
+
+var (
+	samFilterBAM          bool
+	samFilterCRAM         bool
+	samFilterCRAMRef      string
+	samFilterReaderFlags  samReaderFlags
+)
+
+func init() {
+	samFilterReaderFlags.register(samFilterCmd)
+
+	samFilterCmd.Flags().BoolVar(&samFilterBAM, "bam", false, "Output in BAM format")
+	samFilterCmd.Flags().BoolVar(&samFilterCRAM, "cram", false, "Output in CRAM format")
+	samFilterCmd.Flags().StringVar(&samFilterCRAMRef, "cram-ref", "", "Reference FASTA for CRAM output")
+}
