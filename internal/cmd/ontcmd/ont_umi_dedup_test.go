@@ -239,7 +239,7 @@ func TestUmiDedup_BasicSelection(t *testing.T) {
 	umiDedupMarkDuplicates = false
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
-	if err := runUmiDedup(inPath, selectors); err != nil {
+	if err := runUmiDedup(inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -276,7 +276,7 @@ func TestUmiDedup_MarkDuplicates(t *testing.T) {
 	umiDedupMarkDuplicates = true
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
-	if err := runUmiDedup(inPath, selectors); err != nil {
+	if err := runUmiDedup(inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -316,7 +316,7 @@ func TestUmiDedup_ChainedSelectorsIntegration(t *testing.T) {
 		&tagSelector{tag: "NM", ascending: true},
 	}
 
-	if err := runUmiDedup(inPath, selectors); err != nil {
+	if err := runUmiDedup(inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -346,7 +346,7 @@ func TestUmiDedup_NoMIPassthrough(t *testing.T) {
 	umiDedupMarkDuplicates = false
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
-	if err := runUmiDedup(inPath, selectors); err != nil {
+	if err := runUmiDedup(inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -383,7 +383,7 @@ func TestUmiDedup_SecondarySupplementary(t *testing.T) {
 	umiDedupMarkDuplicates = false
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
-	if err := runUmiDedup(inPath, selectors); err != nil {
+	if err := runUmiDedup(inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -423,7 +423,7 @@ func TestUmiDedup_MultipleChromosomes(t *testing.T) {
 	umiDedupMarkDuplicates = false
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
-	if err := runUmiDedup(inPath, selectors); err != nil {
+	if err := runUmiDedup(inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -460,7 +460,7 @@ func TestUmiDedup_LongestOnly(t *testing.T) {
 	umiDedupMarkDuplicates = false
 	selectors := []selector{&longestSelector{}}
 
-	if err := runUmiDedup(inPath, selectors); err != nil {
+	if err := runUmiDedup(inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -471,4 +471,83 @@ func TestUmiDedup_LongestOnly(t *testing.T) {
 	if recs[0].ReadName != "r2" {
 		t.Errorf("expected r2 (longest), got %q", recs[0].ReadName)
 	}
+}
+
+func TestUmiDedup_StatsReport(t *testing.T) {
+	dir := t.TempDir()
+	inPath := dir + "/input.bam"
+	outPath := dir + "/output.bam"
+	statsPath := dir + "/stats.txt"
+
+	// 3 reads in group mi_1 (AS: 100, 200, 150; NM: 5, 2, 3).
+	// 1 read in group mi_2.
+	// 1 read without MI (passthrough).
+	input := []*htsio.SamRecord{
+		rec("r_noMI", 0, "chr1", 50, "50M", "ACGT", tags("AS", 'i', "50")),
+		rec("r1", 0, "chr1", 100, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "100", "NM", 'i', "5")),
+		rec("r2", 0, "chr1", 110, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "200", "NM", 'i', "2")),
+		rec("r3", 0, "chr1", 120, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "150", "NM", 'i', "3")),
+		rec("r4", 0, "chr1", 5000, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_2", "AS", 'i', "80", "NM", 'i', "10")),
+	}
+	makeTestBAM(t, inPath, input)
+
+	umiDedupOutput = outPath
+	umiDedupMITag = "MI"
+	umiDedupMarkDuplicates = false
+	umiDedupStatsFile = statsPath
+	defer func() { umiDedupStatsFile = "" }()
+
+	selectors := []selector{
+		&tagSelector{tag: "AS", ascending: false},
+		&tagSelector{tag: "NM", ascending: true},
+	}
+
+	if err := runUmiDedup(inPath, selectors, []string{"AS", "NM"}); err != nil {
+		t.Fatalf("runUmiDedup: %v", err)
+	}
+
+	// Verify stats file was written and contains expected content.
+	data, err := os.ReadFile(statsPath)
+	if err != nil {
+		t.Fatalf("reading stats file: %v", err)
+	}
+	content := string(data)
+
+	// Check key lines are present.
+	checks := []string{
+		"Total reads:        5",
+		"Primary:          4",
+		"No MI (passthru): 1",
+		"MI groups:          2",
+		"Reads kept:         2",
+		"Reads discarded:    2",
+		"Duplication rate:   50.0%",
+		"AS tag distribution",
+		"NM tag distribution",
+		"kept",
+		"discarded",
+	}
+	for _, check := range checks {
+		if !contains(content, check) {
+			t.Errorf("stats file missing %q\nfull content:\n%s", check, content)
+		}
+	}
+
+	// Check group size histogram: should have one group of size 3, one of size 1.
+	if !contains(content, "1\t1") || !contains(content, "3\t1") {
+		t.Errorf("stats file missing expected group size histogram entries\nfull content:\n%s", content)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
