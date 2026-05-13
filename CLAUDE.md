@@ -74,3 +74,4 @@ Commands are registered in `internal/cmd/root.go` and grouped by file format or 
 - `fastq-gc` — FASTQ operations
 - `seq-pairwise`, `seq-revcomp` — Sequence analysis
 - `ont-primers` — ONT primer detection/trimming with alignment statistics
+- `ont-umi-dedup` — UMI deduplication: selects one representative per MI group from coordinate-sorted BAM. Secondary/supplementary alignments are dropped (cannot be reliably resolved in coordinate order). Supports `--threads` for parallel BGZF compression.
