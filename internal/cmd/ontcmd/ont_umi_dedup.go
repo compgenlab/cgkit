@@ -646,5 +646,5 @@ func init() {
 	ontUmiDedupCmd.Flags().BoolVar(&umiDedupKeepSecondary, "keep-secondary", false, "Keep secondary/supplementary alignments for selected reads (uses more memory)")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupMITag, "mi-tag", "MI", "SAM tag containing molecule group ID")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupStatsFile, "stats", "", "Write deduplication statistics to this file")
-	ontUmiDedupCmd.Flags().IntVar(&umiDedupThreads, "threads", 1, "Number of BGZF compression threads for output writing")
+	ontUmiDedupCmd.Flags().IntVarP(&umiDedupThreads, "threads", "t", 1, "Number of BGZF compression threads for output writing")
 }
