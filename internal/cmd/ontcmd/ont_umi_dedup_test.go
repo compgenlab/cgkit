@@ -364,12 +364,12 @@ func TestUmiDedup_NoMIPassthrough(t *testing.T) {
 	}
 }
 
-func TestUmiDedup_SecondarySupplementaryDropped(t *testing.T) {
+func TestUmiDedup_SecondarySupplementary(t *testing.T) {
 	dir := t.TempDir()
 	inPath := dir + "/input.bam"
 	outPath := dir + "/output.bam"
 
-	// Default: secondary/supplementary are dropped entirely.
+	// r2 has the best AS. r2's supplementary should be kept, r1's secondary dropped.
 	input := []*htsio.SamRecord{
 		rec("r1", 0, "chr1", 100, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "100")),
 		rec("r2", 0, "chr1", 110, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "200")),
@@ -381,46 +381,6 @@ func TestUmiDedup_SecondarySupplementaryDropped(t *testing.T) {
 	umiDedupOutput = outPath
 	umiDedupMITag = "MI"
 	umiDedupMarkDuplicates = false
-	umiDedupKeepSecondary = false
-	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
-
-	if err := runUmiDedup(inPath, selectors, nil); err != nil {
-		t.Fatalf("runUmiDedup: %v", err)
-	}
-
-	recs := readAllBAM(t, outPath)
-	// Should have only r2 (primary), all secondary/supplementary dropped.
-	if len(recs) != 1 {
-		var names []string
-		for _, r := range recs {
-			names = append(names, r.ReadName)
-		}
-		t.Fatalf("expected 1 record (r2 primary only), got %d: %v", len(recs), names)
-	}
-	if recs[0].ReadName != "r2" {
-		t.Errorf("expected r2, got %q", recs[0].ReadName)
-	}
-}
-
-func TestUmiDedup_KeepSecondary(t *testing.T) {
-	dir := t.TempDir()
-	inPath := dir + "/input.bam"
-	outPath := dir + "/output.bam"
-
-	// With --keep-secondary, supplementary for the selected read should be kept.
-	input := []*htsio.SamRecord{
-		rec("r1", 0, "chr1", 100, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "100")),
-		rec("r2", 0, "chr1", 110, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "200")),
-		rec("r1", 0x100, "chr1", 150, "50M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "50")),    // secondary for r1
-		rec("r2", 0x800, "chr1", 160, "60M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "80")),    // supplementary for r2
-	}
-	makeTestBAM(t, inPath, input)
-
-	umiDedupOutput = outPath
-	umiDedupMITag = "MI"
-	umiDedupMarkDuplicates = false
-	umiDedupKeepSecondary = true
-	defer func() { umiDedupKeepSecondary = false }()
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
 	if err := runUmiDedup(inPath, selectors, nil); err != nil {
