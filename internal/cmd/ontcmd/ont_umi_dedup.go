@@ -416,18 +416,12 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 		writer.SetThreads(umiDedupThreads)
 	}
 
-	keepSecondary := umiDedupKeepSecondary
-
 	// Active MI groups keyed by MI tag value.
 	groups := make(map[string]*miGroup)
 
 	// Track selected read names so we can handle secondary/supplementary
 	// reads that arrive after their MI group has been flushed.
-	// Only allocated when --keep-secondary is set.
-	var selectedNames map[string]bool
-	if keepSecondary {
-		selectedNames = make(map[string]bool)
-	}
+	selectedNames := make(map[string]bool)
 
 	currentChrom := ""
 	stats := newDedupStats()
@@ -437,22 +431,19 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 	// duplicates according to --mark-duplicates.
 	flushGroup := func(g *miGroup) error {
 		if len(g.primaries) == 0 {
-			if keepSecondary {
-				for _, rec := range g.secSupp {
-					if err := writer.Write(rec); err != nil {
-						return err
-					}
+			// No primaries — write sec/supp through unchanged.
+			for _, rec := range g.secSupp {
+				if err := writer.Write(rec); err != nil {
+					return err
 				}
 			}
 			return nil
 		}
 
 		bestIdx := selectBest(g.primaries, selectors)
+		bestName := g.primaries[bestIdx].ReadName
+		selectedNames[bestName] = true
 		stats.recordGroup(g.primaries, bestIdx, statTags)
-
-		if keepSecondary {
-			selectedNames[g.primaries[bestIdx].ReadName] = true
-		}
 
 		// Write primaries: best is kept, others are discarded or marked.
 		for i, rec := range g.primaries {
@@ -469,19 +460,17 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 			// else: discard (don't write)
 		}
 
-		// Write secondary/supplementary that were buffered with this group.
-		if keepSecondary {
-			bestName := g.primaries[bestIdx].ReadName
-			for _, rec := range g.secSupp {
-				if rec.ReadName == bestName {
-					if err := writer.Write(rec); err != nil {
-						return err
-					}
-				} else if umiDedupMarkDuplicates {
-					rec.Flag |= 0x400
-					if err := writer.Write(rec); err != nil {
-						return err
-					}
+		// Write secondary/supplementary: keep those belonging to the
+		// selected read, discard or mark-dup the rest.
+		for _, rec := range g.secSupp {
+			if rec.ReadName == bestName {
+				if err := writer.Write(rec); err != nil {
+					return err
+				}
+			} else if umiDedupMarkDuplicates {
+				rec.Flag |= 0x400
+				if err := writer.Write(rec); err != nil {
+					return err
 				}
 			}
 		}
@@ -544,13 +533,9 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 			fmt.Fprintf(os.Stderr, "Processing %s...\n", currentChrom)
 		}
 
-		// Secondary/supplementary reads.
+		// Secondary/supplementary reads: buffer with their MI group if it
+		// exists, otherwise check if we already know their fate.
 		if rec.IsSecondary() || rec.IsSupplementary() {
-			if !keepSecondary {
-				// Drop secondary/supplementary reads entirely.
-				continue
-			}
-			// --keep-secondary: buffer with group or resolve via selectedNames.
 			if g, ok := groups[mi]; ok {
 				g.secSupp = append(g.secSupp, rec)
 			} else if selectedNames[rec.ReadName] {
@@ -620,7 +605,6 @@ var umiDedupOutput string
 var umiDedupBestTags []string
 var umiDedupLongest bool
 var umiDedupMarkDuplicates bool
-var umiDedupKeepSecondary bool
 var umiDedupMITag string
 var umiDedupStatsFile string
 var umiDedupThreads int
@@ -643,7 +627,6 @@ func init() {
 	ontUmiDedupCmd.Flags().Var(&tagArrayValue{values: &umiDedupBestTags}, "best-tag", "Tag-based selector: TAG or TAG+ (higher wins) or TAG- (lower wins); repeatable, applied in order")
 	ontUmiDedupCmd.Flags().BoolVar(&umiDedupLongest, "longest", false, "Use longest query sequence as a selector (applied after --best-tag selectors)")
 	ontUmiDedupCmd.Flags().BoolVar(&umiDedupMarkDuplicates, "mark-duplicates", false, "Set PCR duplicate flag (0x400) on non-selected reads instead of removing them")
-	ontUmiDedupCmd.Flags().BoolVar(&umiDedupKeepSecondary, "keep-secondary", false, "Keep secondary/supplementary alignments for selected reads (uses more memory)")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupMITag, "mi-tag", "MI", "SAM tag containing molecule group ID")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupStatsFile, "stats", "", "Write deduplication statistics to this file")
 	ontUmiDedupCmd.Flags().IntVarP(&umiDedupThreads, "threads", "t", 1, "Number of BGZF compression threads for output writing")
