@@ -14,11 +14,12 @@ import (
 
 // dedupStats collects metrics during deduplication for the --stats report.
 type dedupStats struct {
-	totalReads   int64
-	totalPrimary int64
-	totalMIGroup int64
-	totalKept    int64
-	noMIReads    int64 // reads without MI tag (passed through)
+	totalReads      int64
+	totalPrimary    int64
+	totalMIGroup    int64
+	totalKept       int64
+	noMIReads       int64 // reads without MI tag (passed through)
+	secSuppDropped  int64 // secondary/supplementary alignments removed
 
 	// Per-MI-group sizes (number of primary reads per group).
 	groupSizes []int
@@ -76,6 +77,7 @@ func (s *dedupStats) writeReport(path string) error {
 	}
 	fmt.Fprintf(f, "Total reads:        %d\n", s.totalReads)
 	fmt.Fprintf(f, "  Primary:          %d\n", s.totalPrimary)
+	fmt.Fprintf(f, "  Sec/supp dropped: %d\n", s.secSuppDropped)
 	fmt.Fprintf(f, "  No MI (passthru): %d\n", s.noMIReads)
 	fmt.Fprintf(f, "MI groups:          %d\n", s.totalMIGroup)
 	fmt.Fprintf(f, "Reads kept:         %d\n", s.totalKept)
@@ -334,8 +336,7 @@ func selectBest(reads []*htsio.SamRecord, selectors []selector) int {
 // miGroup holds buffered reads for a single MI tag value.
 type miGroup struct {
 	primaries []*htsio.SamRecord
-	secSupp   []*htsio.SamRecord // only populated when --keep-secondary is set
-	maxEnd    int                // max reference end (0-based exclusive) across primaries
+	maxEnd    int // max reference end (0-based exclusive) across primaries
 	chrom     string
 }
 
@@ -419,30 +420,17 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 	// Active MI groups keyed by MI tag value.
 	groups := make(map[string]*miGroup)
 
-	// Track selected read names so we can handle secondary/supplementary
-	// reads that arrive after their MI group has been flushed.
-	selectedNames := make(map[string]bool)
-
 	currentChrom := ""
 	stats := newDedupStats()
 
-	// flushGroup selects the best read from an MI group, writes it (and
-	// its secondary/supplementary reads) to the output, and handles
-	// duplicates according to --mark-duplicates.
+	// flushGroup selects the best read from an MI group and writes it to
+	// the output. Secondary/supplementary reads are dropped entirely.
 	flushGroup := func(g *miGroup) error {
 		if len(g.primaries) == 0 {
-			// No primaries — write sec/supp through unchanged.
-			for _, rec := range g.secSupp {
-				if err := writer.Write(rec); err != nil {
-					return err
-				}
-			}
 			return nil
 		}
 
 		bestIdx := selectBest(g.primaries, selectors)
-		bestName := g.primaries[bestIdx].ReadName
-		selectedNames[bestName] = true
 		stats.recordGroup(g.primaries, bestIdx, statTags)
 
 		// Write primaries: best is kept, others are discarded or marked.
@@ -458,21 +446,6 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 				}
 			}
 			// else: discard (don't write)
-		}
-
-		// Write secondary/supplementary: keep those belonging to the
-		// selected read, discard or mark-dup the rest.
-		for _, rec := range g.secSupp {
-			if rec.ReadName == bestName {
-				if err := writer.Write(rec); err != nil {
-					return err
-				}
-			} else if umiDedupMarkDuplicates {
-				rec.Flag |= 0x400
-				if err := writer.Write(rec); err != nil {
-					return err
-				}
-			}
 		}
 
 		return nil
@@ -533,26 +506,9 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 			fmt.Fprintf(os.Stderr, "Processing %s...\n", currentChrom)
 		}
 
-		// Secondary/supplementary reads: buffer with their MI group if it
-		// exists, otherwise check if we already know their fate.
+		// Secondary/supplementary reads are dropped entirely.
 		if rec.IsSecondary() || rec.IsSupplementary() {
-			if g, ok := groups[mi]; ok {
-				g.secSupp = append(g.secSupp, rec)
-			} else if selectedNames[rec.ReadName] {
-				// MI group already flushed, this read's primary was selected.
-				if err := writer.Write(rec); err != nil {
-					writer.Close()
-					return err
-				}
-			} else if umiDedupMarkDuplicates {
-				// MI group already flushed, this read's primary was NOT selected.
-				rec.Flag |= 0x400
-				if err := writer.Write(rec); err != nil {
-					writer.Close()
-					return err
-				}
-			}
-			// else: discard
+			stats.secSuppDropped++
 			continue
 		}
 
@@ -588,8 +544,8 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "Total reads: %d, primary: %d, MI groups: %d, kept: %d\n",
-		stats.totalReads, stats.totalPrimary, stats.totalMIGroup, stats.totalKept)
+	fmt.Fprintf(os.Stderr, "Total reads: %d, primary: %d, sec/supp dropped: %d, MI groups: %d, kept: %d\n",
+		stats.totalReads, stats.totalPrimary, stats.secSuppDropped, stats.totalMIGroup, stats.totalKept)
 
 	if umiDedupStatsFile != "" {
 		if err := stats.writeReport(umiDedupStatsFile); err != nil {

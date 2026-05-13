@@ -364,12 +364,12 @@ func TestUmiDedup_NoMIPassthrough(t *testing.T) {
 	}
 }
 
-func TestUmiDedup_SecondarySupplementary(t *testing.T) {
+func TestUmiDedup_SecondarySupplementaryDropped(t *testing.T) {
 	dir := t.TempDir()
 	inPath := dir + "/input.bam"
 	outPath := dir + "/output.bam"
 
-	// r2 has the best AS. r2's supplementary should be kept, r1's secondary dropped.
+	// All secondary/supplementary reads are dropped. Only primaries are kept.
 	input := []*htsio.SamRecord{
 		rec("r1", 0, "chr1", 100, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "100")),
 		rec("r2", 0, "chr1", 110, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "200")),
@@ -388,18 +388,16 @@ func TestUmiDedup_SecondarySupplementary(t *testing.T) {
 	}
 
 	recs := readAllBAM(t, outPath)
-	// Should have: r2 (primary) + r2 (supplementary) = 2 records
-	var names []string
-	for _, r := range recs {
-		names = append(names, r.ReadName)
-	}
-	if len(recs) != 2 {
-		t.Fatalf("expected 2 records (r2 primary + r2 supp), got %d: %v", len(recs), names)
-	}
-	for _, r := range recs {
-		if r.ReadName != "r2" {
-			t.Errorf("unexpected read %q in output", r.ReadName)
+	// Should have only r2 primary — all sec/supp dropped.
+	if len(recs) != 1 {
+		var names []string
+		for _, r := range recs {
+			names = append(names, r.ReadName)
 		}
+		t.Fatalf("expected 1 record (r2 primary only), got %d: %v", len(recs), names)
+	}
+	if recs[0].ReadName != "r2" {
+		t.Errorf("expected r2, got %q", recs[0].ReadName)
 	}
 }
 
