@@ -348,10 +348,18 @@ var ontUmiDedupCmd = &cobra.Command{
 selects one representative read per MI group. Selection criteria are applied
 in order: each criterion narrows the candidates and the next breaks ties.
 
+Secondary and supplementary alignments are removed from the output. In a
+coordinate-sorted BAM, these alignments can appear before their primary and
+cannot be reliably associated with the selected representative. Only primary
+alignments are considered for selection and written to the output.
+
+Use --threads/-t to enable parallel BGZF compression for faster output.
+
 Examples:
   cgkit ont-umi-dedup -o dedup.bam --best-tag AS input.bam
   cgkit ont-umi-dedup -o dedup.bam --best-tag AS --best-tag NM- --longest input.bam
-  cgkit ont-umi-dedup -o dedup.bam --best-tag AS --mark-duplicates input.bam`,
+  cgkit ont-umi-dedup -o dedup.bam --best-tag AS --mark-duplicates input.bam
+  cgkit ont-umi-dedup -o dedup.bam --best-tag AS -t 4 input.bam`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
