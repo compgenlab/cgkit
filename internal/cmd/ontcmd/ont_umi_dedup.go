@@ -389,7 +389,11 @@ Examples:
 }
 
 func runUmiDedup(inputFile string, selectors []selector, statTags []string) error {
-	reader, err := htsio.NewSamReader(inputFile)
+	opts := htsio.NewSamReaderOpts()
+	if umiDedupCramRef != "" {
+		opts.RefPath(umiDedupCramRef)
+	}
+	reader, err := htsio.NewSamReader(inputFile, opts)
 	if err != nil {
 		return err
 	}
@@ -628,6 +632,7 @@ var umiDedupLongest bool
 var umiDedupMarkDuplicates bool
 var umiDedupMITag string
 var umiDedupStatsFile string
+var umiDedupCramRef string
 
 // tagArrayValue is a pflag.Value that collects repeated --best-tag flags
 // but displays as "tag" instead of "stringArray" in help text.
@@ -649,4 +654,5 @@ func init() {
 	ontUmiDedupCmd.Flags().BoolVar(&umiDedupMarkDuplicates, "mark-duplicates", false, "Set PCR duplicate flag (0x400) on non-selected reads instead of removing them")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupMITag, "mi-tag", "MI", "SAM tag containing molecule group ID")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupStatsFile, "stats", "", "Write deduplication statistics to this file")
+	ontUmiDedupCmd.Flags().StringVar(&umiDedupCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
 }
