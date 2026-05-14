@@ -333,7 +333,7 @@ func removeFromBin(bin []*bufferedRead, id int) []*bufferedRead {
 //     bottleneck. samtools sort is cheap and does not need many threads.
 func umiClusterOverlapMode(inputFile string, countsWriter lineWriter, skipRefs []string) error {
 	// Read header from the input file.
-	hdrReader, err := htsio.NewSamReader(inputFile)
+	hdrReader, err := htsio.NewSamReader(inputFile, umiClusterReaderOpts())
 	if err != nil {
 		return err
 	}
@@ -396,7 +396,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter lineWriter, skipRefs [
 	// region; otherwise we read the entire file in one pass and let
 	// processReads handle chromosome transitions, skip-ref pass-
 	// through, and unmapped pass-through inline.
-	baseReader, err := htsio.NewSamReader(inputFile)
+	baseReader, err := htsio.NewSamReader(inputFile, umiClusterReaderOpts())
 	if err != nil {
 		writer.Close()
 		return err
@@ -1076,7 +1076,7 @@ func processReads(
 // pass 1 collects all UMI counts, pass 2 rewrites with representative UMIs.
 func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 	// Pass 1: collect all UMIs
-	reader, err := htsio.NewSamReader(inputFile)
+	reader, err := htsio.NewSamReader(inputFile, umiClusterReaderOpts())
 	if err != nil {
 		return err
 	}
@@ -1125,7 +1125,7 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 	// Pass 2: rewrite BAM
 	addUMIClusterPGLine(header)
 
-	reader2, err := htsio.NewSamReader(inputFile)
+	reader2, err := htsio.NewSamReader(inputFile, umiClusterReaderOpts())
 	if err != nil {
 		return err
 	}
@@ -2208,6 +2208,15 @@ var umiClusterAdaptiveAlpha float64
 var umiClusterNoCountsIndex bool
 var umiClusterMatchJunctions bool
 var umiClusterJunctionWindow int
+var umiClusterCramRef string
+
+func umiClusterReaderOpts() *htsio.SamReaderOpts {
+	opts := htsio.NewSamReaderOpts()
+	if umiClusterCramRef != "" {
+		opts.RefPath(umiClusterCramRef)
+	}
+	return opts
+}
 
 func init() {
 	ontUmiClusterCmd.Flags().StringVarP(&umiClusterOutput, "output", "o", "", "Output BAM file path (required)")
@@ -2230,4 +2239,5 @@ func init() {
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterNoCountsIndex, "no-summary-counts-index", false, "Disable automatic tabix index generation for the summary counts file")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchJunctions, "junction-match", false, "Require compatible splice junctions (CIGAR N ops) when grouping reads")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterJunctionWindow, "junction-window", 20, "Tolerance (bp) for matching junction positions and merging adjacent junctions")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
 }

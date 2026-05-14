@@ -146,6 +146,7 @@ type samReaderFlags struct {
 	minMapQ      int
 	region       string
 	ref          string
+	cramRef      string
 	tags         tagFilterFlags
 }
 
@@ -156,6 +157,7 @@ func (f *samReaderFlags) register(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&f.minMapQ, "min-mapq", 0, "Keep reads with mapping quality at or above this value")
 	cmd.Flags().StringVar(&f.region, "region", "", "Genomic region (chrom:start-end)")
 	cmd.Flags().StringVar(&f.ref, "ref", "", "Filter by reference name")
+	cmd.Flags().StringVar(&f.cramRef, "cram-ref", "", "Reference FASTA for CRAM files")
 	f.tags.register(cmd)
 }
 
@@ -178,6 +180,9 @@ func (f *samReaderFlags) buildReaderOpts() (*htsio.SamReaderOpts, error) {
 	}
 	for _, tf := range tagFilters {
 		opts.AddTagFilter(tf)
+	}
+	if f.cramRef != "" {
+		opts.RefPath(f.cramRef)
 	}
 	return opts, nil
 }
