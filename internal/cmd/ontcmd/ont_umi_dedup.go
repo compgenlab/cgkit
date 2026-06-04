@@ -14,11 +14,12 @@ import (
 
 // dedupStats collects metrics during deduplication for the --stats report.
 type dedupStats struct {
-	totalReads   int64
-	totalPrimary int64
-	totalMIGroup int64
-	totalKept    int64
-	noMIReads    int64 // reads without MI tag (passed through)
+	totalReads      int64
+	totalPrimary    int64
+	totalMIGroup    int64
+	totalKept       int64
+	noMIReads       int64 // reads without MI tag (passed through)
+	secSuppDropped  int64 // secondary/supplementary alignments removed
 
 	// Per-MI-group sizes (number of primary reads per group).
 	groupSizes []int
@@ -76,6 +77,7 @@ func (s *dedupStats) writeReport(path string) error {
 	}
 	fmt.Fprintf(f, "Total reads:        %d\n", s.totalReads)
 	fmt.Fprintf(f, "  Primary:          %d\n", s.totalPrimary)
+	fmt.Fprintf(f, "  Sec/supp dropped: %d\n", s.secSuppDropped)
 	fmt.Fprintf(f, "  No MI (passthru): %d\n", s.noMIReads)
 	fmt.Fprintf(f, "MI groups:          %d\n", s.totalMIGroup)
 	fmt.Fprintf(f, "Reads kept:         %d\n", s.totalKept)
@@ -334,7 +336,6 @@ func selectBest(reads []*htsio.SamRecord, selectors []selector) int {
 // miGroup holds buffered reads for a single MI tag value.
 type miGroup struct {
 	primaries []*htsio.SamRecord
-	secSupp   []*htsio.SamRecord
 	maxEnd    int // max reference end (0-based exclusive) across primaries
 	chrom     string
 }
@@ -347,10 +348,18 @@ var ontUmiDedupCmd = &cobra.Command{
 selects one representative read per MI group. Selection criteria are applied
 in order: each criterion narrows the candidates and the next breaks ties.
 
+Secondary and supplementary alignments are removed from the output. In a
+coordinate-sorted BAM, these alignments can appear before their primary and
+cannot be reliably associated with the selected representative. Only primary
+alignments are considered for selection and written to the output.
+
+Use --threads/-t to enable parallel BGZF compression for faster output.
+
 Examples:
   cgkit ont-umi-dedup -o dedup.bam --best-tag AS input.bam
   cgkit ont-umi-dedup -o dedup.bam --best-tag AS --best-tag NM- --longest input.bam
-  cgkit ont-umi-dedup -o dedup.bam --best-tag AS --mark-duplicates input.bam`,
+  cgkit ont-umi-dedup -o dedup.bam --best-tag AS --mark-duplicates input.bam
+  cgkit ont-umi-dedup -o dedup.bam --best-tag AS -t 4 input.bam`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -416,45 +425,24 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 	if err != nil {
 		return err
 	}
+	if umiDedupThreads > 1 {
+		writer.SetThreads(umiDedupThreads)
+	}
 
 	// Active MI groups keyed by MI tag value.
 	groups := make(map[string]*miGroup)
 
-	// Track selected read names so we can handle secondary/supplementary
-	// reads that arrive after their MI group has been flushed.
-	selectedNames := make(map[string]bool)
-
-	// Pending secondary/supplementary reads whose MI group hasn't been
-	// flushed yet. Keyed by MI tag value.
-	pendingSecSupp := make(map[string][]*htsio.SamRecord)
-
 	currentChrom := ""
 	stats := newDedupStats()
 
-	// flushGroup selects the best read from an MI group, writes it (and
-	// its secondary/supplementary reads) to the output, and handles
-	// duplicates according to --mark-duplicates.
-	flushGroup := func(mi string, g *miGroup) error {
+	// flushGroup selects the best read from an MI group and writes it to
+	// the output. Secondary/supplementary reads are dropped entirely.
+	flushGroup := func(g *miGroup) error {
 		if len(g.primaries) == 0 {
-			// No primaries — write sec/supp through unchanged.
-			for _, rec := range g.secSupp {
-				if err := writer.Write(rec); err != nil {
-					return err
-				}
-			}
-			for _, rec := range pendingSecSupp[mi] {
-				if err := writer.Write(rec); err != nil {
-					return err
-				}
-			}
-			delete(pendingSecSupp, mi)
 			return nil
 		}
 
 		bestIdx := selectBest(g.primaries, selectors)
-		bestName := g.primaries[bestIdx].ReadName
-		selectedNames[bestName] = true
-
 		stats.recordGroup(g.primaries, bestIdx, statTags)
 
 		// Write primaries: best is kept, others are discarded or marked.
@@ -472,34 +460,6 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 			// else: discard (don't write)
 		}
 
-		// Write secondary/supplementary: keep those belonging to the
-		// selected read, discard or mark-dup the rest.
-		writeSecSupp := func(recs []*htsio.SamRecord) error {
-			for _, rec := range recs {
-				if rec.ReadName == bestName {
-					if err := writer.Write(rec); err != nil {
-						return err
-					}
-				} else if umiDedupMarkDuplicates {
-					rec.Flag |= 0x400
-					if err := writer.Write(rec); err != nil {
-						return err
-					}
-				}
-			}
-			return nil
-		}
-
-		if err := writeSecSupp(g.secSupp); err != nil {
-			return err
-		}
-		if pending, ok := pendingSecSupp[mi]; ok {
-			if err := writeSecSupp(pending); err != nil {
-				return err
-			}
-			delete(pendingSecSupp, mi)
-		}
-
 		return nil
 	}
 
@@ -507,7 +467,7 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 	flushExpired := func(curStart int, curChrom string) error {
 		for mi, g := range groups {
 			if g.chrom != curChrom || g.maxEnd <= curStart {
-				if err := flushGroup(mi, g); err != nil {
+				if err := flushGroup(g); err != nil {
 					return err
 				}
 				delete(groups, mi)
@@ -519,7 +479,7 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 	// flushAll flushes every remaining MI group.
 	flushAll := func() error {
 		for mi, g := range groups {
-			if err := flushGroup(mi, g); err != nil {
+			if err := flushGroup(g); err != nil {
 				return err
 			}
 			delete(groups, mi)
@@ -558,26 +518,9 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 			fmt.Fprintf(os.Stderr, "Processing %s...\n", currentChrom)
 		}
 
-		// Secondary/supplementary reads: add to their MI group if it
-		// exists, otherwise check if we already know their fate.
+		// Secondary/supplementary reads are dropped entirely.
 		if rec.IsSecondary() || rec.IsSupplementary() {
-			if g, ok := groups[mi]; ok {
-				g.secSupp = append(g.secSupp, rec)
-			} else if selectedNames[rec.ReadName] {
-				// MI group already flushed, this read's primary was selected.
-				if err := writer.Write(rec); err != nil {
-					writer.Close()
-					return err
-				}
-			} else if umiDedupMarkDuplicates {
-				// MI group already flushed, this read's primary was NOT selected.
-				rec.Flag |= 0x400
-				if err := writer.Write(rec); err != nil {
-					writer.Close()
-					return err
-				}
-			}
-			// else: discard
+			stats.secSuppDropped++
 			continue
 		}
 
@@ -613,8 +556,8 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "Total reads: %d, primary: %d, MI groups: %d, kept: %d\n",
-		stats.totalReads, stats.totalPrimary, stats.totalMIGroup, stats.totalKept)
+	fmt.Fprintf(os.Stderr, "Total reads: %d, primary: %d, sec/supp dropped: %d, MI groups: %d, kept: %d\n",
+		stats.totalReads, stats.totalPrimary, stats.secSuppDropped, stats.totalMIGroup, stats.totalKept)
 
 	if umiDedupStatsFile != "" {
 		if err := stats.writeReport(umiDedupStatsFile); err != nil {
@@ -632,6 +575,7 @@ var umiDedupLongest bool
 var umiDedupMarkDuplicates bool
 var umiDedupMITag string
 var umiDedupStatsFile string
+var umiDedupThreads int
 var umiDedupCramRef string
 
 // tagArrayValue is a pflag.Value that collects repeated --best-tag flags
@@ -654,5 +598,6 @@ func init() {
 	ontUmiDedupCmd.Flags().BoolVar(&umiDedupMarkDuplicates, "mark-duplicates", false, "Set PCR duplicate flag (0x400) on non-selected reads instead of removing them")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupMITag, "mi-tag", "MI", "SAM tag containing molecule group ID")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupStatsFile, "stats", "", "Write deduplication statistics to this file")
+	ontUmiDedupCmd.Flags().IntVarP(&umiDedupThreads, "threads", "t", 1, "Number of BGZF compression threads for output writing")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
 }
