@@ -398,7 +398,11 @@ Examples:
 }
 
 func runUmiDedup(inputFile string, selectors []selector, statTags []string) error {
-	reader, err := htsio.NewSamReader(inputFile)
+	opts := htsio.NewSamReaderOpts()
+	if umiDedupCramRef != "" {
+		opts.RefPath(umiDedupCramRef)
+	}
+	reader, err := htsio.NewSamReader(inputFile, opts)
 	if err != nil {
 		return err
 	}
@@ -572,6 +576,7 @@ var umiDedupMarkDuplicates bool
 var umiDedupMITag string
 var umiDedupStatsFile string
 var umiDedupThreads int
+var umiDedupCramRef string
 
 // tagArrayValue is a pflag.Value that collects repeated --best-tag flags
 // but displays as "tag" instead of "stringArray" in help text.
@@ -594,4 +599,5 @@ func init() {
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupMITag, "mi-tag", "MI", "SAM tag containing molecule group ID")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupStatsFile, "stats", "", "Write deduplication statistics to this file")
 	ontUmiDedupCmd.Flags().IntVarP(&umiDedupThreads, "threads", "t", 1, "Number of BGZF compression threads for output writing")
+	ontUmiDedupCmd.Flags().StringVar(&umiDedupCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
 }

@@ -155,7 +155,11 @@ Both files must be sorted by coordinate.`,
 		}
 		fmt.Fprintf(os.Stderr, "Loaded %d UMI cluster records\n", len(records))
 
-		reader, err := htsio.NewSamReader(bamFile)
+		opts := htsio.NewSamReaderOpts()
+		if umiLookupCramRef != "" {
+			opts.RefPath(umiLookupCramRef)
+		}
+		reader, err := htsio.NewSamReader(bamFile, opts)
 		if err != nil {
 			return err
 		}
@@ -267,6 +271,7 @@ var (
 	umiLookupEditDist    int
 	umiLookupMatchOneEnd bool
 	umiLookupNoStrand    bool
+	umiLookupCramRef     string
 )
 
 func init() {
@@ -276,4 +281,5 @@ func init() {
 	ontUmiLookupCmd.Flags().IntVar(&umiLookupEditDist, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to match a UMI")
 	ontUmiLookupCmd.Flags().BoolVar(&umiLookupMatchOneEnd, "match-one-end", false, "Match if EITHER 5' or 3' ends overlap (default: require BOTH)")
 	ontUmiLookupCmd.Flags().BoolVar(&umiLookupNoStrand, "no-strand", false, "Ignore strand when matching positions")
+	ontUmiLookupCmd.Flags().StringVar(&umiLookupCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
 }

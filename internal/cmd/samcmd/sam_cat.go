@@ -10,6 +10,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var samCatCramRef string
+
+func init() {
+	samCatCmd.Flags().StringVar(&samCatCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
+}
+
 var samCatCmd = &cobra.Command{
 	GroupID: "samcmd",
 	Use:     "sam-cat <input>",
@@ -17,7 +23,11 @@ var samCatCmd = &cobra.Command{
 	Hidden:  true,
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		reader, err := htsio.NewSamReader(args[0])
+		opts := htsio.NewSamReaderOpts()
+		if samCatCramRef != "" {
+			opts.RefPath(samCatCramRef)
+		}
+		reader, err := htsio.NewSamReader(args[0], opts)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", args[0], err)
 		}
