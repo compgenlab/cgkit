@@ -627,7 +627,7 @@ func processReads(
 						if origUMI != "" {
 							if rep, ok := representative[origUMI]; ok {
 								if mi, ok := repToMI[rep]; ok {
-									rec.Tags["MI"] = htsio.SamTag{Type: 'Z', Value: mi}
+									rec.SetTag("MI", htsio.SamTag{Type: 'Z', Value: mi})
 								}
 							}
 						}
@@ -1316,8 +1316,8 @@ func updateRecordUMI(rec *htsio.SamRecord, representative map[string]string) boo
 	if !ok || cons == umi {
 		return false
 	}
-	rec.Tags[umiClusterOrigTag] = htsio.SamTag{Type: 'Z', Value: umi}
-	rec.Tags[umiClusterTag] = htsio.SamTag{Type: 'Z', Value: cons}
+	rec.SetTag(umiClusterOrigTag, htsio.SamTag{Type: 'Z', Value: umi})
+	rec.SetTag(umiClusterTag, htsio.SamTag{Type: 'Z', Value: cons})
 	return true
 }
 
