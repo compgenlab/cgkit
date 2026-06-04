@@ -100,7 +100,6 @@ var samFilterCmd = &cobra.Command{
 var (
 	samFilterBAM          bool
 	samFilterCRAM         bool
-	samFilterCRAMRef      string
 	samFilterReaderFlags  samReaderFlags
 )
 
@@ -109,5 +108,4 @@ func init() {
 
 	samFilterCmd.Flags().BoolVar(&samFilterBAM, "bam", false, "Output in BAM format")
 	samFilterCmd.Flags().BoolVar(&samFilterCRAM, "cram", false, "Output in CRAM format")
-	samFilterCmd.Flags().StringVar(&samFilterCRAMRef, "cram-ref", "", "Reference FASTA for CRAM output")
 }
