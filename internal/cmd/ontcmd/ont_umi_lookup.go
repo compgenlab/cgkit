@@ -276,7 +276,7 @@ var (
 
 func init() {
 	ontUmiLookupCmd.Flags().StringVarP(&umiLookupOutput, "output", "o", "-", "Output file (default: stdout)")
-	ontUmiLookupCmd.Flags().StringVar(&umiLookupTag, "umi-tag", "RX", "SAM tag containing UMI sequence")
+	ontUmiLookupCmd.Flags().StringVar(&umiLookupTag, "tag-umi", "RX", "SAM tag containing UMI sequence")
 	ontUmiLookupCmd.Flags().IntVar(&umiLookupOverlap, "overlap", 50, "Maximum gap (bp) between read ends to consider a positional match")
 	ontUmiLookupCmd.Flags().IntVar(&umiLookupEditDist, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to match a UMI")
 	ontUmiLookupCmd.Flags().BoolVar(&umiLookupMatchOneEnd, "match-one-end", false, "Match if EITHER 5' or 3' ends overlap (default: require BOTH)")

@@ -5,7 +5,7 @@ import (
 
 	"github.com/compgen-io/cgkit/htsio"
 	"github.com/compgen-io/cgkit/htsio/bam"
-	_ "github.com/compgen-io/cgkit/htsio/cram"
+	"github.com/compgen-io/cgkit/htsio/cram"
 	"github.com/compgen-io/cgkit/htsio/sam"
 	"github.com/spf13/cobra"
 )
@@ -49,7 +49,17 @@ var samFilterCmd = &cobra.Command{
 			}
 			writer = w
 		} else if samFilterCRAM {
-			return fmt.Errorf("CRAM output not yet supported in native writer")
+			// Reuse --cram-ref as the output reference when provided;
+			// otherwise write a reference-free CRAM (literal bases).
+			cramOpts := cram.NewWriterOpts()
+			if ref := samFilterReaderFlags.cramRef; ref != "" {
+				cramOpts.Reference(ref)
+			}
+			w, err := cram.NewWriter(outputFile, header, cramOpts)
+			if err != nil {
+				return err
+			}
+			writer = w
 		} else {
 			w, err := sam.NewWriter("-", header)
 			if err != nil {
@@ -98,9 +108,9 @@ var samFilterCmd = &cobra.Command{
 }
 
 var (
-	samFilterBAM          bool
-	samFilterCRAM         bool
-	samFilterReaderFlags  samReaderFlags
+	samFilterBAM         bool
+	samFilterCRAM        bool
+	samFilterReaderFlags samReaderFlags
 )
 
 func init() {

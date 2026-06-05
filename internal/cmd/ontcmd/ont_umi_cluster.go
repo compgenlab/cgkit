@@ -125,9 +125,9 @@ type bufferedRead struct {
 	id        int // global sequential ID for union-find
 	rec       *htsio.SamRecord
 	rname     string
-	strand    string // "+", "-", or "." for --no-strand
-	start     int    // 0-based
-	end       int    // 0-based, exclusive (start + CigarRefLen)
+	strand    string           // "+", "-", or "." for --no-strand
+	start     int              // 0-based
+	end       int              // 0-based, exclusive (start + CigarRefLen)
 	junctions []spliceJunction // splice junctions from CIGAR N ops (nil if disabled or none)
 }
 
@@ -202,7 +202,7 @@ func extractJunctions(cigar string, refStart int) []spliceJunction {
 				pos += num
 			case 'M', 'D', '=', 'X':
 				pos += num
-			// I, S, H, P do not consume reference
+				// I, S, H, P do not consume reference
 			}
 			num = 0
 		}
@@ -313,7 +313,6 @@ func removeFromBin(bin []*bufferedRead, id int) []*bufferedRead {
 	}
 	return bin
 }
-
 
 // umiClusterOverlapMode groups reads by 5' and/or 3' end proximity using a
 // buffer + union-find approach, then clusters UMIs within each component.
@@ -465,7 +464,7 @@ func processReads(
 
 	startIndex := make(map[int][]*bufferedRead) // key = start / overlap
 	endIndex := make(map[int][]*bufferedRead)   // key = end / overlap
-	active := make(map[int]*bufferedRead)        // key = read id
+	active := make(map[int]*bufferedRead)       // key = read id
 
 	uf := newUnionFind(1024)
 	activeCount := make(map[int]int)
@@ -510,7 +509,7 @@ func processReads(
 	// runtime scheduler handles the multiplexing.
 	// -----------------------------------------------------------------
 
-	var ioMu sync.Mutex     // serializes countsWriter, stderr, and counts-related I/O
+	var ioMu sync.Mutex       // serializes countsWriter, stderr, and counts-related I/O
 	var writeErr atomic.Value // first error from a worker (nil or error)
 
 	var atomicNextComp atomic.Int64
@@ -627,7 +626,7 @@ func processReads(
 						if origUMI != "" {
 							if rep, ok := representative[origUMI]; ok {
 								if mi, ok := repToMI[rep]; ok {
-									rec.SetTag("MI", htsio.SamTag{Type: 'Z', Value: mi})
+									rec.SetTag(umiClusterMITag, htsio.SamTag{Type: 'Z', Value: mi})
 								}
 							}
 						}
@@ -1258,7 +1257,6 @@ func buildUMIClusterCounts(
 	return lines
 }
 
-
 func getUMI(rec *htsio.SamRecord) string {
 	tag, ok := rec.Tags[umiClusterTag]
 	if !ok {
@@ -1639,7 +1637,7 @@ func levDistHP(a, b string, buf *levBuf, maxDist int) int {
 // where most errors are substitutions or short HP indels.
 func collisionProb(L, d int) float64 {
 	total := 0.0
-	choose := 1.0 // C(L, k) computed iteratively
+	choose := 1.0   // C(L, k) computed iteratively
 	powWrong := 1.0 // (alphabet-1)^k = 2^k
 	powAlphaL := math.Pow(3.0, float64(L))
 	for k := 0; k <= d; k++ {
@@ -2197,6 +2195,7 @@ var umiClusterNoStrand bool
 var umiClusterEditThreshold int
 var umiClusterCountsFilename string
 var umiClusterMI bool
+var umiClusterMITag string
 var umiClusterMatchOneEnd bool
 var umiClusterThreads int
 var umiClusterSkipRefs string
@@ -2228,7 +2227,8 @@ func init() {
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterSkipRefs, "ignore-refs", "", "References to ignore (reads will be passed through with original UMI) (comma-separated)")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterEditThreshold, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to cluster two UMIs")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterCountsFilename, "summary-counts", "", "Write per-cluster UMI summary to this file")
-	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMI, "tag-mi", false, "Add MI tag with molecule group ID to output reads")
+	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMI, "write-mi", false, "Write the MI tag (molecule group ID) to output reads")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterMITag, "tag-mi", "MI", "SAM tag name for the molecule group ID written with --write-mi")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchOneEnd, "match-one-end", false, "Match reads if EITHER 5' or 3' ends are within gap (default: require BOTH ends)")
 	ontUmiClusterCmd.Flags().IntVarP(&umiClusterThreads, "threads", "t", 1, "Threads for UMI clustering")
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterRegion, "region", "", "Process only this region (e.g. 'chr19' or 'chr19:1000-2000'); disables the skipped-ref and unmapped passes")
