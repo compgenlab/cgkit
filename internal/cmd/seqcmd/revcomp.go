@@ -7,11 +7,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// fastagcCmd implements the initial counting entrypoint.
+// revcompCmd implements the seq-revcomp command: reverse-complement of a sequence.
 var revcompCmd = &cobra.Command{
 	GroupID: "seqcmd",
 	Use:     "seq-revcomp seq",
-	Short:   "Calculate the reverse-compliment of the seq",
+	Short:   "Calculate the reverse-complement of the seq",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) != 1 {
 			cmd.Help()

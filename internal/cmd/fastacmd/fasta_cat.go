@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// fastagcCmd implements the initial counting entrypoint.
+// fastaCatCmd implements the fasta-cat command: read and re-emit FASTA records unwrapped.
 var fastaCatCmd = &cobra.Command{
 	GroupID: "fastaqcmd",
 	Use:     "fasta-cat <input.fasta>",
