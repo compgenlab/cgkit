@@ -112,7 +112,8 @@ Usage: `cgkit [--profile=cpu.prof] <command>`
 |---------|-------------|
 | `sam-export` | Export selected columns and tags as tab-delimited text |
 | `sam-filter` | Filter reads by region, flags, MAPQ, or tags and write to a new file |
-| `sam-toseq` | Convert reads to FASTA or FASTQ |
+| `sam-tofasta` | Convert reads to FASTA (optionally writing SAM tags into the comment) |
+| `sam-tofastq` | Convert reads to FASTQ (optionally writing SAM tags into the comment) |
 
 ### Oxford Nanopore
 
