@@ -2,6 +2,7 @@ package ontcmd
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/compgen-io/cgkit/htsio"
@@ -53,7 +54,10 @@ func readAllBAM(t *testing.T, path string) []*htsio.SamRecord {
 	return recs
 }
 
-// rec is a helper to build a SamRecord with common fields.
+// rec is a helper to build a SamRecord with common fields. SEQ is sized to the
+// CIGAR's query length so the record is well-formed (the BAM/CRAM writers reject
+// a CIGAR/SEQ length mismatch); seq supplies the base pattern, repeated or
+// truncated to the required length.
 func rec(name string, flag int, ref string, pos int, cigar string, seq string, tags map[string]htsio.SamTag) *htsio.SamRecord {
 	if tags == nil {
 		tags = make(map[string]htsio.SamTag)
@@ -68,10 +72,26 @@ func rec(name string, flag int, ref string, pos int, cigar string, seq string, t
 		RefNext:   "*",
 		PosNext:   0,
 		InsertLen: 0,
-		Seq:       seq,
+		Seq:       fitSeq(seq, htsio.CigarQueryLen(cigar)),
 		Qual:      "*",
 		Tags:      tags,
 	}
+}
+
+// fitSeq returns a sequence of exactly n bases built by repeating pattern
+// (truncating the final copy). It returns "*" for n == 0 (no query bases).
+func fitSeq(pattern string, n int) string {
+	if n == 0 {
+		return "*"
+	}
+	if pattern == "" || pattern == "*" {
+		pattern = "A"
+	}
+	var b strings.Builder
+	for b.Len() < n {
+		b.WriteString(pattern)
+	}
+	return b.String()[:n]
 }
 
 func tags(kv ...interface{}) map[string]htsio.SamTag {
