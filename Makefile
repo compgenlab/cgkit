@@ -1,5 +1,5 @@
 BIN_DIR := bin
-GO_SOURCES := $(shell rg --files -g "*.go")
+GO_SOURCES := $(shell find . -type f -name '*.go')
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 LDFLAGS := -X 'github.com/compgen-io/cgkit/internal/cmd.Version=$(VERSION)' \
