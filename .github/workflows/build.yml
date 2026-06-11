@@ -16,12 +16,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -58,31 +58,31 @@ jobs:
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.windows_amd64.exe .
 
       - name: Upload cgkit.darwin_arm64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cgkit.darwin_arm64
           path: bin/cgkit.darwin_arm64
 
       - name: Upload cgkit.darwin_amd64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cgkit.darwin_amd64
           path: bin/cgkit.darwin_amd64
 
       - name: Upload cgkit.linux_arm64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cgkit.linux_arm64
           path: bin/cgkit.linux_arm64
 
       - name: Upload cgkit.linux_amd64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cgkit.linux_amd64
           path: bin/cgkit.linux_amd64
 
       - name: Upload cgkit.windows_amd64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cgkit.windows_amd64.exe
           path: bin/cgkit.windows_amd64.exe
@@ -95,7 +95,7 @@ jobs:
 
       - name: Create tagged release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             bin/cgkit.darwin_arm64
@@ -107,7 +107,7 @@ jobs:
 
       - name: Create dev release
         if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: dev
           name: Development Build
