@@ -80,7 +80,7 @@ var samToSeqCmd = &cobra.Command{
 
 			// Reverse complement if on reverse strand.
 			if rec.IsReverse() {
-				seq = sequtils.ReverseCompliment(seq)
+				seq = sequtils.ReverseComplement(seq)
 				qual = stringutils.ReverseString(qual)
 			}
 

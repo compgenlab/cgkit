@@ -14,18 +14,18 @@ import (
 
 // dedupStats collects metrics during deduplication for the --stats report.
 type dedupStats struct {
-	totalReads      int64
-	totalPrimary    int64
-	totalMIGroup    int64
-	totalKept       int64
-	noMIReads       int64 // reads without MI tag (passed through)
-	secSuppDropped  int64 // secondary/supplementary alignments removed
+	totalReads     int64
+	totalPrimary   int64
+	totalMIGroup   int64
+	totalKept      int64
+	noMIReads      int64 // reads without MI tag (passed through)
+	secSuppDropped int64 // secondary/supplementary alignments removed
 
 	// Per-MI-group sizes (number of primary reads per group).
 	groupSizes []int
 
 	// Tag values for kept and discarded primary reads, keyed by tag name.
-	keptTagValues     map[string][]float64
+	keptTagValues      map[string][]float64
 	discardedTagValues map[string][]float64
 }
 
@@ -596,7 +596,7 @@ func init() {
 	ontUmiDedupCmd.Flags().Var(&tagArrayValue{values: &umiDedupBestTags}, "best-tag", "Tag-based selector: TAG or TAG+ (higher wins) or TAG- (lower wins); repeatable, applied in order")
 	ontUmiDedupCmd.Flags().BoolVar(&umiDedupLongest, "longest", false, "Use longest query sequence as a selector (applied after --best-tag selectors)")
 	ontUmiDedupCmd.Flags().BoolVar(&umiDedupMarkDuplicates, "mark-duplicates", false, "Set PCR duplicate flag (0x400) on non-selected reads instead of removing them")
-	ontUmiDedupCmd.Flags().StringVar(&umiDedupMITag, "mi-tag", "MI", "SAM tag containing molecule group ID")
+	ontUmiDedupCmd.Flags().StringVar(&umiDedupMITag, "tag-mi", "MI", "SAM tag containing molecule group ID")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupStatsFile, "stats", "", "Write deduplication statistics to this file")
 	ontUmiDedupCmd.Flags().IntVarP(&umiDedupThreads, "threads", "t", 1, "Number of BGZF compression threads for output writing")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
