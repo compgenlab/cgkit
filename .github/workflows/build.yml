@@ -28,6 +28,9 @@ jobs:
       - name: Install samtools
         run: sudo apt-get update && sudo apt-get install -y samtools
 
+      - name: Run go vet
+        run: GOCACHE=/tmp/go-build-cache go vet ./...
+
       - name: Run tests
         run: GOCACHE=/tmp/go-build-cache go test ./...
 
