@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// fastagcCmd implements the initial counting entrypoint.
+// fastaGCCmd implements the fasta-gc command: per-sequence GC content.
 var fastaGCCmd = &cobra.Command{
 	GroupID: "fastaqcmd",
 	Use:     "fasta-gc <input.fasta>",

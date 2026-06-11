@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// fastagcCmd implements the initial counting entrypoint.
+// swalignCmd implements the seq-pairwise command: Smith-Waterman pairwise alignment.
 var swalignCmd = &cobra.Command{
 	GroupID: "seqcmd",
 	Use:     "seq-pairwise query target",

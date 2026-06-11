@@ -11,8 +11,8 @@ import (
 	"sync"
 
 	"github.com/compgen-io/cgkit/align"
-	"github.com/compgen-io/cgkit/seqio"
 	"github.com/compgen-io/cgkit/htsio/bgzf"
+	"github.com/compgen-io/cgkit/seqio"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +21,7 @@ import (
 // is true, files ending in ".gz" or ".bgz" use bgzip (blocked gzip) compression
 // instead, which is compatible with tabix indexing.
 // The returned closer must be called when done.
-func openWriter(filename string, preferBGZip ...bool) (io.Writer, func() error, error) {
+func openWriter(filename string, preferBGZip bool) (io.Writer, func() error, error) {
 	if filename == "" {
 		return nil, func() error { return nil }, nil
 	}
@@ -29,8 +29,7 @@ func openWriter(filename string, preferBGZip ...bool) (io.Writer, func() error, 
 		return os.Stdout, func() error { return nil }, nil
 	}
 
-	useBGZip := len(preferBGZip) > 0 && preferBGZip[0]
-	if useBGZip && (strings.HasSuffix(filename, ".gz") || strings.HasSuffix(filename, ".bgz")) {
+	if preferBGZip && (strings.HasSuffix(filename, ".gz") || strings.HasSuffix(filename, ".bgz")) {
 		bgz, err := bgzf.NewBGZipFile(filename)
 		if err != nil {
 			return nil, nil, err
@@ -148,7 +147,7 @@ var ontTagsCmd = &cobra.Command{
 			ontFilterBarcodeScore >= 0 || ontFilterBarcodeMatches >= 0 || ontWriteBarcode
 
 		// Open report writer (default: stdout).
-		reportWriter, closeReport, err := openWriter(ontReportFilename)
+		reportWriter, closeReport, err := openWriter(ontReportFilename, false)
 		if err != nil {
 			return fmt.Errorf("opening report: %w", err)
 		}

@@ -369,9 +369,9 @@ The input BAM with UMI tags updated. For each read whose UMI differs from its cl
 
 Reads already matching the representative are unchanged. The output is coordinate-sorted via samtools sort.
 
-### Molecule ID (`--tag-mi`)
+### Molecule ID (`--write-mi`)
 
-When `--tag-mi` is set, each read receives an `MI` tag with a two-level molecule group identifier: `mi_COMP.CLUST` (e.g., `mi_000001.001`). The first number identifies the read-overlap group (component) and the second identifies the UMI cluster within that component. All reads in the same UMI cluster share the same MI value. Clusters that were considered together during UMI clustering (i.e., in the same overlap group) share the same component number, making it possible to identify which clusters were compared against each other.
+When `--write-mi` is set, each read receives an MI tag (name configurable via `--tag-mi`, default `MI`) with a two-level molecule group identifier: `mi_COMP.CLUST` (e.g., `mi_000001.001`). The first number identifies the read-overlap group (component) and the second identifies the UMI cluster within that component. All reads in the same UMI cluster share the same MI value. Clusters that were considered together during UMI clustering (i.e., in the same overlap group) share the same component number, making it possible to identify which clusters were compared against each other.
 
 ### UMI counts (`--summary-counts`, optional)
 
@@ -423,7 +423,8 @@ The all-pairs max-intra-cluster-distance computation is capped at 10,000 members
 | `-o`, `--output` | (required) | Output BAM file path |
 | `--overlap` | 50 | Maximum gap (bp) between reads to group them |
 | `--region` | | Process only this region |
-| `--tag-mi` | false | Add MI tag with molecule group ID |
+| `--write-mi` | false | Write the MI tag (molecule group ID) to output reads |
+| `--tag-mi` | `MI` | SAM tag name for the molecule group ID written with `--write-mi` |
 | `--tag-orig` | `OX` | SAM tag to store original UMI before correction |
 | `--tag-umi` | `RX` | SAM tag containing UMI sequence |
 | `-t`, `--threads` | 1 | Worker threads for UMI clustering |
