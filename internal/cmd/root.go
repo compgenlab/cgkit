@@ -52,7 +52,8 @@ func init() {
 
 	// Add version footer to all help output.
 	defaultHelp := rootCmd.HelpTemplate()
-	rootCmd.SetHelpTemplate(defaultHelp + "\ncgkit " + versionString() + "\n")
+	rootCmd.SetHelpTemplate(defaultHelp + "\ncgkit " + versionString() +
+		"\nhttps://github.com/compgen-io/cgkit\n")
 
 	ontcmd.InitCmd(rootCmd)
 	fastacmd.InitCmd(rootCmd)
