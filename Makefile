@@ -5,6 +5,9 @@ GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 LDFLAGS := -X 'github.com/compgen-io/cgkit/internal/cmd.Version=$(VERSION)' \
            -X 'github.com/compgen-io/cgkit/internal/cmd.GitHash=$(GIT_HASH)'
 
+# cgkit is a standalone module; ignore any ambient go.work from parent dirs.
+export GOWORK := off
+
 .PHONY: build clean test
 
 build: $(BIN_DIR)/cgkit.darwin_arm64 $(BIN_DIR)/cgkit.darwin_amd64 $(BIN_DIR)/cgkit.linux_arm64 $(BIN_DIR)/cgkit.linux_amd64 $(BIN_DIR)/cgkit.windows_amd64.exe
