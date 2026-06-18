@@ -4,7 +4,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/compgen-io/cgkit/htsio"
+	"github.com/compgenlab/hts/htsio"
 )
 
 func loadStats(t *testing.T, path string, opt statsOpts) *statsResult {
@@ -26,7 +26,7 @@ func loadStats(t *testing.T, path string, opt statsOpts) *statsResult {
 }
 
 func TestSamStatsBasicCounts(t *testing.T) {
-	res := loadStats(t, "../../../htsio/testdata/test.bam", statsOpts{})
+	res := loadStats(t, "testdata/test.bam", statsOpts{})
 
 	if res.total != 5 {
 		t.Errorf("total = %d, want 5", res.total)
@@ -54,7 +54,7 @@ func TestSamStatsBasicCounts(t *testing.T) {
 func TestSamStatsSecondOfPairAndUnmapped(t *testing.T) {
 	// test_tags.bam has 11 records; read_paired_2 (flag 0x80) is skipped as the
 	// second read of a pair, and read_unmapped (flag 0x4) is counted but unmapped.
-	res := loadStats(t, "../../../htsio/testdata/test_tags.bam", statsOpts{})
+	res := loadStats(t, "testdata/test_tags.bam", statsOpts{})
 
 	if res.total != 10 {
 		t.Errorf("total = %d, want 10 (11 records minus second-of-pair)", res.total)
@@ -76,7 +76,7 @@ func TestSamStatsSecondOfPairAndUnmapped(t *testing.T) {
 
 func TestSamStatsTagTally(t *testing.T) {
 	opt := statsOpts{tags: []tagSpec{{name: "NM", numeric: true}}}
-	res := loadStats(t, "../../../htsio/testdata/test_tags.bam", opt)
+	res := loadStats(t, "testdata/test_tags.bam", opt)
 
 	nm := res.tagCounts["NM"]
 	for _, val := range []string{"0", "1", "2", "3"} {
@@ -91,7 +91,7 @@ func TestSamStatsTagTally(t *testing.T) {
 }
 
 func TestSamStatsRgidFilter(t *testing.T) {
-	res := loadStats(t, "../../../htsio/testdata/test_tags.bam", statsOpts{rgid: "sample1"})
+	res := loadStats(t, "testdata/test_tags.bam", statsOpts{rgid: "sample1"})
 
 	// sample1 reads: multi_tags, paired_1, paired_2 (skipped, 2nd of pair),
 	// chr2, unmapped → total 4, of which one is unmapped.

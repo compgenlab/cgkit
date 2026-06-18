@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/compgen-io/cgkit/htsio/tabix"
+	"github.com/compgenlab/hts/htsio/tabix"
 	"github.com/spf13/cobra"
 )
 

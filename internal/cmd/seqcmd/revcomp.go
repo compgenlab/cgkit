@@ -3,7 +3,7 @@ package seqcmd
 import (
 	"fmt"
 
-	"github.com/compgen-io/cgkit/seqio"
+	"github.com/compgenlab/hts/seqio"
 	"github.com/spf13/cobra"
 )
 

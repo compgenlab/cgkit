@@ -8,9 +8,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/compgen-io/cgkit/htsio"
-	_ "github.com/compgen-io/cgkit/htsio/bam"
-	_ "github.com/compgen-io/cgkit/htsio/cram"
+	"github.com/compgenlab/hts/htsio"
+	_ "github.com/compgenlab/hts/htsio/bam"
+	_ "github.com/compgenlab/hts/htsio/cram"
 	"github.com/spf13/cobra"
 )
 

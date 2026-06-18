@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CGLTK is a Go toolkit for computational genomics research. It provides CLI commands for sequence analysis, NGS data wrangling, and bioinformatics operations, with particular focus on Oxford Nanopore (long-read) sequence processing.
 
-**Module:** `github.com/compgen-io/cgkit`
+**Module:** `github.com/compgenlab/cgio`
 **Go version:** 1.23
 **CLI framework:** Cobra
 
@@ -25,7 +25,7 @@ GOCACHE=/tmp/go-build-cache go test ./...
 go test ./align/... -run TestCigarCondense
 
 # Run with CPU profiling
-./cgkit --profile=cpu.prof <subcommand>
+./cgio --profile=cpu.prof <subcommand>
 ```
 
 ## Architecture
