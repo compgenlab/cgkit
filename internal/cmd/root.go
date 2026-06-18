@@ -34,20 +34,25 @@ var rootCmd = &cobra.Command{
 	Long: `Utility toolkit for computational genomics research,
 with a collection of commands for sequence analysis,
 NGS data-wrangling, and more.`,
+	// Silence usage only once we reach a command's RunE. Cobra validates args
+	// and flags *before* PersistentPreRun, so parsing errors (e.g. a missing
+	// argument) still print usage, while errors during execution do not.
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		cmd.SilenceUsage = true
+	},
 }
 
 // Execute runs the root command and exits with a non-zero status on error.
+// Cobra already prints the error (and usage, for argument/flag errors), so we
+// only need to set the exit status here.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func init() {
 	rootCmd.Version = versionString()
-	// SilenceUsage prevents Cobra from printing usage on errors after argument parsing.
-	rootCmd.SilenceUsage = true
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
 	// Add version footer to all help output.
