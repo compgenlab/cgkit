@@ -72,6 +72,7 @@ CIGAR strings use standard ops: M (match), I (insertion), D (deletion), S (soft 
 Commands are registered in `internal/cmd/root.go` and grouped by file format or domain:
 - `fasta-cat`, `fasta-wrap`, `fasta-gc` — FASTA operations
 - `fastq-gc` — FASTQ operations
+- `sam-stats` — Summary statistics for SAM/BAM/CRAM: read counts, mapping rates, Q30, depth, SAM flag breakdown, per-reference counts, optional `--tags` value distributions and `--calc-insert` median. Profiles the first read of each pair only (ports `ngsutils bam-stats`). Phase 1 omits the `--gtf` gene-model and `--bed` on-target stats.
 - `seq-pairwise`, `seq-revcomp` — Sequence analysis
 - `ont-primers` — ONT primer detection/trimming with alignment statistics
 - `ont-umi-dedup` — UMI deduplication: selects one representative per MI group from coordinate-sorted BAM. Secondary/supplementary alignments are dropped (cannot be reliably resolved in coordinate order). Supports `--threads` for parallel BGZF compression.
