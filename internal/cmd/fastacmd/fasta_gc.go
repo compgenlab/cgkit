@@ -3,8 +3,8 @@ package fastacmd
 import (
 	"io"
 
-	seqanalysis "github.com/compgen-io/cgkit/analysis/seq"
-	"github.com/compgen-io/cgkit/seqio"
+	seqanalysis "github.com/compgenlab/hts/analysis/seq"
+	"github.com/compgenlab/hts/seqio"
 	"github.com/spf13/cobra"
 )
 

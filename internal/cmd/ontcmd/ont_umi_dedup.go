@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/compgen-io/cgkit/htsio"
-	"github.com/compgen-io/cgkit/htsio/bam"
+	"github.com/compgenlab/hts/htsio"
+	"github.com/compgenlab/hts/htsio/bam"
 	"github.com/spf13/cobra"
 )
 
@@ -356,10 +356,10 @@ alignments are considered for selection and written to the output.
 Use --threads/-t to enable parallel BGZF compression for faster output.
 
 Examples:
-  cgkit ont-umi-dedup -o dedup.bam --best-tag AS input.bam
-  cgkit ont-umi-dedup -o dedup.bam --best-tag AS --best-tag NM- --longest input.bam
-  cgkit ont-umi-dedup -o dedup.bam --best-tag AS --mark-duplicates input.bam
-  cgkit ont-umi-dedup -o dedup.bam --best-tag AS -t 4 input.bam`,
+  cgio ont-umi-dedup -o dedup.bam --best-tag AS input.bam
+  cgio ont-umi-dedup -o dedup.bam --best-tag AS --best-tag NM- --longest input.bam
+  cgio ont-umi-dedup -o dedup.bam --best-tag AS --mark-duplicates input.bam
+  cgio ont-umi-dedup -o dedup.bam --best-tag AS -t 4 input.bam`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -419,7 +419,7 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 		return err
 	}
 
-	header.AddPGLine("ont-umi-dedup", "cgkit", "DS:UMI deduplication")
+	header.AddPGLine("ont-umi-dedup", "cgio", "DS:UMI deduplication")
 
 	writer, err := bam.NewSortedWriter(umiDedupOutput, header, true)
 	if err != nil {
