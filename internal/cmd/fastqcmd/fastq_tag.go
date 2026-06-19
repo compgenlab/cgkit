@@ -9,9 +9,10 @@ import (
 )
 
 var fastqTagCmd = &cobra.Command{
-	GroupID: "fastaqcmd",
-	Use:     "fastq-tag <tag> <input.fastq>",
-	Short:   "Add a tag to the comment field of FASTQ records",
+	GroupID:     "fastaqcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "fastq-tag <tag> <input.fastq>",
+	Short:       "Add a tag to the comment field of FASTQ records",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 2 {
 			cmd.Help()

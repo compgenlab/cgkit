@@ -8,5 +8,4 @@ func InitCmd(rootCmd *cobra.Command) {
 	rootCmd.AddCommand(msaCmd)
 
 	rootCmd.AddGroup(&cobra.Group{ID: "seqcmd", Title: "Sequence"})
-
 }

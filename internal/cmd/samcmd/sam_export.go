@@ -15,7 +15,7 @@ import (
 
 // columnDef defines a SAM column that can be exported.
 type columnDef struct {
-	name    string                             // column name (used in header and flag name)
+	name    string                            // column name (used in header and flag name)
 	extract func(rec *htsio.SamRecord) string // extracts the column value
 }
 
@@ -34,9 +34,10 @@ var samColumnDefs = []columnDef{
 }
 
 var samExportCmd = &cobra.Command{
-	GroupID: "samcmd",
-	Use:     "sam-export <input.bam>",
-	Short:   "Export columns and tags from a SAM/BAM/CRAM file as tab-delimited text",
+	GroupID:     "samcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "sam-export <input.bam>",
+	Short:       "Export columns and tags from a SAM/BAM/CRAM file as tab-delimited text",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -135,10 +136,10 @@ func parseTags(tagStr string) []string {
 }
 
 var (
-	samExportColumnFlags  []bool // one bool per samColumnDefs entry
-	samExportTags         string
-	samExportOutput       string
-	samExportReaderFlags  samReaderFlags
+	samExportColumnFlags []bool // one bool per samColumnDefs entry
+	samExportTags        string
+	samExportOutput      string
+	samExportReaderFlags samReaderFlags
 )
 
 func init() {

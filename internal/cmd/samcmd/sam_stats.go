@@ -33,9 +33,10 @@ func init() {
 }
 
 var samStatsCmd = &cobra.Command{
-	GroupID: "samcmd",
-	Use:     "sam-stats <input>",
-	Short:   "Summary statistics for a SAM/BAM/CRAM file",
+	GroupID:     "samcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "sam-stats <input>",
+	Short:       "Summary statistics for a SAM/BAM/CRAM file",
 	Long: `Read a SAM/BAM/CRAM file and print summary statistics: read counts,
 mapping rates, Q30 percentage, depth, SAM flag breakdown, per-reference counts,
 and (optionally) tag value distributions and insert-size median.`,

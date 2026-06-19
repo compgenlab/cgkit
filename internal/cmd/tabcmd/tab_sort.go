@@ -11,9 +11,10 @@ import (
 )
 
 var tabSortCmd = &cobra.Command{
-	GroupID: "tabcmd",
-	Use:     "tab-sort [input] -o <output.bed.gz>",
-	Short:   "Sort a tab-delimited file and write as BGZF with optional tabix index",
+	GroupID:     "tabcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "tab-sort [input] -o <output.bed.gz>",
+	Short:       "Sort a tab-delimited file and write as BGZF with optional tabix index",
 	Long: `Read a tab-delimited text file (or stdin with '-'), sort by genomic
 coordinates, and write a BGZF-compressed output with optional .tbi index.
 

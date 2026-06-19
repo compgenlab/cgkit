@@ -16,20 +16,22 @@ import (
 )
 
 var samToFastaCmd = &cobra.Command{
-	GroupID: "samcmd",
-	Use:     "sam-tofasta <input.bam> [output]",
-	Short:   "Convert SAM/BAM/CRAM reads to FASTA",
-	Long:    "Write SAM/BAM/CRAM reads to FASTA. Output file is optional; defaults to stdout.",
+	GroupID:     "samcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "sam-tofasta <input.bam> [output]",
+	Short:       "Convert SAM/BAM/CRAM reads to FASTA",
+	Long:        "Write SAM/BAM/CRAM reads to FASTA. Output file is optional; defaults to stdout.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSamToFastx(cmd, args, false, samToFastaReaderFlags, samToFastaWriteTags)
 	},
 }
 
 var samToFastqCmd = &cobra.Command{
-	GroupID: "samcmd",
-	Use:     "sam-tofastq <input.bam> [output]",
-	Short:   "Convert SAM/BAM/CRAM reads to FASTQ",
-	Long:    "Write SAM/BAM/CRAM reads to FASTQ. Output file is optional; defaults to stdout.",
+	GroupID:     "samcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "sam-tofastq <input.bam> [output]",
+	Short:       "Convert SAM/BAM/CRAM reads to FASTQ",
+	Long:        "Write SAM/BAM/CRAM reads to FASTQ. Output file is optional; defaults to stdout.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSamToFastx(cmd, args, true, samToFastqReaderFlags, samToFastqWriteTags)
 	},
