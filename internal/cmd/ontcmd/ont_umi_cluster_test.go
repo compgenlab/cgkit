@@ -287,7 +287,7 @@ func TestEndProximityMatching_BothEnds(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Simulate AND mode matching: 5' within gap AND 3' within gap
-			fivePrime := (tt.bStart - tt.aStart) <= gap && (tt.aStart - tt.bStart) <= gap
+			fivePrime := (tt.bStart-tt.aStart) <= gap && (tt.aStart-tt.bStart) <= gap
 			diff := tt.bEnd - tt.aEnd
 			if diff < 0 {
 				diff = -diff
@@ -323,7 +323,7 @@ func TestEndProximityMatching_SingleEnd(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fivePrime := (tt.bStart - tt.aStart) <= gap && (tt.aStart - tt.bStart) <= gap
+			fivePrime := (tt.bStart-tt.aStart) <= gap && (tt.aStart-tt.bStart) <= gap
 			diff := tt.bEnd - tt.aEnd
 			if diff < 0 {
 				diff = -diff

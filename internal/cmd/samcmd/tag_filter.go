@@ -23,7 +23,7 @@ func (v *valStringArray) Type() string       { return "val" }
 // tagFilterFlags holds the raw string slices from cobra flags.
 type tagFilterFlags struct {
 	Eq, NotEq, Contains, NotContains *[]string
-	Lt, Gt, Lte, Gte                *[]string
+	Lt, Gt, Lte, Gte                 *[]string
 	InFile, NotInFile                *[]string
 }
 
