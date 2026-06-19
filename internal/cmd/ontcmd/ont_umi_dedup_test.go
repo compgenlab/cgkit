@@ -115,10 +115,10 @@ func TestParseTagSelectorFlag(t *testing.T) {
 		wantError bool
 	}{
 		{"AS+", "AS", false, false},
-		{"AS", "AS", false, false},  // no suffix defaults to higher wins
+		{"AS", "AS", false, false}, // no suffix defaults to higher wins
 		{"NM-", "NM", true, false},
 		{"XY+", "XY", false, false},
-		{"A", "", false, true},      // too short
+		{"A", "", false, true}, // too short
 	}
 	for _, tt := range tests {
 		ts, err := parseTagSelectorFlag(tt.input)
@@ -227,8 +227,8 @@ func TestSelectBest_MissingTag(t *testing.T) {
 	sel := []selector{&tagSelector{tag: "AS", ascending: false}}
 
 	reads := []*htsio.SamRecord{
-		rec("r1", 0, "chr1", 100, "50M", "ACGT", tags("MI", 'Z', "mi_1")),                       // no AS
-		rec("r2", 0, "chr1", 100, "50M", "ACGT", tags("AS", 'i', "50", "MI", 'Z', "mi_1")),      // AS=50
+		rec("r1", 0, "chr1", 100, "50M", "ACGT", tags("MI", 'Z', "mi_1")),                  // no AS
+		rec("r2", 0, "chr1", 100, "50M", "ACGT", tags("AS", 'i', "50", "MI", 'Z', "mi_1")), // AS=50
 	}
 	best := selectBest(reads, sel)
 	if reads[best].ReadName != "r2" {
@@ -393,8 +393,8 @@ func TestUmiDedup_SecondarySupplementaryDropped(t *testing.T) {
 	input := []*htsio.SamRecord{
 		rec("r1", 0, "chr1", 100, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "100")),
 		rec("r2", 0, "chr1", 110, "100M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "200")),
-		rec("r1", 0x100, "chr1", 150, "50M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "50")),    // secondary for r1
-		rec("r2", 0x800, "chr1", 160, "60M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "80")),    // supplementary for r2
+		rec("r1", 0x100, "chr1", 150, "50M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "50")), // secondary for r1
+		rec("r2", 0x800, "chr1", 160, "60M", "ACGTACGTAC", tags("MI", 'Z', "mi_1", "AS", 'i', "80")), // supplementary for r2
 	}
 	makeTestBAM(t, inPath, input)
 
