@@ -17,9 +17,10 @@ import (
 // can reuse the exact same pipeline.
 
 var msaCmd = &cobra.Command{
-	GroupID: "seqcmd",
-	Use:     "seq-msa <input.fasta|fastq>",
-	Short:   "Multiple sequence alignment via incremental consensus",
+	GroupID:     "seqcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "seq-msa <input.fasta|fastq>",
+	Short:       "Multiple sequence alignment via incremental consensus",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()

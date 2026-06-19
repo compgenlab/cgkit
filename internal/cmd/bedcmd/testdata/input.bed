@@ -1,0 +1,6 @@
+#comment line
+chr1	100	200
+chr2	50	75	regionB	2.9	-
+chr3	10	20	regionC	0.0	.
+
+chr1	100	200	regionA	1.9	+	foo	bar

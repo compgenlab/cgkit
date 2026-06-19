@@ -341,9 +341,10 @@ type miGroup struct {
 }
 
 var ontUmiDedupCmd = &cobra.Command{
-	GroupID: "ontcmd",
-	Use:     "ont-umi-dedup <input.bam>",
-	Short:   "Deduplicate UMI-clustered reads, keeping one representative per MI group",
+	GroupID:     "ontcmd",
+	Annotations: map[string]string{"since": "v0.2.0"},
+	Use:         "ont-umi-dedup <input.bam>",
+	Short:       "Deduplicate UMI-clustered reads, keeping one representative per MI group",
 	Long: `Reads a coordinate-sorted BAM file with MI tags (from ont-umi-cluster) and
 selects one representative read per MI group. Selection criteria are applied
 in order: each criterion narrows the candidates and the next breaks ties.

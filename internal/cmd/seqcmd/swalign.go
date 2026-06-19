@@ -10,9 +10,10 @@ import (
 
 // swalignCmd implements the seq-pairwise command: Smith-Waterman pairwise alignment.
 var swalignCmd = &cobra.Command{
-	GroupID: "seqcmd",
-	Use:     "seq-pairwise query target",
-	Short:   "Align the two given sequences",
+	GroupID:     "seqcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "seq-pairwise query target",
+	Short:       "Align the two given sequences",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) != 2 {
 			cmd.Help()

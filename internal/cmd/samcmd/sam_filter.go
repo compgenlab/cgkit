@@ -11,10 +11,11 @@ import (
 )
 
 var samFilterCmd = &cobra.Command{
-	GroupID: "samcmd",
-	Use:     "sam-filter <input.bam> <output.bam>",
-	Short:   "Filter SAM/BAM/CRAM reads and write to a new file",
-	Long:    "Filter reads from a SAM/BAM/CRAM file and write passing reads to a new SAM/BAM/CRAM file.",
+	GroupID:     "samcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "sam-filter <input.bam> <output.bam>",
+	Short:       "Filter SAM/BAM/CRAM reads and write to a new file",
+	Long:        "Filter reads from a SAM/BAM/CRAM file and write passing reads to a new SAM/BAM/CRAM file.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 2 {
 			cmd.Help()

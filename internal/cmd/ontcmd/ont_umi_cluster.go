@@ -56,9 +56,10 @@ func (t *tabixLineWriter) Close() error {
 }
 
 var ontUmiClusterCmd = &cobra.Command{
-	GroupID: "ontcmd",
-	Use:     "ont-umi-cluster <input.bam>",
-	Short:   "Collapse similar UMIs in a coordinate-sorted BAM file",
+	GroupID:     "ontcmd",
+	Annotations: map[string]string{"since": "v0.2.0"},
+	Use:         "ont-umi-cluster <input.bam>",
+	Short:       "Collapse similar UMIs in a coordinate-sorted BAM file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()

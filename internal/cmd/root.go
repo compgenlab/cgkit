@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/compgenlab/cgio/internal/cmd/bedcmd"
 	"github.com/compgenlab/cgio/internal/cmd/fastacmd"
 	"github.com/compgenlab/cgio/internal/cmd/fastqcmd"
 	"github.com/compgenlab/cgio/internal/cmd/ontcmd"
@@ -55,12 +56,18 @@ func init() {
 	rootCmd.Version = versionString()
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
-	// Add version footer to all help output.
-	defaultHelp := rootCmd.HelpTemplate()
-	rootCmd.SetHelpTemplate(defaultHelp + "\ncgio " + versionString() +
-		"\nhttps://github.com/compgenlab/cgio\n")
+	// Help template: cobra's default command help, plus a "Since:" line sourced
+	// from each command's "since" annotation, plus a version footer.
+	const helpBody = `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
+
+{{end}}{{if .Annotations}}{{with (index .Annotations "since")}}Since: {{.}}
+
+{{end}}{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`
+	rootCmd.SetHelpTemplate(helpBody + "\ncgio " + versionString() +
+		" https://compgenlab.org/cgio\n")
 
 	ontcmd.InitCmd(rootCmd)
+	bedcmd.InitCmd(rootCmd)
 	fastacmd.InitCmd(rootCmd)
 	fastqcmd.InitCmd(rootCmd)
 	samcmd.InitCmd(rootCmd)

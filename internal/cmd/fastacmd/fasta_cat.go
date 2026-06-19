@@ -10,10 +10,11 @@ import (
 
 // fastaCatCmd implements the fasta-cat command: read and re-emit FASTA records unwrapped.
 var fastaCatCmd = &cobra.Command{
-	GroupID: "fastaqcmd",
-	Use:     "fasta-cat <input.fasta>",
-	Short:   "Write the sequences in a FASTA file without any wrapping",
-	Hidden:  true,
+	GroupID:     "fastaqcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "fasta-cat <input.fasta>",
+	Short:       "Write the sequences in a FASTA file without any wrapping",
+	Hidden:      true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()

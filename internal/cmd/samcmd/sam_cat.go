@@ -17,11 +17,12 @@ func init() {
 }
 
 var samCatCmd = &cobra.Command{
-	GroupID: "samcmd",
-	Use:     "sam-cat <input>",
-	Short:   "Read a SAM/BAM/CRAM file and write SAM text to stdout",
-	Hidden:  true,
-	Args:    cobra.ExactArgs(1),
+	GroupID:     "samcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "sam-cat <input>",
+	Short:       "Read a SAM/BAM/CRAM file and write SAM text to stdout",
+	Hidden:      true,
+	Args:        cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		opts := htsio.NewSamReaderOpts()
 		if samCatCramRef != "" {

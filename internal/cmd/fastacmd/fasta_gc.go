@@ -10,9 +10,10 @@ import (
 
 // fastaGCCmd implements the fasta-gc command: per-sequence GC content.
 var fastaGCCmd = &cobra.Command{
-	GroupID: "fastaqcmd",
-	Use:     "fasta-gc <input.fasta>",
-	Short:   "Return the GC content of sequences in a FASTA file",
+	GroupID:     "fastaqcmd",
+	Annotations: map[string]string{"since": "v0.1.0"},
+	Use:         "fasta-gc <input.fasta>",
+	Short:       "Return the GC content of sequences in a FASTA file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()

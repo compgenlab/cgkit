@@ -55,9 +55,10 @@ func openWriter(filename string, preferBGZip bool) (io.Writer, func() error, err
 }
 
 var ontTagsCmd = &cobra.Command{
-	GroupID: "ontcmd",
-	Use:     "ont-tags <input.fastq>",
-	Short:   "Find and trim common ONT tags from the start of reads in a FASTQ file",
+	GroupID:     "ontcmd",
+	Annotations: map[string]string{"since": "v0.2.0"},
+	Use:         "ont-tags <input.fastq>",
+	Short:       "Find and trim common ONT tags from the start of reads in a FASTQ file",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
