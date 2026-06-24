@@ -32,15 +32,9 @@ func runVcf(t *testing.T, args ...string) string {
 	vcfReorderSamplesFile = ""
 	vcfStatsInfoTally = nil
 	vcfStatsInfoPresent = nil
-	vcfAnnotateTags = nil
-	vcfAnnotateBed = nil
-	vcfAnnotateBedFlag = nil
-	vcfAnnotateFormatBed = nil
-	vcfAnnotateTab = nil
-	vcfAnnotateFormatTab = nil
-	vcfAnnotateVcf = nil
-	vcfAnnotateVcfFlag = nil
-	vcfAnnotateInFile = nil
+	// The VisitAll reset above calls Set on the chainValue flags, appending
+	// noise to vcfAnnotateChain; clear it here so each run starts empty.
+	vcfAnnotateChain = nil
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
@@ -324,6 +318,42 @@ func TestVcfAnnotateFormatBed(t *testing.T) {
 		"testdata/annotate.vcf")
 	if !strings.Contains(out, "GT:AD:SAC:REGION\t0/0:14,1:15,13,1,1:promoterX\t0/1:15,15:8,7,8,7\n") {
 		t.Errorf("format-bed output wrong:\n%s", out)
+	}
+}
+
+func TestVcfAnnotateChainOrder(t *testing.T) {
+	// Annotators (and their header defs) are applied in command-line order.
+	before := func(s, a, b string) bool {
+		ia, ib := strings.Index(s, a), strings.Index(s, b)
+		return ia >= 0 && ib >= 0 && ia < ib
+	}
+	a := runVcf(t, "vcf-annotate", "--tstv", "--indel", "testdata/annotate.vcf")
+	if !before(a, "ID=CG_TSTV", "ID=CG_INSERT") {
+		t.Errorf("order A: CG_TSTV should precede CG_INSERT:\n%s", a)
+	}
+	b := runVcf(t, "vcf-annotate", "--indel", "--tstv", "testdata/annotate.vcf")
+	if !before(b, "ID=CG_INSERT", "ID=CG_TSTV") {
+		t.Errorf("order B: CG_INSERT should precede CG_TSTV:\n%s", b)
+	}
+}
+
+func TestVcfAnnotateDependentChain(t *testing.T) {
+	// --vcf adds GENE; a later --in-file can read it.
+	out := runVcf(t, "vcf-annotate",
+		"--vcf", "GENE:GENE:testdata/source.vcf.gz",
+		"--in-file", "PANEL:GENE:testdata/genelist.txt",
+		"testdata/annotate.vcf")
+	if !strings.Contains(out, "GENE=BRCA;PANEL") {
+		t.Errorf("dependent chain: PANEL should be added when --in-file follows --vcf:\n%s", out)
+	}
+	// Reversed: --in-file runs before GENE exists, so no record gets the PANEL
+	// flag (the header still declares it, since SetupHeader always runs).
+	rev := runVcf(t, "vcf-annotate",
+		"--in-file", "PANEL:GENE:testdata/genelist.txt",
+		"--vcf", "GENE:GENE:testdata/source.vcf.gz",
+		"testdata/annotate.vcf")
+	if strings.Contains(rev, "GENE=BRCA;PANEL") {
+		t.Errorf("reversed chain: no record should get the PANEL flag:\n%s", rev)
 	}
 }
 
