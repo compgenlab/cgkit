@@ -32,6 +32,7 @@ func runVcf(t *testing.T, args ...string) string {
 	vcfReorderSamplesFile = ""
 	vcfStatsInfoTally = nil
 	vcfStatsInfoPresent = nil
+	vcfAnnotateTags = nil
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
@@ -187,6 +188,54 @@ func TestVcfReorderSubsetByNumber(t *testing.T) {
 	wantRow := "chr1\t100\trs1\tA\tG\t50.0\tPASS\tDP=30;AF=0.5;DB\tGT:AD\t0/1:15,15\n"
 	if !strings.Contains(got, wantRow) {
 		t.Errorf("vcf-reorder subset data row mismatch.\n got: %q", got)
+	}
+}
+
+func TestVcfAnnotateGroupA(t *testing.T) {
+	out := runVcf(t, "vcf-annotate", "--indel", "--tstv", "--dosage", "--auto-id",
+		"testdata/annotate.vcf")
+	for _, want := range []string{
+		"chr1\t100\tchr1_100_A_G\tA\tG\t50\tPASS\tDP=30;CG_TSTV=TS\tGT:AD:SAC:CG_DS\t0/0:14,1:15,13,1,1:0\t0/1:15,15:8,7,8,7:1\n",
+		"chr1\t150\tchr1_150_A_C\tA\tC\t40\tPASS\tDP=25;CG_TSTV=TV\tGT:AD:SAC:CG_DS\t0/0:25,0:13,12,0,0:0\t1/1:0,30:0,0,15,15:2\n",
+		"chr1\t300\tchr1_300_G_GA\tG\tGA\t40\tPASS\tDP=25;CG_INSERT;CG_INSLEN=1;CG_INDELLEN=1\tGT:AD:SAC:CG_DS\t0/0:25,0:13,12,0,0:0\t0/1:12,13:6,6,7,6:1\n",
+		"chr2\t500\tchr2_500_CAT_C\tCAT\tC\t99\tPASS\tDP=40;CG_DELETE;CG_DELLEN=2;CG_INDELLEN=-2\tGT:AD:SAC:CG_DS\t0/0:40,0:20,20,0,0:0\t0/1:20,20:10,10,11,9:1\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("vcf-annotate group A missing line:\n%q\nfull output:\n%s", want, out)
+		}
+	}
+	// New INFO/FORMAT defs declared in the header.
+	for _, def := range []string{
+		"##INFO=<ID=CG_TSTV,",
+		"##INFO=<ID=CG_INSERT,",
+		"##FORMAT=<ID=CG_DS,",
+	} {
+		if !strings.Contains(out, def) {
+			t.Errorf("vcf-annotate header missing def %q", def)
+		}
+	}
+}
+
+func TestVcfAnnotateProvenance(t *testing.T) {
+	buildinfo.Now = func() time.Time { return time.Date(2021, 3, 4, 0, 0, 0, 0, time.UTC) }
+	defer func() { buildinfo.Now = time.Now }()
+	out := runVcf(t, "vcf-annotate", "--tstv", "testdata/annotate.vcf")
+	if !strings.Contains(out, "##fileDate=20210304\n") {
+		t.Errorf("vcf-annotate missing ##fileDate")
+	}
+	if !strings.Contains(out, "##cgio_vcf-annotateCommand=") {
+		t.Errorf("vcf-annotate missing provenance command")
+	}
+}
+
+func TestVcfAnnotatePassing(t *testing.T) {
+	// --passing drops the lowqual variant at chr1:140.
+	out := runVcf(t, "vcf-annotate", "--tstv", "--passing", "testdata/annotate.vcf")
+	if strings.Contains(out, "\t140\t") {
+		t.Errorf("vcf-annotate --passing should drop chr1:140\n%s", out)
+	}
+	if !strings.Contains(out, "\t100\t") {
+		t.Errorf("vcf-annotate --passing dropped a passing variant\n%s", out)
 	}
 }
 

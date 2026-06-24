@@ -88,6 +88,70 @@ func TestParityWithNgsutilsj(t *testing.T) {
 	}
 }
 
+// dataRows returns only the non-header (non-#) lines of VCF/tab output.
+func dataRows(s string) string {
+	var keep []string
+	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		if !strings.HasPrefix(line, "#") {
+			keep = append(keep, line)
+		}
+	}
+	return strings.Join(keep, "\n")
+}
+
+// TestParityAnnotate verifies vcf-annotate output against ngsutilsj. Group A
+// annotators, copy-logratio, and vardist are byte-identical on the data rows.
+func TestParityAnnotate(t *testing.T) {
+	bin := findNgsutilsj(t)
+	if bin == "" {
+		t.Skip("ngsutilsj reference binary not found; set NGSUTILSJ to enable parity checks")
+	}
+	const vcf = "testdata/annotate.vcf"
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"groupA", []string{"vcf-annotate", "--indel", "--tstv", "--dosage", "--auto-id", vcf}},
+		{"copy-logratio", []string{"vcf-annotate", "--copy-logratio", "TUMOR:NORMAL", vcf}},
+		{"vardist", []string{"vcf-annotate", "--vardist", vcf}},
+		{"single-tag", []string{"vcf-annotate", "--tag", "PANEL:myset", vcf}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := dataRows(runJava(t, bin, tc.args...))
+			got := dataRows(runVcf(t, tc.args...))
+			if got != want {
+				t.Errorf("annotate parity (%s)\n java: %q\n cgio: %q", tc.name, want, got)
+			}
+		})
+	}
+}
+
+// TestParityAnnotateGroupBValues verifies the sample-count annotators produce
+// the same values; the FORMAT column ordering differs by design (cgio uses a
+// stable order), so the per-line tokens are compared order-insensitive.
+func TestParityAnnotateGroupBValues(t *testing.T) {
+	bin := findNgsutilsj(t)
+	if bin == "" {
+		t.Skip("ngsutilsj reference binary not found; set NGSUTILSJ to enable parity checks")
+	}
+	args := []string{"vcf-annotate", "--vaf", "--minor-strand", "--fisher-sb", "testdata/annotate.vcf"}
+	normalize := func(s string) string {
+		var lines []string
+		for _, line := range strings.Split(dataRows(s), "\n") {
+			toks := strings.FieldsFunc(line, func(r rune) bool { return r == '\t' || r == ':' })
+			sort.Strings(toks)
+			lines = append(lines, strings.Join(toks, " "))
+		}
+		return strings.Join(lines, "\n")
+	}
+	want := normalize(runJava(t, bin, args...))
+	got := normalize(runVcf(t, args...))
+	if got != want {
+		t.Errorf("annotate group-B value parity\n java: %q\n cgio: %q", want, got)
+	}
+}
+
 // TestParityExportValues verifies that cgio and ngsutilsj produce the same set
 // of exported values. The column ordering differs by design (cgio uses a stable
 // order), so the comparison is order-insensitive per line.
