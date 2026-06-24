@@ -3,6 +3,7 @@ package samcmd
 import (
 	"fmt"
 
+	"github.com/compgenlab/cgio/internal/buildinfo"
 	"github.com/compgenlab/hts/htsio"
 	_ "github.com/compgenlab/hts/htsio/bam"
 	_ "github.com/compgenlab/hts/htsio/cram"
@@ -38,6 +39,7 @@ var samCatCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("read header: %w", err)
 		}
+		header.AddPGLine("sam-cat", "cgio", buildinfo.String())
 
 		writer, err := sam.NewWriter("-", header)
 		if err != nil {

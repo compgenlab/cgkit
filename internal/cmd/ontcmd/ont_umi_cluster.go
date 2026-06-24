@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/compgenlab/cgio/internal/buildinfo"
 	"github.com/compgenlab/hts/htsio"
 	"github.com/compgenlab/hts/htsio/bam"
 	_ "github.com/compgenlab/hts/htsio/cram"
@@ -1322,7 +1323,7 @@ func updateRecordUMI(rec *htsio.SamRecord, representative map[string]string) boo
 
 // addUMIClusterPGLine appends the ont-umi-cluster @PG header line.
 func addUMIClusterPGLine(header *htsio.SamHeader) {
-	header.AddPGLine("ont-umi-cluster", "cgio", fmt.Sprintf("DS:UMI collapsing; representative UMI written to %s, original preserved in %s, molecule ID in MI", umiClusterTag, umiClusterOrigTag))
+	header.AddPGLine("ont-umi-cluster", "cgio", buildinfo.String(), fmt.Sprintf("DS:UMI collapsing; representative UMI written to %s, original preserved in %s, molecule ID in MI", umiClusterTag, umiClusterOrigTag))
 }
 
 // levBuf holds reusable DP buffers for Levenshtein computation.

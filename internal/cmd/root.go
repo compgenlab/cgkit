@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/compgenlab/cgio/internal/buildinfo"
 	"github.com/compgenlab/cgio/internal/cmd/bedcmd"
 	"github.com/compgenlab/cgio/internal/cmd/fastacmd"
 	"github.com/compgenlab/cgio/internal/cmd/fastqcmd"
@@ -11,6 +12,7 @@ import (
 	"github.com/compgenlab/cgio/internal/cmd/samcmd"
 	"github.com/compgenlab/cgio/internal/cmd/seqcmd"
 	"github.com/compgenlab/cgio/internal/cmd/tabcmd"
+	"github.com/compgenlab/cgio/internal/cmd/vcfcmd"
 	"github.com/spf13/cobra"
 )
 
@@ -53,6 +55,11 @@ func Execute() {
 }
 
 func init() {
+	// Share the ldflags-injected version with the leaf buildinfo package so
+	// command groups can stamp provenance without importing this package.
+	buildinfo.Version = Version
+	buildinfo.GitHash = GitHash
+
 	rootCmd.Version = versionString()
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
@@ -73,4 +80,5 @@ func init() {
 	samcmd.InitCmd(rootCmd)
 	seqcmd.InitCmd(rootCmd)
 	tabcmd.InitCmd(rootCmd)
+	vcfcmd.InitCmd(rootCmd)
 }
