@@ -33,6 +33,11 @@ func runVcf(t *testing.T, args ...string) string {
 	vcfStatsInfoTally = nil
 	vcfStatsInfoPresent = nil
 	vcfAnnotateTags = nil
+	vcfAnnotateBed = nil
+	vcfAnnotateBedFlag = nil
+	vcfAnnotateFormatBed = nil
+	vcfAnnotateTab = nil
+	vcfAnnotateFormatTab = nil
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
@@ -213,6 +218,44 @@ func TestVcfAnnotateGroupA(t *testing.T) {
 		if !strings.Contains(out, def) {
 			t.Errorf("vcf-annotate header missing def %q", def)
 		}
+	}
+}
+
+func TestVcfAnnotateBedTab(t *testing.T) {
+	out := runVcf(t, "vcf-annotate",
+		"--bed", "REGION:testdata/regions.bed.gz",
+		"--bed-flag", "INREG:testdata/regions.bed.gz",
+		"--tab", "SCORE:testdata/scores.tab.gz,5,n",
+		"--tab", "LBL:testdata/scores.tab.gz,6,alt=4",
+		"testdata/annotate.vcf")
+	// chr1:100 A>G overlaps promoterX, score row A>G (0.91, hot).
+	if !strings.Contains(out, "DP=30;REGION=promoterX;INREG;SCORE=0.91;LBL=hot\t") {
+		t.Errorf("chr1:100 annotations wrong:\n%s", out)
+	}
+	// chr1:150 A>C: region promoterX, score row A>C (0.40, cold).
+	if !strings.Contains(out, "DP=25;REGION=promoterX;INREG;SCORE=0.40;LBL=cold\t") {
+		t.Errorf("chr1:150 annotations wrong:\n%s", out)
+	}
+	// chr1:300 indel in exonY, no score row there.
+	if !strings.Contains(out, "DP=25;REGION=exonY;INREG\t") {
+		t.Errorf("chr1:300 annotations wrong:\n%s", out)
+	}
+	// Header defs added (tabix-style).
+	for _, def := range []string{"##INFO=<ID=REGION,", "##INFO=<ID=INREG,", "##INFO=<ID=SCORE,", "##INFO=<ID=LBL,"} {
+		if !strings.Contains(out, def) {
+			t.Errorf("missing header def %q", def)
+		}
+	}
+}
+
+func TestVcfAnnotateFormatBed(t *testing.T) {
+	// Annotate sample 0 (NORMAL): the FORMAT keys are derived from sample 0, so
+	// the new field surfaces; TUMOR lacks it and its trailing value is trimmed.
+	out := runVcf(t, "vcf-annotate",
+		"--format-bed", "REGION:NORMAL:testdata/regions.bed.gz",
+		"testdata/annotate.vcf")
+	if !strings.Contains(out, "GT:AD:SAC:REGION\t0/0:14,1:15,13,1,1:promoterX\t0/1:15,15:8,7,8,7\n") {
+		t.Errorf("format-bed output wrong:\n%s", out)
 	}
 }
 
