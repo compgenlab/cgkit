@@ -248,6 +248,23 @@ func TestVcfAnnotateBedTab(t *testing.T) {
 	}
 }
 
+func TestVcfAnnotateColumnByName(t *testing.T) {
+	// scores_hdr.tab.gz has a header; columns referenced by name. Exact ref+alt
+	// matching also reaches the chr2:500 deletion.
+	out := runVcf(t, "vcf-annotate",
+		"--tab", "LBL:testdata/scores_hdr.tab.gz,label,alt=alt,ref=ref",
+		"testdata/annotate.vcf")
+	if !strings.Contains(out, "DP=30;LBL=hot\t") {
+		t.Errorf("chr1:100 LBL missing:\n%s", out)
+	}
+	if !strings.Contains(out, "DP=40;LBL=sv\t") {
+		t.Errorf("chr2:500 (deletion, ref+alt match) LBL missing:\n%s", out)
+	}
+	if !strings.Contains(out, "##INFO=<ID=LBL,") {
+		t.Errorf("LBL header def missing")
+	}
+}
+
 func TestVcfAnnotateFormatBed(t *testing.T) {
 	// Annotate sample 0 (NORMAL): the FORMAT keys are derived from sample 0, so
 	// the new field surfaces; TUMOR lacks it and its trailing value is trimmed.

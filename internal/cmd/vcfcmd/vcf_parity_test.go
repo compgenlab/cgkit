@@ -160,6 +160,7 @@ func TestParityAnnotateBedTab(t *testing.T) {
 		{"bed-flag", []string{"vcf-annotate", "--bed-flag", "INREG:testdata/regions.bed.gz", vcf}},
 		{"tab-num", []string{"vcf-annotate", "--tab", "SCORE:testdata/scores.tab.gz,5,n", vcf}},
 		{"tab-alt", []string{"vcf-annotate", "--tab", "LBL:testdata/scores.tab.gz,6,alt=4", vcf}},
+		{"tab-colname", []string{"vcf-annotate", "--tab", "LBL:testdata/scores_hdr.tab.gz,label,alt=alt,ref=ref", vcf}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
