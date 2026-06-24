@@ -27,6 +27,11 @@ var (
 	vcfAnnotateMinorStrand bool
 	vcfAnnotateFisherSB    bool
 	vcfAnnotateCopyLR      string
+	vcfAnnotateBed         []string
+	vcfAnnotateBedFlag     []string
+	vcfAnnotateFormatBed   []string
+	vcfAnnotateTab         []string
+	vcfAnnotateFormatTab   []string
 )
 
 var vcfAnnotateCmd = &cobra.Command{
@@ -176,6 +181,38 @@ func buildAnnotatePipeline() (*annotate.Pipeline, error) {
 		}
 		add(a)
 	}
+
+	addTabix := func(o annotate.TabixOptions) error {
+		a, err := annotate.NewTabixAnnotator(o)
+		if err != nil {
+			return err
+		}
+		applyAltCoords(a)
+		p.Add(a)
+		return nil
+	}
+	type tabixSpec struct {
+		args  []string
+		parse func(string) (annotate.TabixOptions, error)
+	}
+	for _, spec := range []tabixSpec{
+		{vcfAnnotateBed, func(s string) (annotate.TabixOptions, error) { return parseBedArg(s, false) }},
+		{vcfAnnotateBedFlag, func(s string) (annotate.TabixOptions, error) { return parseBedArg(s, true) }},
+		{vcfAnnotateFormatBed, parseFormatBedArg},
+		{vcfAnnotateTab, parseTabArg},
+		{vcfAnnotateFormatTab, parseFormatTabArg},
+	} {
+		for _, arg := range spec.args {
+			o, err := spec.parse(arg)
+			if err != nil {
+				return nil, err
+			}
+			if err := addTabix(o); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if vcfAnnotateVarDist {
 		s := annotate.NewVariantDistance()
 		applyAltCoords(s)
@@ -202,6 +239,134 @@ func applyAltCoords(a any) {
 	if vcfAnnotateEndPos != "" {
 		c.SetEndPos(vcfAnnotateEndPos)
 	}
+}
+
+// splitNumericName strips a trailing ",n" (numeric marker) from a NAME token.
+func splitNumericName(name string) (string, bool) {
+	if strings.HasSuffix(name, ",n") {
+		return name[:len(name)-2], true
+	}
+	return name, false
+}
+
+// parseBedArg parses "NAME:FILE" for --bed / --bed-flag. A flag annotation uses
+// Col=0; otherwise the BED name column (4). A ",n" suffix on NAME makes the
+// value numeric.
+func parseBedArg(arg string, flag bool) (annotate.TabixOptions, error) {
+	parts := strings.SplitN(arg, ":", 2)
+	if len(parts) != 2 {
+		return annotate.TabixOptions{}, fmt.Errorf("expected NAME:FILE, got %q", arg)
+	}
+	name, isNum := splitNumericName(parts[0])
+	o := annotate.TabixOptions{Name: name, Filename: parts[1], IsNumber: isNum, Col: 4}
+	if flag {
+		o.Col = 0
+	}
+	return o, nil
+}
+
+// parseFormatBedArg parses "KEY:SAMPLE:FILE" for --format-bed.
+func parseFormatBedArg(arg string) (annotate.TabixOptions, error) {
+	parts := strings.SplitN(arg, ":", 3)
+	if len(parts) != 3 {
+		return annotate.TabixOptions{}, fmt.Errorf("expected KEY:SAMPLE:FILE, got %q", arg)
+	}
+	name, isNum := splitNumericName(parts[0])
+	return annotate.TabixOptions{Name: name, Sample: parts[1], Filename: parts[2], IsNumber: isNum, Col: 4}, nil
+}
+
+// parseTabArg parses "NAME:FILE,opt,..." for --tab.
+func parseTabArg(arg string) (annotate.TabixOptions, error) {
+	parts := strings.SplitN(arg, ":", 2)
+	if len(parts) != 2 {
+		return annotate.TabixOptions{}, fmt.Errorf("expected NAME:FILE,..., got %q", arg)
+	}
+	return parseTabOptions(parts[0], "", parts[1])
+}
+
+// parseFormatTabArg parses "NAME:SAMPLE:FILE,opt,..." for --format-tab.
+func parseFormatTabArg(arg string) (annotate.TabixOptions, error) {
+	parts := strings.SplitN(arg, ":", 3)
+	if len(parts) != 3 {
+		return annotate.TabixOptions{}, fmt.Errorf("expected NAME:SAMPLE:FILE,..., got %q", arg)
+	}
+	return parseTabOptions(parts[0], parts[1], parts[2])
+}
+
+// parseTabOptions parses the comma-separated FILE,opt,... portion of a --tab /
+// --format-tab argument (ports VCFAnnotateCmd.setTabix). Column/alt/ref are
+// 1-based numbers; names are not yet supported.
+func parseTabOptions(name, sample, fileAndOpts string) (annotate.TabixOptions, error) {
+	o := annotate.TabixOptions{Name: name, Sample: sample}
+	toks := strings.Split(fileAndOpts, ",")
+	colSet := false
+	numCol := func(prefix, t string) (int, error) {
+		n, err := strconv.Atoi(t[len(prefix):])
+		if err != nil {
+			return 0, fmt.Errorf("column-by-name not supported (%s), use a 1-based number: %q", strings.TrimSuffix(prefix, "="), t)
+		}
+		return n, nil
+	}
+	for i, t := range toks {
+		switch {
+		case i == 0:
+			o.Filename = t
+		case t == "n":
+			o.IsNumber = true
+		case t == "max":
+			o.Max = true
+		case t == "collapse":
+			o.Collapse = true
+		case t == "first":
+			o.First = true
+		case t == "noheader":
+			o.NoHeader = true
+		case strings.HasPrefix(t, "extend="):
+			n, err := strconv.Atoi(t[len("extend="):])
+			if err != nil {
+				return o, fmt.Errorf("invalid extend value: %q", t)
+			}
+			o.Extend = n
+		case strings.HasPrefix(t, "alt="):
+			n, err := numCol("alt=", t)
+			if err != nil {
+				return o, err
+			}
+			o.AltCol = n
+		case strings.HasPrefix(t, "ref="):
+			n, err := numCol("ref=", t)
+			if err != nil {
+				return o, err
+			}
+			o.RefCol = n
+		case !colSet:
+			n, err := strconv.Atoi(t)
+			if err != nil {
+				return o, fmt.Errorf("column-by-name not supported, use a 1-based number: %q", t)
+			}
+			o.Col = n
+			colSet = true
+		}
+	}
+	if o.Filename == "" {
+		return o, fmt.Errorf("missing filename in tab annotation")
+	}
+	n := 0
+	for _, b := range []bool{o.Max, o.First, o.Collapse} {
+		if b {
+			n++
+		}
+	}
+	if n > 1 {
+		return o, fmt.Errorf("first, max, and collapse cannot be combined")
+	}
+	if o.Max && !o.IsNumber {
+		return o, fmt.Errorf("max also requires ,n")
+	}
+	if o.RefCol > 0 && o.AltCol == 0 {
+		return o, fmt.Errorf("ref= requires alt=")
+	}
+	return o, nil
 }
 
 func parseCopyLogRatio(arg string) (*annotate.CopyNumberLogRatio, error) {
@@ -241,4 +406,9 @@ func init() {
 	f.BoolVar(&vcfAnnotateMinorStrand, "minor-strand", false, "Add minor strand percentage (CG_SBPCT, requires SAC)")
 	f.BoolVar(&vcfAnnotateFisherSB, "fisher-sb", false, "Add Fisher strand bias (CG_FSB, requires SAC)")
 	f.StringVar(&vcfAnnotateCopyLR, "copy-logratio", "", "Add copy-number log2 ratio: SOMATIC:GERMLINE[:somatic-total:germline-total] (CG_CNLR, requires AD)")
+	f.StringArrayVar(&vcfAnnotateBed, "bed", nil, "Annotate INFO from a tabix-indexed BED4 name column: NAME:FILE (',n' on NAME for numeric; repeatable)")
+	f.StringArrayVar(&vcfAnnotateBedFlag, "bed-flag", nil, "Flag variants within a tabix-indexed BED region: NAME:FILE (repeatable)")
+	f.StringArrayVar(&vcfAnnotateFormatBed, "format-bed", nil, "Annotate a sample FORMAT field from a BED4 name column: KEY:SAMPLE:FILE (repeatable)")
+	f.StringArrayVar(&vcfAnnotateTab, "tab", nil, "Annotate INFO from a tabix file: NAME:FILE{,col,n,alt=N,ref=N,collapse,first,max,extend=N} (repeatable)")
+	f.StringArrayVar(&vcfAnnotateFormatTab, "format-tab", nil, "Annotate a sample FORMAT field from a tabix file: NAME:SAMPLE:FILE,col{,...} (repeatable)")
 }

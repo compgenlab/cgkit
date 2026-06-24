@@ -127,6 +127,51 @@ func TestParityAnnotate(t *testing.T) {
 	}
 }
 
+// normQual strips a trailing ".0" from the QUAL column (field 5) of each data
+// row. cgio writes records it did not modify verbatim (preserving "20.0"),
+// whereas ngsutilsj rebuilds every record ("20"); this isolates that
+// intentional difference so the annotation values can be compared.
+func normQual(s string) string {
+	var out []string
+	for _, line := range strings.Split(dataRows(s), "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) > 5 {
+			f[5] = strings.TrimSuffix(f[5], ".0")
+		}
+		out = append(out, strings.Join(f, "\t"))
+	}
+	return strings.Join(out, "\n")
+}
+
+// TestParityAnnotateBedTab verifies the BED/tabix annotators against ngsutilsj.
+// Both read the same bgzipped+indexed files. Annotation values match; QUAL on
+// untouched rows is normalized (see normQual).
+func TestParityAnnotateBedTab(t *testing.T) {
+	bin := findNgsutilsj(t)
+	if bin == "" {
+		t.Skip("ngsutilsj reference binary not found; set NGSUTILSJ to enable parity checks")
+	}
+	const vcf = "testdata/annotate.vcf"
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"bed", []string{"vcf-annotate", "--bed", "REGION:testdata/regions.bed.gz", vcf}},
+		{"bed-flag", []string{"vcf-annotate", "--bed-flag", "INREG:testdata/regions.bed.gz", vcf}},
+		{"tab-num", []string{"vcf-annotate", "--tab", "SCORE:testdata/scores.tab.gz,5,n", vcf}},
+		{"tab-alt", []string{"vcf-annotate", "--tab", "LBL:testdata/scores.tab.gz,6,alt=4", vcf}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := normQual(runJava(t, bin, tc.args...))
+			got := normQual(runVcf(t, tc.args...))
+			if got != want {
+				t.Errorf("bed/tab parity (%s)\n java: %q\n cgio: %q", tc.name, want, got)
+			}
+		})
+	}
+}
+
 // TestParityAnnotateGroupBValues verifies the sample-count annotators produce
 // the same values; the FORMAT column ordering differs by design (cgio uses a
 // stable order), so the per-line tokens are compared order-insensitive.
