@@ -240,6 +240,8 @@ func buildAnnotatePipeline() (*annotate.Pipeline, error) {
 				return nil, e
 			}
 			err = addOpened(annotate.NewInfoInFile(o))
+		case "flanking":
+			err = addOpened(annotate.NewFlankingBases(parseFlankingArg(c.value)))
 		case "vardist":
 			s := annotate.NewVariantDistance()
 			applyAltCoords(s)
@@ -443,6 +445,19 @@ func parseInFileArg(arg string) (annotate.InfoFileOptions, error) {
 	return o, nil
 }
 
+// parseFlankingArg parses "ref.fa[:size]" for --flanking. A trailing ":N" is
+// taken as the flanking size only when N is numeric (so paths are preserved).
+func parseFlankingArg(arg string) annotate.FlankingOptions {
+	o := annotate.FlankingOptions{Filename: arg, Size: 1}
+	if i := strings.LastIndexByte(arg, ':'); i >= 0 {
+		if n, err := strconv.Atoi(arg[i+1:]); err == nil {
+			o.Filename = arg[:i]
+			o.Size = n
+		}
+	}
+	return o
+}
+
 // applyVcfMods sets the !/@/$/n modifier flags from a modifier string.
 func applyVcfMods(o *annotate.VcfOptions, mods string) {
 	o.Exact = strings.Contains(mods, "!")
@@ -506,4 +521,5 @@ func init() {
 	chainVal("vcf-flag", "Flag variants present in a tabix-indexed VCF: NAME:FILE{:!@$n} (repeatable)")
 	chainVal("vcf-id", "Copy the ID column from a tabix-indexed VCF (exact ref/alt match)")
 	chainVal("in-file", "Flag when an INFO value is present in a text file: FLAGNAME:INFOKEY:FILE{:csv:tabcol=n} (csv splits the INFO value; tabcol=n adds that 1-based column's value; repeatable)")
+	chainVal("flanking", "Add flanking reference context and normalized substitution from an indexed FASTA: ref.fa[:size] (CG_FLANKING, CG_FLANKING_SUB; SNVs only)")
 }

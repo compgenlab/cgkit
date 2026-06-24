@@ -357,6 +357,22 @@ func TestVcfAnnotateDependentChain(t *testing.T) {
 	}
 }
 
+func TestVcfAnnotateFlanking(t *testing.T) {
+	out := runVcf(t, "vcf-annotate", "--flanking", "testdata/ref.fa", "testdata/flank.vcf")
+	for _, want := range []string{
+		"CG_FLANKING=TAC;CG_FLANKING_SUB=G[T>C]A", // chr1:2 A>G (revcomp)
+		"CG_FLANKING=ACG;CG_FLANKING_SUB=A[C>A]G", // chr1:3 C>A
+		"CG_FLANKING=CAG;CG_FLANKING_SUB=C[T>G]G", // chr1:7 A>C (revcomp)
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("flanking missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "##INFO=<ID=CG_FLANKING,") || !strings.Contains(out, "##INFO=<ID=CG_FLANKING_SUB,") {
+		t.Errorf("flanking header defs missing")
+	}
+}
+
 func TestVcfAnnotateProvenance(t *testing.T) {
 	buildinfo.Now = func() time.Time { return time.Date(2021, 3, 4, 0, 0, 0, 0, time.UTC) }
 	defer func() { buildinfo.Now = time.Now }()

@@ -180,6 +180,21 @@ func TestParityAnnotateBedTab(t *testing.T) {
 	}
 }
 
+// TestParityAnnotateFlanking verifies --flanking against ngsutilsj on a small
+// reference. Both read the same indexed ref.fa.
+func TestParityAnnotateFlanking(t *testing.T) {
+	bin := findNgsutilsj(t)
+	if bin == "" {
+		t.Skip("ngsutilsj reference binary not found; set NGSUTILSJ to enable parity checks")
+	}
+	args := []string{"vcf-annotate", "--flanking", "testdata/ref.fa", "testdata/flank.vcf"}
+	want := dataRows(runJava(t, bin, args...))
+	got := dataRows(runVcf(t, args...))
+	if got != want {
+		t.Errorf("flanking parity\n java: %q\n cgio: %q", want, got)
+	}
+}
+
 // TestParityAnnotateGroupBValues verifies the sample-count annotators produce
 // the same values; the FORMAT column ordering differs by design (cgio uses a
 // stable order), so the per-line tokens are compared order-insensitive.
