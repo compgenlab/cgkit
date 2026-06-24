@@ -19,39 +19,9 @@ var (
 	vcfAnnotateEndPos   string
 
 	// vcfAnnotateChain records the annotator flags in command-line order so the
-	// pipeline is built in that order. See chainValue.
+	// pipeline is built in that order. See chainValue (vcf_chain.go).
 	vcfAnnotateChain []chainArg
 )
-
-// chainArg is one annotator flag occurrence: the flag name (kind) and its
-// argument (value is "true" for boolean flags).
-type chainArg struct {
-	kind  string
-	value string
-}
-
-// chainValue is a pflag.Value that appends to vcfAnnotateChain when set. Because
-// pflag calls Set in command-line order, the chain captures the exact order (and
-// interleaving) of the annotator flags.
-type chainValue struct {
-	kind   string
-	isBool bool
-}
-
-func (c *chainValue) String() string { return "" }
-func (c *chainValue) Set(v string) error {
-	vcfAnnotateChain = append(vcfAnnotateChain, chainArg{kind: c.kind, value: v})
-	return nil
-}
-func (c *chainValue) Type() string {
-	if c.isBool {
-		return "bool"
-	}
-	return "string"
-}
-
-// IsBoolFlag makes pflag treat the flag as a no-argument boolean when isBool.
-func (c *chainValue) IsBoolFlag() bool { return c.isBool }
 
 var vcfAnnotateCmd = &cobra.Command{
 	GroupID:     "vcfcmd",
@@ -494,14 +464,9 @@ func init() {
 	f.StringVar(&vcfAnnotateAltPos, "alt-pos", "", "Use an INFO field as the position for coordinate-based annotators")
 	f.StringVar(&vcfAnnotateEndPos, "end-pos", "", "Use an INFO field as the end position for coordinate-based annotators")
 
-	// Annotator flags are recorded in command-line order via chainValue. A
-	// boolean chain flag needs NoOptDefVal so pflag does not try to consume the
-	// next argument as its value.
-	chainBool := func(name, usage string) {
-		f.Var(&chainValue{kind: name, isBool: true}, name, usage)
-		f.Lookup(name).NoOptDefVal = "true"
-	}
-	chainVal := func(name, usage string) { f.Var(&chainValue{kind: name}, name, usage) }
+	// Annotator flags are recorded in command-line order via chainValue.
+	chainBool := func(name, usage string) { registerChainBool(f, &vcfAnnotateChain, name, usage) }
+	chainVal := func(name, usage string) { registerChainVal(f, &vcfAnnotateChain, name, usage) }
 	chainBool("auto-id", "Set the ID to chrom_pos_ref_alt")
 	chainVal("tag", "Add a constant INFO annotation: KEY or KEY:VALUE (repeatable)")
 	chainBool("indel", "Add INSERT/DELETE flags and lengths")
