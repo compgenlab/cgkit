@@ -35,6 +35,7 @@ func runVcf(t *testing.T, args ...string) string {
 	// The VisitAll reset above calls Set on the chainValue flags, appending
 	// noise to vcfAnnotateChain; clear it here so each run starts empty.
 	vcfAnnotateChain = nil
+	vcfFilterChain = nil
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
@@ -393,6 +394,43 @@ func TestVcfAnnotatePassing(t *testing.T) {
 	}
 	if !strings.Contains(out, "\t100\t") {
 		t.Errorf("vcf-annotate --passing dropped a passing variant\n%s", out)
+	}
+}
+
+func TestVcfFilter(t *testing.T) {
+	out := runVcf(t, "vcf-filter", "--snv", "--qual", "30", "--chrom-fail", "chr2", "testdata/annotate.vcf")
+	// SNV passing qual on chr1 -> only SNV.
+	if !strings.Contains(out, "chr1\t100\t.\tA\tG\t50\tSNV\t") {
+		t.Errorf("chr1:100 should be flagged SNV:\n%s", out)
+	}
+	// Input "lowqual" is kept; SNV and low-QUAL codes added.
+	if !strings.Contains(out, "\tlowqual;SNV;QUAL_lt_30.0\t") {
+		t.Errorf("chr1:140 FILTER codes wrong:\n%s", out)
+	}
+	// chr2 fails the chrom filter.
+	if !strings.Contains(out, "chr2\t500\t.\tCAT\tC\t99\tCHROM_FAIL_chr2\t") {
+		t.Errorf("chr2:500 should be CHROM_FAIL:\n%s", out)
+	}
+	for _, def := range []string{"##FILTER=<ID=SNV,", "##FILTER=<ID=QUAL_lt_30.0,", "##FILTER=<ID=CHROM_FAIL_chr2,"} {
+		if !strings.Contains(out, def) {
+			t.Errorf("missing FILTER def %q", def)
+		}
+	}
+}
+
+func TestVcfFilterPassingFailing(t *testing.T) {
+	// --snv --passing: drop SNVs and already-filtered records; keep clean non-SNVs.
+	out := runVcf(t, "vcf-filter", "--snv", "--passing", "testdata/annotate.vcf")
+	if strings.Contains(out, "\t100\t") || strings.Contains(out, "\t150\t") || strings.Contains(out, "\t140\t") {
+		t.Errorf("--passing should drop SNVs/filtered:\n%s", out)
+	}
+	if !strings.Contains(out, "\t300\t") || !strings.Contains(out, "\t500\t") {
+		t.Errorf("--passing dropped a passing variant:\n%s", out)
+	}
+	// --snv --failing: keep only the flagged ones.
+	fail := runVcf(t, "vcf-filter", "--snv", "--failing", "testdata/annotate.vcf")
+	if !strings.Contains(fail, "\t100\t") || strings.Contains(fail, "\t300\t") {
+		t.Errorf("--failing should keep only flagged variants:\n%s", fail)
 	}
 }
 

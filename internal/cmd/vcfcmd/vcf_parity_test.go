@@ -220,6 +220,52 @@ func TestParityAnnotateGroupBValues(t *testing.T) {
 	}
 }
 
+// TestParityFilter verifies vcf-filter against ngsutilsj. The FILTER codes are a
+// set, so their order is normalized (cgio applies filters in command-line order;
+// ngsutilsj uses its option-invocation order), along with QUAL on untouched rows.
+func TestParityFilter(t *testing.T) {
+	bin := findNgsutilsj(t)
+	if bin == "" {
+		t.Skip("ngsutilsj reference binary not found; set NGSUTILSJ to enable parity checks")
+	}
+	norm := func(s string) string {
+		var lines []string
+		for _, line := range strings.Split(dataRows(s), "\n") {
+			f := strings.Split(line, "\t")
+			if len(f) > 5 {
+				f[5] = strings.TrimSuffix(f[5], ".0") // QUAL
+			}
+			if len(f) > 6 {
+				codes := strings.Split(f[6], ";")
+				sort.Strings(codes)
+				f[6] = strings.Join(codes, ";")
+			}
+			lines = append(lines, strings.Join(f, "\t"))
+		}
+		return strings.Join(lines, "\n")
+	}
+	const vcf = "testdata/annotate.vcf"
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"snv-qual-chrom", []string{"vcf-filter", "--snv", "--qual", "30", "--chrom-fail", "chr2", vcf}},
+		{"indel-passing", []string{"vcf-filter", "--indel", "--passing", vcf}},
+		{"het-hom", []string{"vcf-filter", "--het", "--hom", vcf}},
+		{"maxdel-failing", []string{"vcf-filter", "--max-del", "1", "--failing", vcf}},
+		{"chrom-pass", []string{"vcf-filter", "--chrom-pass", "chr1", vcf}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := norm(runJava(t, bin, tc.args...))
+			got := norm(runVcf(t, tc.args...))
+			if got != want {
+				t.Errorf("filter parity (%s)\n java: %q\n cgio: %q", tc.name, want, got)
+			}
+		})
+	}
+}
+
 // TestParityExportValues verifies that cgio and ngsutilsj produce the same set
 // of exported values. The column ordering differs by design (cgio uses a stable
 // order), so the comparison is order-insensitive per line.
