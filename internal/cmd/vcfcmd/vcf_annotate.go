@@ -35,6 +35,7 @@ var (
 	vcfAnnotateVcf         []string
 	vcfAnnotateVcfFlag     []string
 	vcfAnnotateVcfID       string
+	vcfAnnotateInFile      []string
 )
 
 var vcfAnnotateCmd = &cobra.Command{
@@ -248,6 +249,15 @@ func buildAnnotatePipeline() (*annotate.Pipeline, error) {
 			return nil, err
 		}
 	}
+	for _, arg := range vcfAnnotateInFile {
+		o, err := parseInFileArg(arg)
+		if err != nil {
+			return nil, err
+		}
+		if err := addOpened(annotate.NewInfoInFile(o)); err != nil {
+			return nil, err
+		}
+	}
 
 	if vcfAnnotateVarDist {
 		s := annotate.NewVariantDistance()
@@ -426,6 +436,28 @@ func parseVcfFlagArg(arg string) (annotate.VcfOptions, error) {
 	return o, nil
 }
 
+// parseInFileArg parses "FLAGNAME:INFOKEY:FILE{:csv:tabcol=n}" for --in-file.
+func parseInFileArg(arg string) (annotate.InfoFileOptions, error) {
+	spl := strings.Split(arg, ":")
+	if len(spl) < 3 {
+		return annotate.InfoFileOptions{}, fmt.Errorf("expected FLAGNAME:INFOKEY:FILE[:opts], got %q", arg)
+	}
+	o := annotate.InfoFileOptions{FlagName: spl[0], Tag: spl[1], Filename: spl[2]}
+	for _, t := range spl[3:] {
+		switch {
+		case t == "csv" || t == ",":
+			o.Delimiter = ","
+		case strings.HasPrefix(t, "tabcol="):
+			n, err := strconv.Atoi(t[len("tabcol="):])
+			if err != nil {
+				return o, fmt.Errorf("invalid tabcol value: %q", t)
+			}
+			o.Col = n
+		}
+	}
+	return o, nil
+}
+
 // applyVcfMods sets the !/@/$/n modifier flags from a modifier string.
 func applyVcfMods(o *annotate.VcfOptions, mods string) {
 	o.Exact = strings.Contains(mods, "!")
@@ -479,4 +511,5 @@ func init() {
 	f.StringArrayVar(&vcfAnnotateVcf, "vcf", nil, "Annotate INFO from a tabix-indexed VCF: NAME:FIELD:FILE{:!@$n} (!=exact ref/alt, @=passing only, $=unique, n=no header def; repeatable)")
 	f.StringArrayVar(&vcfAnnotateVcfFlag, "vcf-flag", nil, "Flag variants present in a tabix-indexed VCF: NAME:FILE{:!@$n} (repeatable)")
 	f.StringVar(&vcfAnnotateVcfID, "vcf-id", "", "Copy the ID column from a tabix-indexed VCF (exact ref/alt match)")
+	f.StringArrayVar(&vcfAnnotateInFile, "in-file", nil, "Flag when an INFO value is present in a text file: FLAGNAME:INFOKEY:FILE{:csv:tabcol=n} (csv splits the INFO value; tabcol=n adds that 1-based column's value; repeatable)")
 }
