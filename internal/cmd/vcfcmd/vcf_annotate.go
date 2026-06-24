@@ -32,6 +32,9 @@ var (
 	vcfAnnotateFormatBed   []string
 	vcfAnnotateTab         []string
 	vcfAnnotateFormatTab   []string
+	vcfAnnotateVcf         []string
+	vcfAnnotateVcfFlag     []string
+	vcfAnnotateVcfID       string
 )
 
 var vcfAnnotateCmd = &cobra.Command{
@@ -213,6 +216,39 @@ func buildAnnotatePipeline() (*annotate.Pipeline, error) {
 		}
 	}
 
+	addOpened := func(a annotate.Annotator, err error) error {
+		if err != nil {
+			return err
+		}
+		applyAltCoords(a)
+		p.Add(a)
+		return nil
+	}
+	for _, arg := range vcfAnnotateVcf {
+		o, err := parseVcfArg(arg)
+		if err != nil {
+			return nil, err
+		}
+		if err := addOpened(annotate.NewVcfAnnotation(o)); err != nil {
+			return nil, err
+		}
+	}
+	for _, arg := range vcfAnnotateVcfFlag {
+		o, err := parseVcfFlagArg(arg)
+		if err != nil {
+			return nil, err
+		}
+		if err := addOpened(annotate.NewVcfAnnotation(o)); err != nil {
+			return nil, err
+		}
+	}
+	if vcfAnnotateVcfID != "" {
+		o := annotate.VcfOptions{Name: "@ID", Filename: vcfAnnotateVcfID}
+		if err := addOpened(annotate.NewVcfAnnotation(o)); err != nil {
+			return nil, err
+		}
+	}
+
 	if vcfAnnotateVarDist {
 		s := annotate.NewVariantDistance()
 		applyAltCoords(s)
@@ -364,6 +400,40 @@ func parseTabOptions(name, sample, fileAndOpts string) (annotate.TabixOptions, e
 	return o, nil
 }
 
+// parseVcfArg parses "NAME:FIELD:FILE[:!@$n]" for --vcf.
+func parseVcfArg(arg string) (annotate.VcfOptions, error) {
+	spl := strings.Split(arg, ":")
+	if len(spl) < 3 {
+		return annotate.VcfOptions{}, fmt.Errorf("expected NAME:FIELD:FILE[:mods], got %q", arg)
+	}
+	o := annotate.VcfOptions{Name: spl[0], Field: spl[1], Filename: spl[2]}
+	if len(spl) >= 4 {
+		applyVcfMods(&o, spl[3])
+	}
+	return o, nil
+}
+
+// parseVcfFlagArg parses "NAME:FILE[:!@$n]" for --vcf-flag.
+func parseVcfFlagArg(arg string) (annotate.VcfOptions, error) {
+	spl := strings.Split(arg, ":")
+	if len(spl) < 2 {
+		return annotate.VcfOptions{}, fmt.Errorf("expected NAME:FILE[:mods], got %q", arg)
+	}
+	o := annotate.VcfOptions{Name: spl[0], Filename: spl[1]}
+	if len(spl) >= 3 {
+		applyVcfMods(&o, spl[2])
+	}
+	return o, nil
+}
+
+// applyVcfMods sets the !/@/$/n modifier flags from a modifier string.
+func applyVcfMods(o *annotate.VcfOptions, mods string) {
+	o.Exact = strings.Contains(mods, "!")
+	o.Passing = strings.Contains(mods, "@")
+	o.Unique = strings.Contains(mods, "$")
+	o.NoHeader = strings.Contains(mods, "n")
+}
+
 func parseCopyLogRatio(arg string) (*annotate.CopyNumberLogRatio, error) {
 	spl := strings.Split(arg, ":")
 	switch len(spl) {
@@ -406,4 +476,7 @@ func init() {
 	f.StringArrayVar(&vcfAnnotateFormatBed, "format-bed", nil, "Annotate a sample FORMAT field from a BED4 name column: KEY:SAMPLE:FILE (repeatable)")
 	f.StringArrayVar(&vcfAnnotateTab, "tab", nil, "Annotate INFO from a tabix file: NAME:FILE{,col,n,alt=C,ref=C,collapse,first,max,extend=N} (col/alt/ref may be a 1-based number or a header column name when the file has a skipped header line; repeatable)")
 	f.StringArrayVar(&vcfAnnotateFormatTab, "format-tab", nil, "Annotate a sample FORMAT field from a tabix file: NAME:SAMPLE:FILE,col{,...} (see --tab; repeatable)")
+	f.StringArrayVar(&vcfAnnotateVcf, "vcf", nil, "Annotate INFO from a tabix-indexed VCF: NAME:FIELD:FILE{:!@$n} (!=exact ref/alt, @=passing only, $=unique, n=no header def; repeatable)")
+	f.StringArrayVar(&vcfAnnotateVcfFlag, "vcf-flag", nil, "Flag variants present in a tabix-indexed VCF: NAME:FILE{:!@$n} (repeatable)")
+	f.StringVar(&vcfAnnotateVcfID, "vcf-id", "", "Copy the ID column from a tabix-indexed VCF (exact ref/alt match)")
 }

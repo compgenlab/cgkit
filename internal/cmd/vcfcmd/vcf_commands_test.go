@@ -38,6 +38,8 @@ func runVcf(t *testing.T, args ...string) string {
 	vcfAnnotateFormatBed = nil
 	vcfAnnotateTab = nil
 	vcfAnnotateFormatTab = nil
+	vcfAnnotateVcf = nil
+	vcfAnnotateVcfFlag = nil
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
@@ -245,6 +247,38 @@ func TestVcfAnnotateBedTab(t *testing.T) {
 		if !strings.Contains(out, def) {
 			t.Errorf("missing header def %q", def)
 		}
+	}
+}
+
+func TestVcfAnnotateVcfSource(t *testing.T) {
+	out := runVcf(t, "vcf-annotate",
+		"--vcf", "KAF:AF:testdata/source.vcf.gz",
+		"--vcf-id", "testdata/source.vcf.gz",
+		"--vcf-flag", "KNOWN:testdata/source.vcf.gz",
+		"testdata/annotate.vcf")
+	// chr1:100 A>G matches rsA: ID copied, KAF pulled, KNOWN flag.
+	if !strings.Contains(out, "chr1\t100\trsA\tA\tG\t50\tPASS\tDP=30;KAF=0.20;KNOWN\t") {
+		t.Errorf("chr1:100 vcf annotations wrong:\n%s", out)
+	}
+	// chr2:500 deletion matches rsC (exact ref/alt): ID + flag, no AF in source.
+	if !strings.Contains(out, "chr2\t500\trsC\tCAT\tC\t99\tPASS\tDP=40;KNOWN\t") {
+		t.Errorf("chr2:500 vcf annotations wrong:\n%s", out)
+	}
+	for _, def := range []string{"##INFO=<ID=KAF,", "##INFO=<ID=KNOWN,"} {
+		if !strings.Contains(out, def) {
+			t.Errorf("missing header def %q", def)
+		}
+	}
+}
+
+func TestVcfAnnotateVcfPassing(t *testing.T) {
+	// rsB (chr1:150) is "rej"; with @ it is skipped.
+	out := runVcf(t, "vcf-annotate", "--vcf", "KAF:AF:testdata/source.vcf.gz:@", "testdata/annotate.vcf")
+	if strings.Contains(out, "KAF=0.10") {
+		t.Errorf("passing-only should skip the rejected rsB record:\n%s", out)
+	}
+	if !strings.Contains(out, "KAF=0.20") {
+		t.Errorf("passing-only dropped a passing record:\n%s", out)
 	}
 }
 
