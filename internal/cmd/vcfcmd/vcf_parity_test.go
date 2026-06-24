@@ -254,6 +254,12 @@ func TestParityFilter(t *testing.T) {
 		{"het-hom", []string{"vcf-filter", "--het", "--hom", vcf}},
 		{"maxdel-failing", []string{"vcf-filter", "--max-del", "1", "--failing", vcf}},
 		{"chrom-pass", []string{"vcf-filter", "--chrom-pass", "chr1", vcf}},
+		{"info-lt", []string{"vcf-filter", "--lt", "DP:25:INFO", vcf}},
+		{"info-gte", []string{"vcf-filter", "--gte", "DP:30:INFO", vcf}},
+		{"flag-present", []string{"vcf-filter", "--flag-present", "DP", vcf}},
+		{"sample-eq", []string{"vcf-filter", "--eq", "GT:0/1:TUMOR", vcf}},
+		{"sample-in", []string{"vcf-filter", "--in", "GT:0/0,1/1:NORMAL", vcf}},
+		{"value-missing", []string{"vcf-filter", "--value-missing", "GT:TUMOR", vcf}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
