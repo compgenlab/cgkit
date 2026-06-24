@@ -12,31 +12,46 @@ import (
 )
 
 var (
-	vcfAnnotateOutput      string
-	vcfAnnotatePassing     bool
-	vcfAnnotateAltChrom    string
-	vcfAnnotateAltPos      string
-	vcfAnnotateEndPos      string
-	vcfAnnotateAutoID      bool
-	vcfAnnotateTags        []string
-	vcfAnnotateIndel       bool
-	vcfAnnotateTsTv        bool
-	vcfAnnotateDosage      bool
-	vcfAnnotateVarDist     bool
-	vcfAnnotateVAF         bool
-	vcfAnnotateMinorStrand bool
-	vcfAnnotateFisherSB    bool
-	vcfAnnotateCopyLR      string
-	vcfAnnotateBed         []string
-	vcfAnnotateBedFlag     []string
-	vcfAnnotateFormatBed   []string
-	vcfAnnotateTab         []string
-	vcfAnnotateFormatTab   []string
-	vcfAnnotateVcf         []string
-	vcfAnnotateVcfFlag     []string
-	vcfAnnotateVcfID       string
-	vcfAnnotateInFile      []string
+	vcfAnnotateOutput   string
+	vcfAnnotatePassing  bool
+	vcfAnnotateAltChrom string
+	vcfAnnotateAltPos   string
+	vcfAnnotateEndPos   string
+
+	// vcfAnnotateChain records the annotator flags in command-line order so the
+	// pipeline is built in that order. See chainValue.
+	vcfAnnotateChain []chainArg
 )
+
+// chainArg is one annotator flag occurrence: the flag name (kind) and its
+// argument (value is "true" for boolean flags).
+type chainArg struct {
+	kind  string
+	value string
+}
+
+// chainValue is a pflag.Value that appends to vcfAnnotateChain when set. Because
+// pflag calls Set in command-line order, the chain captures the exact order (and
+// interleaving) of the annotator flags.
+type chainValue struct {
+	kind   string
+	isBool bool
+}
+
+func (c *chainValue) String() string { return "" }
+func (c *chainValue) Set(v string) error {
+	vcfAnnotateChain = append(vcfAnnotateChain, chainArg{kind: c.kind, value: v})
+	return nil
+}
+func (c *chainValue) Type() string {
+	if c.isBool {
+		return "bool"
+	}
+	return "string"
+}
+
+// IsBoolFlag makes pflag treat the flag as a no-argument boolean when isBool.
+func (c *chainValue) IsBoolFlag() bool { return c.isBool }
 
 var vcfAnnotateCmd = &cobra.Command{
 	GroupID:     "vcfcmd",
@@ -44,8 +59,10 @@ var vcfAnnotateCmd = &cobra.Command{
 	Use:         "vcf-annotate <input.vcf>",
 	Short:       "Annotate a VCF file by adding INFO/FORMAT fields",
 	Long: `Annotate a VCF file. Each flag adds an annotator that writes one or more
-INFO/FORMAT fields onto every record. Annotators are applied in a fixed order
-and a matching ##INFO/##FORMAT header line is added for each new field.
+INFO/FORMAT fields onto every record. Annotators are applied in the order the
+flags appear on the command line (so a later annotator can use a field an
+earlier one added), and a matching ##INFO/##FORMAT header line is added for each
+new field.
 
 Self-contained annotators (read only the variant):
   --auto-id        set ID to chrom_pos_ref_alt
@@ -140,129 +157,97 @@ Sample-count annotators (require GATK-style FORMAT fields):
 	},
 }
 
-// buildAnnotatePipeline constructs the annotator pipeline from the flags, in a
-// fixed, documented order (cobra cannot recover cross-flag CLI order; the order
-// only affects header-line order since the annotations are independent).
+// buildAnnotatePipeline constructs the annotator pipeline from the chain of
+// flags in command-line order (see chainValue).
 func buildAnnotatePipeline() (*annotate.Pipeline, error) {
 	p := annotate.NewPipeline()
 	add := func(a annotate.Annotator) {
 		applyAltCoords(a)
 		p.Add(a)
 	}
-
-	if vcfAnnotateAutoID {
-		add(annotate.NewAutoID())
-	}
-	for _, tag := range vcfAnnotateTags {
-		if i := strings.IndexByte(tag, ':'); i >= 0 {
-			add(annotate.NewConstantTag(tag[:i], tag[i+1:]))
-		} else {
-			add(annotate.NewConstantFlag(tag))
-		}
-	}
-	if vcfAnnotateIndel {
-		add(annotate.NewIndel())
-	}
-	if vcfAnnotateTsTv {
-		add(annotate.NewTsTv())
-	}
-	if vcfAnnotateDosage {
-		add(annotate.NewDosage())
-	}
-	if vcfAnnotateVAF {
-		add(annotate.NewVAF())
-	}
-	if vcfAnnotateMinorStrand {
-		add(annotate.NewMinorStrand())
-	}
-	if vcfAnnotateFisherSB {
-		add(annotate.NewFisherSB())
-	}
-	if vcfAnnotateCopyLR != "" {
-		a, err := parseCopyLogRatio(vcfAnnotateCopyLR)
-		if err != nil {
-			return nil, err
-		}
-		add(a)
-	}
-
-	addTabix := func(o annotate.TabixOptions) error {
-		a, err := annotate.NewTabixAnnotator(o)
-		if err != nil {
-			return err
-		}
-		applyAltCoords(a)
-		p.Add(a)
-		return nil
-	}
-	type tabixSpec struct {
-		args  []string
-		parse func(string) (annotate.TabixOptions, error)
-	}
-	for _, spec := range []tabixSpec{
-		{vcfAnnotateBed, func(s string) (annotate.TabixOptions, error) { return parseBedArg(s, false) }},
-		{vcfAnnotateBedFlag, func(s string) (annotate.TabixOptions, error) { return parseBedArg(s, true) }},
-		{vcfAnnotateFormatBed, parseFormatBedArg},
-		{vcfAnnotateTab, parseTabArg},
-		{vcfAnnotateFormatTab, parseFormatTabArg},
-	} {
-		for _, arg := range spec.args {
-			o, err := spec.parse(arg)
-			if err != nil {
-				return nil, err
-			}
-			if err := addTabix(o); err != nil {
-				return nil, err
-			}
-		}
-	}
-
+	// addOpened adds an annotator from a constructor that may fail to open a file.
 	addOpened := func(a annotate.Annotator, err error) error {
 		if err != nil {
 			return err
 		}
-		applyAltCoords(a)
-		p.Add(a)
+		add(a)
 		return nil
 	}
-	for _, arg := range vcfAnnotateVcf {
-		o, err := parseVcfArg(arg)
-		if err != nil {
-			return nil, err
+	// addTabix builds a tabix annotator from a parsed-options result.
+	addTabix := func(o annotate.TabixOptions, perr error) error {
+		if perr != nil {
+			return perr
 		}
-		if err := addOpened(annotate.NewVcfAnnotation(o)); err != nil {
-			return nil, err
-		}
-	}
-	for _, arg := range vcfAnnotateVcfFlag {
-		o, err := parseVcfFlagArg(arg)
-		if err != nil {
-			return nil, err
-		}
-		if err := addOpened(annotate.NewVcfAnnotation(o)); err != nil {
-			return nil, err
-		}
-	}
-	if vcfAnnotateVcfID != "" {
-		o := annotate.VcfOptions{Name: "@ID", Filename: vcfAnnotateVcfID}
-		if err := addOpened(annotate.NewVcfAnnotation(o)); err != nil {
-			return nil, err
-		}
-	}
-	for _, arg := range vcfAnnotateInFile {
-		o, err := parseInFileArg(arg)
-		if err != nil {
-			return nil, err
-		}
-		if err := addOpened(annotate.NewInfoInFile(o)); err != nil {
-			return nil, err
-		}
+		return addOpened(annotate.NewTabixAnnotator(o))
 	}
 
-	if vcfAnnotateVarDist {
-		s := annotate.NewVariantDistance()
-		applyAltCoords(s)
-		p.AddStream(s)
+	for _, c := range vcfAnnotateChain {
+		var err error
+		switch c.kind {
+		case "auto-id":
+			add(annotate.NewAutoID())
+		case "indel":
+			add(annotate.NewIndel())
+		case "tstv":
+			add(annotate.NewTsTv())
+		case "dosage":
+			add(annotate.NewDosage())
+		case "vaf":
+			add(annotate.NewVAF())
+		case "minor-strand":
+			add(annotate.NewMinorStrand())
+		case "fisher-sb":
+			add(annotate.NewFisherSB())
+		case "tag":
+			if i := strings.IndexByte(c.value, ':'); i >= 0 {
+				add(annotate.NewConstantTag(c.value[:i], c.value[i+1:]))
+			} else {
+				add(annotate.NewConstantFlag(c.value))
+			}
+		case "copy-logratio":
+			a, e := parseCopyLogRatio(c.value)
+			if e != nil {
+				return nil, e
+			}
+			add(a)
+		case "bed":
+			err = addTabix(parseBedArg(c.value, false))
+		case "bed-flag":
+			err = addTabix(parseBedArg(c.value, true))
+		case "format-bed":
+			err = addTabix(parseFormatBedArg(c.value))
+		case "tab":
+			err = addTabix(parseTabArg(c.value))
+		case "format-tab":
+			err = addTabix(parseFormatTabArg(c.value))
+		case "vcf":
+			o, e := parseVcfArg(c.value)
+			if e != nil {
+				return nil, e
+			}
+			err = addOpened(annotate.NewVcfAnnotation(o))
+		case "vcf-flag":
+			o, e := parseVcfFlagArg(c.value)
+			if e != nil {
+				return nil, e
+			}
+			err = addOpened(annotate.NewVcfAnnotation(o))
+		case "vcf-id":
+			err = addOpened(annotate.NewVcfAnnotation(annotate.VcfOptions{Name: "@ID", Filename: c.value}))
+		case "in-file":
+			o, e := parseInFileArg(c.value)
+			if e != nil {
+				return nil, e
+			}
+			err = addOpened(annotate.NewInfoInFile(o))
+		case "vardist":
+			s := annotate.NewVariantDistance()
+			applyAltCoords(s)
+			p.AddStream(s)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	return p, nil
 }
@@ -493,23 +478,32 @@ func init() {
 	f.StringVar(&vcfAnnotateAltChrom, "alt-chrom", "", "Use an INFO field as the chromosome for coordinate-based annotators")
 	f.StringVar(&vcfAnnotateAltPos, "alt-pos", "", "Use an INFO field as the position for coordinate-based annotators")
 	f.StringVar(&vcfAnnotateEndPos, "end-pos", "", "Use an INFO field as the end position for coordinate-based annotators")
-	f.BoolVar(&vcfAnnotateAutoID, "auto-id", false, "Set the ID to chrom_pos_ref_alt")
-	f.StringArrayVar(&vcfAnnotateTags, "tag", nil, "Add a constant INFO annotation: KEY or KEY:VALUE (repeatable)")
-	f.BoolVar(&vcfAnnotateIndel, "indel", false, "Add INSERT/DELETE flags and lengths")
-	f.BoolVar(&vcfAnnotateTsTv, "tstv", false, "Add TS/TV annotation (CG_TSTV)")
-	f.BoolVar(&vcfAnnotateDosage, "dosage", false, "Add per-sample dosage from GT (CG_DS)")
-	f.BoolVar(&vcfAnnotateVarDist, "vardist", false, "Add distance to nearest variant (CG_VARDIST)")
-	f.BoolVar(&vcfAnnotateVAF, "vaf", false, "Add variant allele frequency (CG_VAF, requires SAC)")
-	f.BoolVar(&vcfAnnotateMinorStrand, "minor-strand", false, "Add minor strand percentage (CG_SBPCT, requires SAC)")
-	f.BoolVar(&vcfAnnotateFisherSB, "fisher-sb", false, "Add Fisher strand bias (CG_FSB, requires SAC)")
-	f.StringVar(&vcfAnnotateCopyLR, "copy-logratio", "", "Add copy-number log2 ratio: SOMATIC:GERMLINE[:somatic-total:germline-total] (CG_CNLR, requires AD)")
-	f.StringArrayVar(&vcfAnnotateBed, "bed", nil, "Annotate INFO from a tabix-indexed BED4 name column: NAME:FILE (',n' on NAME for numeric; repeatable)")
-	f.StringArrayVar(&vcfAnnotateBedFlag, "bed-flag", nil, "Flag variants within a tabix-indexed BED region: NAME:FILE (repeatable)")
-	f.StringArrayVar(&vcfAnnotateFormatBed, "format-bed", nil, "Annotate a sample FORMAT field from a BED4 name column: KEY:SAMPLE:FILE (repeatable)")
-	f.StringArrayVar(&vcfAnnotateTab, "tab", nil, "Annotate INFO from a tabix file: NAME:FILE{,col,n,alt=C,ref=C,collapse,first,max,extend=N} (col/alt/ref may be a 1-based number or a header column name when the file has a skipped header line; repeatable)")
-	f.StringArrayVar(&vcfAnnotateFormatTab, "format-tab", nil, "Annotate a sample FORMAT field from a tabix file: NAME:SAMPLE:FILE,col{,...} (see --tab; repeatable)")
-	f.StringArrayVar(&vcfAnnotateVcf, "vcf", nil, "Annotate INFO from a tabix-indexed VCF: NAME:FIELD:FILE{:!@$n} (!=exact ref/alt, @=passing only, $=unique, n=no header def; repeatable)")
-	f.StringArrayVar(&vcfAnnotateVcfFlag, "vcf-flag", nil, "Flag variants present in a tabix-indexed VCF: NAME:FILE{:!@$n} (repeatable)")
-	f.StringVar(&vcfAnnotateVcfID, "vcf-id", "", "Copy the ID column from a tabix-indexed VCF (exact ref/alt match)")
-	f.StringArrayVar(&vcfAnnotateInFile, "in-file", nil, "Flag when an INFO value is present in a text file: FLAGNAME:INFOKEY:FILE{:csv:tabcol=n} (csv splits the INFO value; tabcol=n adds that 1-based column's value; repeatable)")
+
+	// Annotator flags are recorded in command-line order via chainValue. A
+	// boolean chain flag needs NoOptDefVal so pflag does not try to consume the
+	// next argument as its value.
+	chainBool := func(name, usage string) {
+		f.Var(&chainValue{kind: name, isBool: true}, name, usage)
+		f.Lookup(name).NoOptDefVal = "true"
+	}
+	chainVal := func(name, usage string) { f.Var(&chainValue{kind: name}, name, usage) }
+	chainBool("auto-id", "Set the ID to chrom_pos_ref_alt")
+	chainVal("tag", "Add a constant INFO annotation: KEY or KEY:VALUE (repeatable)")
+	chainBool("indel", "Add INSERT/DELETE flags and lengths")
+	chainBool("tstv", "Add TS/TV annotation (CG_TSTV)")
+	chainBool("dosage", "Add per-sample dosage from GT (CG_DS)")
+	chainBool("vardist", "Add distance to nearest variant (CG_VARDIST)")
+	chainBool("vaf", "Add variant allele frequency (CG_VAF, requires SAC)")
+	chainBool("minor-strand", "Add minor strand percentage (CG_SBPCT, requires SAC)")
+	chainBool("fisher-sb", "Add Fisher strand bias (CG_FSB, requires SAC)")
+	chainVal("copy-logratio", "Add copy-number log2 ratio: SOMATIC:GERMLINE[:somatic-total:germline-total] (CG_CNLR, requires AD)")
+	chainVal("bed", "Annotate INFO from a tabix-indexed BED4 name column: NAME:FILE (',n' on NAME for numeric; repeatable)")
+	chainVal("bed-flag", "Flag variants within a tabix-indexed BED region: NAME:FILE (repeatable)")
+	chainVal("format-bed", "Annotate a sample FORMAT field from a BED4 name column: KEY:SAMPLE:FILE (repeatable)")
+	chainVal("tab", "Annotate INFO from a tabix file: NAME:FILE{,col,n,alt=C,ref=C,collapse,first,max,extend=N} (col/alt/ref may be a 1-based number or a header column name when the file has a skipped header line; repeatable)")
+	chainVal("format-tab", "Annotate a sample FORMAT field from a tabix file: NAME:SAMPLE:FILE,col{,...} (see --tab; repeatable)")
+	chainVal("vcf", "Annotate INFO from a tabix-indexed VCF: NAME:FIELD:FILE{:!@$n} (!=exact ref/alt, @=passing only, $=unique, n=no header def; repeatable)")
+	chainVal("vcf-flag", "Flag variants present in a tabix-indexed VCF: NAME:FILE{:!@$n} (repeatable)")
+	chainVal("vcf-id", "Copy the ID column from a tabix-indexed VCF (exact ref/alt match)")
+	chainVal("in-file", "Flag when an INFO value is present in a text file: FLAGNAME:INFOKEY:FILE{:csv:tabcol=n} (csv splits the INFO value; tabcol=n adds that 1-based column's value; repeatable)")
 }
