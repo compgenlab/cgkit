@@ -1,0 +1,245 @@
+package vcfcmd
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/compgenlab/cgio/internal/buildinfo"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+)
+
+// runVcf executes a vcf subcommand against a fresh root and returns its stdout.
+// Command flags are bound to package globals, so they are reset to their
+// defaults before each run to keep tests independent of ordering.
+func runVcf(t *testing.T, args ...string) string {
+	t.Helper()
+	root := &cobra.Command{Use: "cgio"}
+	InitCmd(root)
+	for _, c := range root.Commands() {
+		c.Flags().VisitAll(func(f *pflag.Flag) {
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		})
+	}
+	// Array-backed flags append on Set, so the default reset above does not
+	// clear them; reset their globals directly.
+	vcfExportInfo = nil
+	vcfExportFormat = nil
+	vcfReorderSamples = nil
+	vcfReorderSamplesFile = ""
+	vcfStatsInfoTally = nil
+	vcfStatsInfoPresent = nil
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(%v): %v", args, err)
+	}
+	return buf.String()
+}
+
+func TestVcfSamples(t *testing.T) {
+	want := "NORMAL\nTUMOR\n"
+	if got := runVcf(t, "vcf-samples", "testdata/sample.vcf"); got != want {
+		t.Errorf("vcf-samples mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfToBed(t *testing.T) {
+	want := "chr1\t99\t100\tSNV\n" +
+		"chr1\t199\t200\tSNV\n" +
+		"chr1\t299\t300\tINS\n" +
+		"chr2\t499\t900\tDEL\n"
+	if got := runVcf(t, "vcf-tobed", "testdata/sample.vcf"); got != want {
+		t.Errorf("vcf-tobed mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfToBedPassing(t *testing.T) {
+	want := "chr1\t99\t100\tSNV\n" +
+		"chr1\t299\t300\tINS\n" +
+		"chr2\t499\t900\tDEL\n"
+	if got := runVcf(t, "vcf-tobed", "--passing", "testdata/sample.vcf"); got != want {
+		t.Errorf("vcf-tobed --passing mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfExport(t *testing.T) {
+	want := "chrom\tpos\tref\talt\tID\tQUAL\tFILTER\tDP\tAF\tNORMAL:AD\tTUMOR:AD\n" +
+		"chr1\t100\tA\tG\trs1\t50.0\tPASS\t30\t0.5\t28,2\t15,15\n" +
+		"chr1\t200\tC\tT\t.\t20.0\tlowqual\t10\t0.1\t9,1\t5,5\n" +
+		"chr1\t300\tG\tGA\t.\t40.0\tPASS\t25\t\t25,0\t12,13\n" +
+		"chr2\t500\tA\t<DEL>\t.\t99.0\tPASS\t\t\t\t\n" +
+		"chr2\t1000\tT\tT[chr5:2000[\tbnd1\t60.0\tPASS\t\t\t\t\n"
+	got := runVcf(t, "vcf-export", "--no-vcf-header",
+		"--id", "--qual", "--filter", "--info", "DP", "--info", "AF", "--format", "AD",
+		"testdata/sample.vcf")
+	if got != want {
+		t.Errorf("vcf-export mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfExportAlleleSelectors(t *testing.T) {
+	want := "chrom\tpos\tref\talt\tTUMOR:AD\tTUMOR:AD\tTUMOR:AD\n" +
+		"chr1\t100\tA\tG\t30\t15\t15\n" +
+		"chr1\t200\tC\tT\t10\t5\t5\n" +
+		"chr1\t300\tG\tGA\t25\t12\t13\n" +
+		"chr2\t500\tA\t<DEL>\t\t\t\n" +
+		"chr2\t1000\tT\tT[chr5:2000[\t\t\t\n"
+	got := runVcf(t, "vcf-export", "--no-vcf-header",
+		"--format", "AD:TUMOR:sum", "--format", "AD:TUMOR:ref", "--format", "AD:TUMOR:alt1",
+		"testdata/sample.vcf")
+	if got != want {
+		t.Errorf("vcf-export allele selectors mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfExportOnlySnvsMissingBlank(t *testing.T) {
+	want := "chrom\tpos\tref\talt\tAF\n" +
+		"chr1\t100\tA\tG\t0.5\n" +
+		"chr1\t200\tC\tT\t0.1\n"
+	got := runVcf(t, "vcf-export", "--no-vcf-header", "--only-snvs", "--missing-blank",
+		"--info", "AF", "testdata/sample.vcf")
+	if got != want {
+		t.Errorf("vcf-export --only-snvs --missing-blank mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfToBedRegion(t *testing.T) {
+	// 1-based inclusive region over the tabix-indexed file.
+	want := "chr1\t199\t200\tSNV\n" +
+		"chr1\t299\t300\tINS\n"
+	if got := runVcf(t, "vcf-tobed", "--region", "chr1:200-1000", "testdata/sample.vcf.gz"); got != want {
+		t.Errorf("vcf-tobed --region mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfToBedRegionWholeChrom(t *testing.T) {
+	want := "chr2\t499\t900\tDEL\n"
+	if got := runVcf(t, "vcf-tobed", "--region", "chr2", "testdata/sample.vcf.gz"); got != want {
+		t.Errorf("vcf-tobed --region chr2 mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfExportRegion(t *testing.T) {
+	want := "chrom\tpos\tref\talt\tDP\n" +
+		"chr1\t300\tG\tGA\t25\n"
+	got := runVcf(t, "vcf-export", "--no-vcf-header", "--region", "chr1:300-300",
+		"--info", "DP", "testdata/sample.vcf.gz")
+	if got != want {
+		t.Errorf("vcf-export --region mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfRegionRequiresFile(t *testing.T) {
+	root := &cobra.Command{Use: "cgio"}
+	InitCmd(root)
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"vcf-tobed", "--region", "chr1", "-"})
+	if err := root.Execute(); err == nil {
+		t.Fatal("expected an error when --region is used with stdin")
+	}
+}
+
+func TestVcfReorder(t *testing.T) {
+	// Samples swapped in the #CHROM line and in each record; non-sample columns
+	// (including QUAL "50.0") are preserved verbatim.
+	got := runVcf(t, "vcf-reorder", "-s", "TUMOR", "-s", "NORMAL", "testdata/sample.vcf")
+	wantChrom := "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tTUMOR\tNORMAL\n"
+	if !strings.Contains(got, wantChrom) {
+		t.Errorf("vcf-reorder #CHROM line missing.\n got: %q", got)
+	}
+	wantRow := "chr1\t100\trs1\tA\tG\t50.0\tPASS\tDP=30;AF=0.5;DB\tGT:AD\t0/1:15,15\t0/0:28,2\n"
+	if !strings.Contains(got, wantRow) {
+		t.Errorf("vcf-reorder first data row mismatch.\n got: %q", got)
+	}
+}
+
+func TestVcfReorderProvenance(t *testing.T) {
+	buildinfo.Now = func() time.Time { return time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC) }
+	defer func() { buildinfo.Now = time.Now }()
+
+	got := runVcf(t, "vcf-reorder", "-s", "NORMAL", "-s", "TUMOR", "testdata/sample.vcf")
+	if !strings.Contains(got, "##fileDate=20200102\n") {
+		t.Errorf("vcf-reorder missing/incorrect ##fileDate.\n got: %q", got)
+	}
+	if !strings.Contains(got, "##cgio_vcf-reorderCommand=") {
+		t.Errorf("vcf-reorder missing provenance command line.\n got: %q", got)
+	}
+	if !strings.Contains(got, "##cgio_vcf-reorderVersion=dev\n") {
+		t.Errorf("vcf-reorder missing provenance version.\n got: %q", got)
+	}
+}
+
+func TestVcfReorderSubsetByNumber(t *testing.T) {
+	// Select only sample 2 (TUMOR) by 1-based number.
+	got := runVcf(t, "vcf-reorder", "-s", "2", "testdata/sample.vcf")
+	wantChrom := "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t2\n"
+	if !strings.Contains(got, wantChrom) {
+		t.Errorf("vcf-reorder subset #CHROM line mismatch.\n got: %q", got)
+	}
+	wantRow := "chr1\t100\trs1\tA\tG\t50.0\tPASS\tDP=30;AF=0.5;DB\tGT:AD\t0/1:15,15\n"
+	if !strings.Contains(got, wantRow) {
+		t.Errorf("vcf-reorder subset data row mismatch.\n got: %q", got)
+	}
+}
+
+func TestVcfStats(t *testing.T) {
+	want := "Total variants:\t5\n" +
+		"Filtered variants:\t1\n" +
+		"Passing variants:\t4\n" +
+		"\n" +
+		"SNV:\t2\n" +
+		"Indels:\t3\n" +
+		"Reference-only:\t0\n" +
+		"\n" +
+		"Transitions:\t2\n" +
+		"Transversions:\t0\n" +
+		"Ts/Tv ratio:\t\n" +
+		"\n" +
+		"[Filters]\n" +
+		"lowqual: 1\n"
+	if got := runVcf(t, "vcf-stats", "testdata/sample.vcf"); got != want {
+		t.Errorf("vcf-stats mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfStatsInfoTally(t *testing.T) {
+	want := "[SVTYPE]\n" +
+		"BND\t1\n" +
+		"DEL\t1\n" +
+		"*missing*\t3\n" +
+		"\n" +
+		"[DB]\n" +
+		"Present\t1\n" +
+		"Absent\t4\n"
+	got := runVcf(t, "vcf-stats", "--info-tally", "SVTYPE", "--info-present", "DB", "testdata/sample.vcf")
+	if !strings.HasSuffix(got, want) {
+		t.Errorf("vcf-stats info-tally mismatch.\n got: %q\nwant suffix: %q", got, want)
+	}
+}
+
+func TestVcfTsTv(t *testing.T) {
+	want := "Transitions (Ts)\t2\n" +
+		"Transversions (Tv)\t0\n" +
+		"Ts/Tv ratio\tInfinity\n"
+	if got := runVcf(t, "vcf-tstv", "testdata/sample.vcf"); got != want {
+		t.Errorf("vcf-tstv mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestVcfToBedIncludePosPadding(t *testing.T) {
+	want := "chr1\t94\t105\tchr1_100\n" +
+		"chr1\t194\t205\tchr1_200\n" +
+		"chr1\t294\t305\tchr1_300\n" +
+		"chr2\t494\t905\tchr2_500\n"
+	if got := runVcf(t, "vcf-tobed", "--include-pos", "--padding", "5", "testdata/sample.vcf"); got != want {
+		t.Errorf("vcf-tobed --include-pos --padding mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}

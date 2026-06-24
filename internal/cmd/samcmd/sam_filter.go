@@ -3,6 +3,7 @@ package samcmd
 import (
 	"fmt"
 
+	"github.com/compgenlab/cgio/internal/buildinfo"
 	"github.com/compgenlab/hts/htsio"
 	"github.com/compgenlab/hts/htsio/bam"
 	"github.com/compgenlab/hts/htsio/cram"
@@ -40,6 +41,7 @@ var samFilterCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("reading header: %w", err)
 		}
+		header.AddPGLine("sam-filter", "cgio", buildinfo.String())
 
 		// Determine output format.
 		var writer htsio.SamWriter

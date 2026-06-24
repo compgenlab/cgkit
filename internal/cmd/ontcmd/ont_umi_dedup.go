@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/compgenlab/cgio/internal/buildinfo"
 	"github.com/compgenlab/hts/htsio"
 	"github.com/compgenlab/hts/htsio/bam"
 	"github.com/spf13/cobra"
@@ -420,7 +421,7 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 		return err
 	}
 
-	header.AddPGLine("ont-umi-dedup", "cgio", "DS:UMI deduplication")
+	header.AddPGLine("ont-umi-dedup", "cgio", buildinfo.String(), "DS:UMI deduplication")
 
 	writer, err := bam.NewSortedWriter(umiDedupOutput, header, true)
 	if err != nil {
