@@ -40,6 +40,7 @@ func runVcf(t *testing.T, args ...string) string {
 	vcfAnnotateFormatTab = nil
 	vcfAnnotateVcf = nil
 	vcfAnnotateVcfFlag = nil
+	vcfAnnotateInFile = nil
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
@@ -279,6 +280,22 @@ func TestVcfAnnotateVcfPassing(t *testing.T) {
 	}
 	if !strings.Contains(out, "KAF=0.20") {
 		t.Errorf("passing-only dropped a passing record:\n%s", out)
+	}
+}
+
+func TestVcfAnnotateInFile(t *testing.T) {
+	// Flag mode: DP values 30 and 25 are in dp_set.txt.
+	out := runVcf(t, "vcf-annotate", "--in-file", "HIT:DP:testdata/dp_set.txt", "testdata/annotate.vcf")
+	if !strings.Contains(out, "DP=30;HIT\t") || !strings.Contains(out, "DP=25;HIT\t") {
+		t.Errorf("in-file flag mismatch:\n%s", out)
+	}
+	if strings.Contains(out, "DP=10;HIT") || strings.Contains(out, "DP=40;HIT") {
+		t.Errorf("in-file flagged a non-listed value:\n%s", out)
+	}
+	// tabcol mode: value from column 2.
+	out = runVcf(t, "vcf-annotate", "--in-file", "LABEL:DP:testdata/dp_val.txt:tabcol=2", "testdata/annotate.vcf")
+	if !strings.Contains(out, "DP=30;LABEL=common\t") || !strings.Contains(out, "DP=25;LABEL=rare\t") {
+		t.Errorf("in-file tabcol mismatch:\n%s", out)
 	}
 }
 

@@ -166,6 +166,8 @@ func TestParityAnnotateBedTab(t *testing.T) {
 		{"vcf-exact", []string{"vcf-annotate", "--vcf", "KAF:AF:testdata/source.vcf.gz:!", vcf}},
 		{"vcf-id", []string{"vcf-annotate", "--vcf-id", "testdata/source.vcf.gz", vcf}},
 		{"vcf-flag", []string{"vcf-annotate", "--vcf-flag", "KNOWN:testdata/source.vcf.gz", vcf}},
+		{"in-file-flag", []string{"vcf-annotate", "--in-file", "HIT:DP:testdata/dp_set.txt", vcf}},
+		{"in-file-tabcol", []string{"vcf-annotate", "--in-file", "LABEL:DP:testdata/dp_val.txt:tabcol=2", vcf}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
