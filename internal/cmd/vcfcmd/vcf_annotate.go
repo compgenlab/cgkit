@@ -300,13 +300,6 @@ func parseTabOptions(name, sample, fileAndOpts string) (annotate.TabixOptions, e
 	o := annotate.TabixOptions{Name: name, Sample: sample}
 	toks := strings.Split(fileAndOpts, ",")
 	colSet := false
-	numCol := func(prefix, t string) (int, error) {
-		n, err := strconv.Atoi(t[len(prefix):])
-		if err != nil {
-			return 0, fmt.Errorf("column-by-name not supported (%s), use a 1-based number: %q", strings.TrimSuffix(prefix, "="), t)
-		}
-		return n, nil
-	}
 	for i, t := range toks {
 		switch {
 		case i == 0:
@@ -328,23 +321,25 @@ func parseTabOptions(name, sample, fileAndOpts string) (annotate.TabixOptions, e
 			}
 			o.Extend = n
 		case strings.HasPrefix(t, "alt="):
-			n, err := numCol("alt=", t)
-			if err != nil {
-				return o, err
+			v := t[len("alt="):]
+			if n, err := strconv.Atoi(v); err == nil {
+				o.AltCol = n
+			} else {
+				o.AltName = v
 			}
-			o.AltCol = n
 		case strings.HasPrefix(t, "ref="):
-			n, err := numCol("ref=", t)
-			if err != nil {
-				return o, err
+			v := t[len("ref="):]
+			if n, err := strconv.Atoi(v); err == nil {
+				o.RefCol = n
+			} else {
+				o.RefName = v
 			}
-			o.RefCol = n
 		case !colSet:
-			n, err := strconv.Atoi(t)
-			if err != nil {
-				return o, fmt.Errorf("column-by-name not supported, use a 1-based number: %q", t)
+			if n, err := strconv.Atoi(t); err == nil {
+				o.Col = n
+			} else {
+				o.ColName = t
 			}
-			o.Col = n
 			colSet = true
 		}
 	}
@@ -409,6 +404,6 @@ func init() {
 	f.StringArrayVar(&vcfAnnotateBed, "bed", nil, "Annotate INFO from a tabix-indexed BED4 name column: NAME:FILE (',n' on NAME for numeric; repeatable)")
 	f.StringArrayVar(&vcfAnnotateBedFlag, "bed-flag", nil, "Flag variants within a tabix-indexed BED region: NAME:FILE (repeatable)")
 	f.StringArrayVar(&vcfAnnotateFormatBed, "format-bed", nil, "Annotate a sample FORMAT field from a BED4 name column: KEY:SAMPLE:FILE (repeatable)")
-	f.StringArrayVar(&vcfAnnotateTab, "tab", nil, "Annotate INFO from a tabix file: NAME:FILE{,col,n,alt=N,ref=N,collapse,first,max,extend=N} (repeatable)")
-	f.StringArrayVar(&vcfAnnotateFormatTab, "format-tab", nil, "Annotate a sample FORMAT field from a tabix file: NAME:SAMPLE:FILE,col{,...} (repeatable)")
+	f.StringArrayVar(&vcfAnnotateTab, "tab", nil, "Annotate INFO from a tabix file: NAME:FILE{,col,n,alt=C,ref=C,collapse,first,max,extend=N} (col/alt/ref may be a 1-based number or a header column name when the file has a skipped header line; repeatable)")
+	f.StringArrayVar(&vcfAnnotateFormatTab, "format-tab", nil, "Annotate a sample FORMAT field from a tabix file: NAME:SAMPLE:FILE,col{,...} (see --tab; repeatable)")
 }

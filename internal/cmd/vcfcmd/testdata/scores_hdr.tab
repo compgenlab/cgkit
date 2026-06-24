@@ -1,0 +1,4 @@
+#chrom	pos	ref	alt	score	label
+chr1	100	A	G	0.91	hot
+chr1	150	A	C	0.40	cold
+chr2	500	CAT	C	0.77	sv
