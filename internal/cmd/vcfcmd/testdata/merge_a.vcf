@@ -1,0 +1,9 @@
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##INFO=<ID=AA,Number=1,Type=Integer,Description="Annotation A">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">
+##contig=<ID=chr1,length=248956422>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	NORMAL	TUMOR
+chr1	100	rs100	A	G	50.0	PASS	AA=1	GT:AD	0/0:28,2	0/1:15,15
+chr1	200	rs200	C	T	40.0	PASS	AA=3	GT:AD	0/0:20,0	0/1:10,10

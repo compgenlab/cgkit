@@ -16,6 +16,22 @@ import (
 // defaults before each run to keep tests independent of ordering.
 func runVcf(t *testing.T, args ...string) string {
 	t.Helper()
+	root, buf := vcfTestRoot(args...)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(%v): %v", args, err)
+	}
+	return buf.String()
+}
+
+// runVcfErr runs a vcf subcommand expecting an error, returning it.
+func runVcfErr(t *testing.T, args ...string) error {
+	t.Helper()
+	root, _ := vcfTestRoot(args...)
+	return root.Execute()
+}
+
+// vcfTestRoot builds a fresh root with all command flags reset to defaults.
+func vcfTestRoot(args ...string) (*cobra.Command, *bytes.Buffer) {
 	root := &cobra.Command{Use: "cgio"}
 	InitCmd(root)
 	for _, c := range root.Commands() {
@@ -49,14 +65,12 @@ func runVcf(t *testing.T, args ...string) string {
 	vcfStripKeepFormat = nil
 	vcfStripKeepFilter = nil
 	vcfStripKeepSample = nil
+	vcfConcatChunks = false
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
 	root.SetArgs(args)
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute(%v): %v", args, err)
-	}
-	return buf.String()
+	return root, &buf
 }
 
 func TestVcfSamples(t *testing.T) {
