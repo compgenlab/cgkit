@@ -1,0 +1,13 @@
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position">
+##INFO=<ID=EVENT,Number=1,Type=String,Description="Event ID">
+##ALT=<ID=DEL,Description="Deletion">
+##contig=<ID=chr1,length=300>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+chr1	50	sv_del	A	<DEL>	40.0	PASS	SVTYPE=DEL;END=120
+chr1	100	bnd_a	N	N[chr1:200[	60.0	PASS	SVTYPE=BND;EVENT=E1
+chr1	60	bnd_b	N	N]chr1:150]	61.0	PASS	SVTYPE=BND;EVENT=E2
+chr1	80	bnd_c	N	[chr1:170[N	62.0	PASS	SVTYPE=BND;EVENT=E3
+chr1	90	bnd_d	N	]chr1:180]N	63.0	PASS	SVTYPE=BND;EVENT=E1
