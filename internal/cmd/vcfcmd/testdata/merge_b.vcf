@@ -1,0 +1,9 @@
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##INFO=<ID=BB,Number=1,Type=Integer,Description="Annotation B">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##contig=<ID=chr1,length=248956422>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	NORMAL	TUMOR
+chr1	100	rs1	A	G	50.0	PASS	BB=2	GT:DP	0/0:30	0/1:30
+chr1	200	rs2	C	T	40.0	PASS	BB=4	GT:DP	0/0:25	0/1:22

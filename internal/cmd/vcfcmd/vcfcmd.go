@@ -22,5 +22,7 @@ func InitCmd(rootCmd *cobra.Command) {
 	rootCmd.AddCommand(vcfSampleExportCmd)
 	rootCmd.AddCommand(vcfToCountCmd)
 	rootCmd.AddCommand(vcfStripCmd)
+	rootCmd.AddCommand(vcfConcatCmd)
+	rootCmd.AddCommand(vcfMergeCmd)
 	rootCmd.AddGroup(&cobra.Group{ID: "vcfcmd", Title: "VCF"})
 }
