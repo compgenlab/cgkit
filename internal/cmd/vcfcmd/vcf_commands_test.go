@@ -36,6 +36,19 @@ func runVcf(t *testing.T, args ...string) string {
 	// noise to vcfAnnotateChain; clear it here so each run starts empty.
 	vcfAnnotateChain = nil
 	vcfFilterChain = nil
+	vcfClearFilterFilters = nil
+	vcfRenameSamples = nil
+	vcfRenameFiles = nil
+	vcfSampleExportKeys = nil
+	vcfSampleExportSamples = nil
+	vcfStripInfo = nil
+	vcfStripFormat = nil
+	vcfStripFilter = nil
+	vcfStripSample = nil
+	vcfStripKeepInfo = nil
+	vcfStripKeepFormat = nil
+	vcfStripKeepFilter = nil
+	vcfStripKeepSample = nil
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
