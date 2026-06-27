@@ -13,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const sinceVersion = "v0.3.2"
+const sinceVersion = "v0.4.0"
 
 // stampVcfProvenance updates the header's ##fileDate and appends cgkit command
 // and version provenance lines, recording how the output file was produced. It
