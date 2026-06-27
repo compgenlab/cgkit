@@ -10,7 +10,7 @@ import (
 
 var tabixIndexCmd = &cobra.Command{
 	GroupID:     "tabcmd",
-	Annotations: map[string]string{"since": "v0.3.2"},
+	Annotations: map[string]string{"since": "v0.4.0"},
 	Use:         "tabix-index <file.gz>",
 	Short:       "Build a tabix (.tbi) index for an existing BGZF-compressed file",
 	Long: `Build a tabix .tbi index for a file that is already BGZF-compressed and sorted
