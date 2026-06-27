@@ -41,9 +41,9 @@ func TestParityGroup3(t *testing.T) {
 
 	// vcf-svtofasta: cgkit's --bnd corresponds to ngsutilsj's (typo'd) --bnf.
 	svCases := []struct {
-		name      string
+		name       string
 		cgkitExtra []string
-		javaExtra []string
+		javaExtra  []string
 	}{
 		{"bnd", []string{"--bnd"}, []string{"--bnf"}},
 		{"include-ref", []string{"--bnd", "--include-ref"}, []string{"--bnf", "--include-ref"}},
