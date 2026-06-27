@@ -64,7 +64,7 @@ func TestVcfMerge(t *testing.T) {
 	}
 }
 
-// TestVcfMergeTakesID covers cgio's ID-from-secondary merge (the intended
+// TestVcfMergeTakesID covers cgkit's ID-from-secondary merge (the intended
 // behavior; ngsutilsj NPEs whenever the primary ID is missing).
 func TestVcfMergeTakesID(t *testing.T) {
 	out := runVcf(t, "vcf-merge", "testdata/merge_noid.vcf", "testdata/merge_b.vcf")

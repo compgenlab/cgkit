@@ -4,15 +4,15 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/compgenlab/cgio/internal/buildinfo"
-	"github.com/compgenlab/cgio/internal/cmd/bedcmd"
-	"github.com/compgenlab/cgio/internal/cmd/fastacmd"
-	"github.com/compgenlab/cgio/internal/cmd/fastqcmd"
-	"github.com/compgenlab/cgio/internal/cmd/ontcmd"
-	"github.com/compgenlab/cgio/internal/cmd/samcmd"
-	"github.com/compgenlab/cgio/internal/cmd/seqcmd"
-	"github.com/compgenlab/cgio/internal/cmd/tabcmd"
-	"github.com/compgenlab/cgio/internal/cmd/vcfcmd"
+	"github.com/compgenlab/cgkit/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/cmd/bedcmd"
+	"github.com/compgenlab/cgkit/internal/cmd/fastacmd"
+	"github.com/compgenlab/cgkit/internal/cmd/fastqcmd"
+	"github.com/compgenlab/cgkit/internal/cmd/ontcmd"
+	"github.com/compgenlab/cgkit/internal/cmd/samcmd"
+	"github.com/compgenlab/cgkit/internal/cmd/seqcmd"
+	"github.com/compgenlab/cgkit/internal/cmd/tabcmd"
+	"github.com/compgenlab/cgkit/internal/cmd/vcfcmd"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +31,7 @@ func versionString() string {
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:     "cgio",
+	Use:     "cgkit",
 	Short:   "Toolkit for computational genomics research",
 	Version: "", // set in init()
 	Long: `Utility toolkit for computational genomics research,
@@ -70,8 +70,8 @@ func init() {
 {{end}}{{if .Annotations}}{{with (index .Annotations "since")}}Since: {{.}}
 
 {{end}}{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`
-	rootCmd.SetHelpTemplate(helpBody + "\ncgio " + versionString() +
-		" https://compgenlab.org/cgio\n")
+	rootCmd.SetHelpTemplate(helpBody + "\ncgkit " + versionString() +
+		" https://compgenlab.org/cgkit\n")
 
 	ontcmd.InitCmd(rootCmd)
 	bedcmd.InitCmd(rootCmd)

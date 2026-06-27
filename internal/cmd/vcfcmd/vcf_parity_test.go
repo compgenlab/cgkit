@@ -41,11 +41,11 @@ func runJava(t *testing.T, bin string, args ...string) string {
 }
 
 // stripProvenance drops the non-deterministic ##fileDate and ##ngsutilsj_*
-// provenance header lines that cgio intentionally does not emit.
+// provenance header lines that cgkit intentionally does not emit.
 func stripProvenance(s string) string {
 	var keep []string
 	for _, line := range strings.Split(s, "\n") {
-		if strings.HasPrefix(line, "##fileDate") || strings.HasPrefix(line, "##ngsutilsj") || strings.HasPrefix(line, "##cgio") {
+		if strings.HasPrefix(line, "##fileDate") || strings.HasPrefix(line, "##ngsutilsj") || strings.HasPrefix(line, "##cgkit") {
 			continue
 		}
 		keep = append(keep, line)
@@ -53,9 +53,9 @@ func stripProvenance(s string) string {
 	return strings.Join(keep, "\n")
 }
 
-// TestParityWithNgsutilsj verifies that cgio's output matches the ngsutilsj
+// TestParityWithNgsutilsj verifies that cgkit's output matches the ngsutilsj
 // reference for the commands that are designed to be byte-identical (after
-// removing provenance header lines cgio omits by design).
+// removing provenance header lines cgkit omits by design).
 func TestParityWithNgsutilsj(t *testing.T) {
 	bin := findNgsutilsj(t)
 	if bin == "" {
@@ -82,7 +82,7 @@ func TestParityWithNgsutilsj(t *testing.T) {
 			want := stripProvenance(runJava(t, bin, tc.args...))
 			got := stripProvenance(runVcf(t, tc.args...))
 			if got != want {
-				t.Errorf("parity mismatch for %v\n java: %q\n cgio: %q", tc.args, want, got)
+				t.Errorf("parity mismatch for %v\n java: %q\n cgkit: %q", tc.args, want, got)
 			}
 		})
 	}
@@ -121,14 +121,14 @@ func TestParityAnnotate(t *testing.T) {
 			want := dataRows(runJava(t, bin, tc.args...))
 			got := dataRows(runVcf(t, tc.args...))
 			if got != want {
-				t.Errorf("annotate parity (%s)\n java: %q\n cgio: %q", tc.name, want, got)
+				t.Errorf("annotate parity (%s)\n java: %q\n cgkit: %q", tc.name, want, got)
 			}
 		})
 	}
 }
 
 // normQual strips a trailing ".0" from the QUAL column (field 5) of each data
-// row. cgio writes records it did not modify verbatim (preserving "20.0"),
+// row. cgkit writes records it did not modify verbatim (preserving "20.0"),
 // whereas ngsutilsj rebuilds every record ("20"); this isolates that
 // intentional difference so the annotation values can be compared.
 func normQual(s string) string {
@@ -174,7 +174,7 @@ func TestParityAnnotateBedTab(t *testing.T) {
 			want := normQual(runJava(t, bin, tc.args...))
 			got := normQual(runVcf(t, tc.args...))
 			if got != want {
-				t.Errorf("bed/tab parity (%s)\n java: %q\n cgio: %q", tc.name, want, got)
+				t.Errorf("bed/tab parity (%s)\n java: %q\n cgkit: %q", tc.name, want, got)
 			}
 		})
 	}
@@ -191,12 +191,12 @@ func TestParityAnnotateFlanking(t *testing.T) {
 	want := dataRows(runJava(t, bin, args...))
 	got := dataRows(runVcf(t, args...))
 	if got != want {
-		t.Errorf("flanking parity\n java: %q\n cgio: %q", want, got)
+		t.Errorf("flanking parity\n java: %q\n cgkit: %q", want, got)
 	}
 }
 
 // TestParityAnnotateGroupBValues verifies the sample-count annotators produce
-// the same values; the FORMAT column ordering differs by design (cgio uses a
+// the same values; the FORMAT column ordering differs by design (cgkit uses a
 // stable order), so the per-line tokens are compared order-insensitive.
 func TestParityAnnotateGroupBValues(t *testing.T) {
 	bin := findNgsutilsj(t)
@@ -216,12 +216,12 @@ func TestParityAnnotateGroupBValues(t *testing.T) {
 	want := normalize(runJava(t, bin, args...))
 	got := normalize(runVcf(t, args...))
 	if got != want {
-		t.Errorf("annotate group-B value parity\n java: %q\n cgio: %q", want, got)
+		t.Errorf("annotate group-B value parity\n java: %q\n cgkit: %q", want, got)
 	}
 }
 
 // TestParityFilter verifies vcf-filter against ngsutilsj. The FILTER codes are a
-// set, so their order is normalized (cgio applies filters in command-line order;
+// set, so their order is normalized (cgkit applies filters in command-line order;
 // ngsutilsj uses its option-invocation order), along with QUAL on untouched rows.
 func TestParityFilter(t *testing.T) {
 	bin := findNgsutilsj(t)
@@ -266,14 +266,14 @@ func TestParityFilter(t *testing.T) {
 			want := norm(runJava(t, bin, tc.args...))
 			got := norm(runVcf(t, tc.args...))
 			if got != want {
-				t.Errorf("filter parity (%s)\n java: %q\n cgio: %q", tc.name, want, got)
+				t.Errorf("filter parity (%s)\n java: %q\n cgkit: %q", tc.name, want, got)
 			}
 		})
 	}
 }
 
-// TestParityExportValues verifies that cgio and ngsutilsj produce the same set
-// of exported values. The column ordering differs by design (cgio uses a stable
+// TestParityExportValues verifies that cgkit and ngsutilsj produce the same set
+// of exported values. The column ordering differs by design (cgkit uses a stable
 // order), so the comparison is order-insensitive per line.
 func TestParityExportValues(t *testing.T) {
 	bin := findNgsutilsj(t)
@@ -294,6 +294,6 @@ func TestParityExportValues(t *testing.T) {
 	want := normalize(runJava(t, bin, args...))
 	got := normalize(runVcf(t, args...))
 	if got != want {
-		t.Errorf("export value parity mismatch\n java: %q\n cgio: %q", want, got)
+		t.Errorf("export value parity mismatch\n java: %q\n cgkit: %q", want, got)
 	}
 }

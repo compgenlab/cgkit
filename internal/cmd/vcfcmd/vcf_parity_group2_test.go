@@ -18,7 +18,7 @@ func TestParityGroup2(t *testing.T) {
 		want := normVcfData(runJava(t, bin, args...))
 		got := normVcfData(runVcf(t, args...))
 		if got != want {
-			t.Errorf("concat parity\n java: %q\n cgio: %q", want, got)
+			t.Errorf("concat parity\n java: %q\n cgkit: %q", want, got)
 		}
 	})
 
@@ -27,12 +27,12 @@ func TestParityGroup2(t *testing.T) {
 		want := normVcfData(runJava(t, bin, args...))
 		got := normVcfData(runVcf(t, args...))
 		if got != want {
-			t.Errorf("merge parity\n java: %q\n cgio: %q", want, got)
+			t.Errorf("merge parity\n java: %q\n cgkit: %q", want, got)
 		}
 	})
 
 	t.Run("concat-chunks", func(t *testing.T) {
-		// Split sample.vcf into numbered chunks; cgio --chunks must match
+		// Split sample.vcf into numbered chunks; cgkit --chunks must match
 		// ngsutilsj vcf-concat-n on the same .1 starting file.
 		base := filepath.Join(t.TempDir(), "split")
 		runVcf(t, "vcf-split", "--out", base, "--num", "2", "testdata/sample.vcf")
@@ -41,7 +41,7 @@ func TestParityGroup2(t *testing.T) {
 		want := normVcfData(runJava(t, bin, "vcf-concat-n", first))
 		got := normVcfData(runVcf(t, "vcf-concat", "--chunks", first))
 		if got != want {
-			t.Errorf("concat --chunks parity\n java: %q\n cgio: %q", want, got)
+			t.Errorf("concat --chunks parity\n java: %q\n cgkit: %q", want, got)
 		}
 	})
 }

@@ -15,6 +15,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # Fetch the hts dependency straight from GitHub (not the public module
+    # proxy/sumdb), so a freshly pushed hts tag is visible to this build
+    # immediately and "go get hts@latest" resolves it without proxy-cache lag.
+    env:
+      GOPRIVATE: github.com/compgenlab/*
+
     steps:
       - uses: actions/checkout@v6
         with:
@@ -24,6 +30,11 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+
+      # Remote/CI builds use the latest released hts from GitHub. Local builds
+      # instead use the live sibling checkout via the go.work workspace.
+      - name: Use latest hts from GitHub
+        run: GOCACHE=/tmp/go-build-cache go get github.com/compgenlab/hts@latest
 
       - name: Install samtools
         run: sudo apt-get update && sudo apt-get install -y samtools
@@ -47,63 +58,63 @@ jobs:
       - name: Build binaries
         env:
           LDFLAGS: >-
-            -X 'github.com/compgenlab/cgio/internal/cmd.Version=${{ steps.version.outputs.version }}'
-            -X 'github.com/compgenlab/cgio/internal/cmd.GitHash=${{ steps.version.outputs.git_hash }}'
+            -X 'github.com/compgenlab/cgkit/internal/cmd.Version=${{ steps.version.outputs.version }}'
+            -X 'github.com/compgenlab/cgkit/internal/cmd.GitHash=${{ steps.version.outputs.git_hash }}'
         run: |
           mkdir -p bin
-          GOOS=darwin  GOARCH=arm64                go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgio.darwin_arm64  .
-          GOOS=darwin  GOARCH=amd64                go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgio.darwin_amd64  .
-          GOOS=linux   GOARCH=arm64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgio.linux_arm64   .
-          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgio.linux_amd64   .
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgio.windows_amd64.exe .
+          GOOS=darwin  GOARCH=arm64                go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.darwin_arm64  .
+          GOOS=darwin  GOARCH=amd64                go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.darwin_amd64  .
+          GOOS=linux   GOARCH=arm64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.linux_arm64   .
+          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.linux_amd64   .
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0  go build -buildvcs=false -ldflags "$LDFLAGS" -o bin/cgkit.windows_amd64.exe .
 
-      - name: Upload cgio.darwin_arm64
+      - name: Upload cgkit.darwin_arm64
         uses: actions/upload-artifact@v7
         with:
-          name: cgio.darwin_arm64
-          path: bin/cgio.darwin_arm64
+          name: cgkit.darwin_arm64
+          path: bin/cgkit.darwin_arm64
 
-      - name: Upload cgio.darwin_amd64
+      - name: Upload cgkit.darwin_amd64
         uses: actions/upload-artifact@v7
         with:
-          name: cgio.darwin_amd64
-          path: bin/cgio.darwin_amd64
+          name: cgkit.darwin_amd64
+          path: bin/cgkit.darwin_amd64
 
-      - name: Upload cgio.linux_arm64
+      - name: Upload cgkit.linux_arm64
         uses: actions/upload-artifact@v7
         with:
-          name: cgio.linux_arm64
-          path: bin/cgio.linux_arm64
+          name: cgkit.linux_arm64
+          path: bin/cgkit.linux_arm64
 
-      - name: Upload cgio.linux_amd64
+      - name: Upload cgkit.linux_amd64
         uses: actions/upload-artifact@v7
         with:
-          name: cgio.linux_amd64
-          path: bin/cgio.linux_amd64
+          name: cgkit.linux_amd64
+          path: bin/cgkit.linux_amd64
 
-      - name: Upload cgio.windows_amd64
+      - name: Upload cgkit.windows_amd64
         uses: actions/upload-artifact@v7
         with:
-          name: cgio.windows_amd64.exe
-          path: bin/cgio.windows_amd64.exe
+          name: cgkit.windows_amd64.exe
+          path: bin/cgkit.windows_amd64.exe
 
       - name: Create source archive
         run: |
           VERSION=${{ steps.version.outputs.version }}
           mkdir -p dist
-          git archive --format=zip --prefix=cgio-${VERSION}/ HEAD > dist/cgio-${VERSION}-src.zip
+          git archive --format=zip --prefix=cgkit-${VERSION}/ HEAD > dist/cgkit-${VERSION}-src.zip
 
       - name: Create tagged release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            bin/cgio.darwin_arm64
-            bin/cgio.darwin_amd64
-            bin/cgio.linux_arm64
-            bin/cgio.linux_amd64
-            bin/cgio.windows_amd64.exe
-            dist/cgio-*-src.zip
+            bin/cgkit.darwin_arm64
+            bin/cgkit.darwin_amd64
+            bin/cgkit.linux_arm64
+            bin/cgkit.linux_amd64
+            bin/cgkit.windows_amd64.exe
+            dist/cgkit-*-src.zip
 
       - name: Create dev release
         if: github.ref == 'refs/heads/main'
@@ -119,9 +130,9 @@ jobs:
             **Commit:** ${{ github.sha }}
             **Version:** ${{ steps.version.outputs.version }}
           files: |
-            bin/cgio.darwin_arm64
-            bin/cgio.darwin_amd64
-            bin/cgio.linux_arm64
-            bin/cgio.linux_amd64
-            bin/cgio.windows_amd64.exe
-            dist/cgio-*-src.zip
+            bin/cgkit.darwin_arm64
+            bin/cgkit.darwin_amd64
+            bin/cgkit.linux_arm64
+            bin/cgkit.linux_amd64
+            bin/cgkit.windows_amd64.exe
+            dist/cgkit-*-src.zip

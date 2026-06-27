@@ -10,7 +10,7 @@ import (
 // runBed executes a bed subcommand against a fresh root and returns its stdout.
 func runBed(t *testing.T, args ...string) string {
 	t.Helper()
-	root := &cobra.Command{Use: "cgio"}
+	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
 	var buf bytes.Buffer
 	root.SetOut(&buf)
@@ -61,7 +61,7 @@ func TestBedResizeRequiresExtent(t *testing.T) {
 	bedResizeLen5 = 0
 	bedResizeLen3 = 0
 
-	root := &cobra.Command{Use: "cgio"}
+	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
 	var buf bytes.Buffer
 	root.SetOut(&buf)

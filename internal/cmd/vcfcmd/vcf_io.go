@@ -7,7 +7,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/compgenlab/cgio/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/buildinfo"
 	"github.com/compgenlab/hts/htsio"
 	"github.com/compgenlab/hts/vcf"
 	"github.com/spf13/cobra"
@@ -15,13 +15,13 @@ import (
 
 const sinceVersion = "v0.3.2"
 
-// stampVcfProvenance updates the header's ##fileDate and appends cgio command
+// stampVcfProvenance updates the header's ##fileDate and appends cgkit command
 // and version provenance lines, recording how the output file was produced. It
 // is called by any command that writes a VCF file.
 func stampVcfProvenance(h *vcf.VcfHeader, cmdName string) {
 	h.SetFileDate(buildinfo.Date())
-	h.AddLine("##cgio_" + cmdName + "Command=" + buildinfo.CommandLine())
-	h.AddLine("##cgio_" + cmdName + "Version=" + buildinfo.String())
+	h.AddLine("##cgkit_" + cmdName + "Command=" + buildinfo.CommandLine())
+	h.AddLine("##cgkit_" + cmdName + "Version=" + buildinfo.String())
 }
 
 // openVcfInput opens a streaming VCF reader for filename, reading from stdin

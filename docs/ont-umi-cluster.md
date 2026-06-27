@@ -5,7 +5,7 @@ Collapses PCR and sequencing duplicates in a coordinate-sorted BAM file using UM
 ## Usage
 
 ```
-cgio ont-umi-cluster [flags] <input.bam>
+cgkit ont-umi-cluster [flags] <input.bam>
 ```
 
 Required: `--output` (`-o`) specifying the output BAM file path.

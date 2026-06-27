@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/compgenlab/cgio/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/buildinfo"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -32,7 +32,7 @@ func runVcfErr(t *testing.T, args ...string) error {
 
 // vcfTestRoot builds a fresh root with all command flags reset to defaults.
 func vcfTestRoot(args ...string) (*cobra.Command, *bytes.Buffer) {
-	root := &cobra.Command{Use: "cgio"}
+	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
 	for _, c := range root.Commands() {
 		c.Flags().VisitAll(func(f *pflag.Flag) {
@@ -167,7 +167,7 @@ func TestVcfExportRegion(t *testing.T) {
 }
 
 func TestVcfRegionRequiresFile(t *testing.T) {
-	root := &cobra.Command{Use: "cgio"}
+	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
 	var buf bytes.Buffer
 	root.SetOut(&buf)
@@ -200,10 +200,10 @@ func TestVcfReorderProvenance(t *testing.T) {
 	if !strings.Contains(got, "##fileDate=20200102\n") {
 		t.Errorf("vcf-reorder missing/incorrect ##fileDate.\n got: %q", got)
 	}
-	if !strings.Contains(got, "##cgio_vcf-reorderCommand=") {
+	if !strings.Contains(got, "##cgkit_vcf-reorderCommand=") {
 		t.Errorf("vcf-reorder missing provenance command line.\n got: %q", got)
 	}
-	if !strings.Contains(got, "##cgio_vcf-reorderVersion=dev\n") {
+	if !strings.Contains(got, "##cgkit_vcf-reorderVersion=dev\n") {
 		t.Errorf("vcf-reorder missing provenance version.\n got: %q", got)
 	}
 }
@@ -408,7 +408,7 @@ func TestVcfAnnotateProvenance(t *testing.T) {
 	if !strings.Contains(out, "##fileDate=20210304\n") {
 		t.Errorf("vcf-annotate missing ##fileDate")
 	}
-	if !strings.Contains(out, "##cgio_vcf-annotateCommand=") {
+	if !strings.Contains(out, "##cgkit_vcf-annotateCommand=") {
 		t.Errorf("vcf-annotate missing provenance command")
 	}
 }

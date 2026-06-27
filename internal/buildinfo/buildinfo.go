@@ -1,4 +1,4 @@
-// Package buildinfo holds the cgio version (set via -ldflags at build time) and
+// Package buildinfo holds the cgkit version (set via -ldflags at build time) and
 // provenance helpers shared across commands. Keeping it in a leaf package lets
 // every command group reference the version without importing the cmd package.
 package buildinfo

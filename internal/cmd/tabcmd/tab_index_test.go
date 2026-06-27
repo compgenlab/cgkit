@@ -13,7 +13,7 @@ import (
 
 func runTab(t *testing.T, args ...string) {
 	t.Helper()
-	root := &cobra.Command{Use: "cgio"}
+	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {

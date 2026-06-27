@@ -24,7 +24,7 @@ func TestSamFilterProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	root := &cobra.Command{Use: "cgio"}
+	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
 	root.SetArgs([]string{"sam-filter", "--bam", in, out})
 	if err := root.Execute(); err != nil {
@@ -50,7 +50,7 @@ func TestSamFilterProvenance(t *testing.T) {
 	if pg == "" {
 		t.Fatalf("no sam-filter @PG provenance line in output header:\n%v", header.Lines)
 	}
-	for _, want := range []string{"PN:cgio", "VN:", "CL:"} {
+	for _, want := range []string{"PN:cgkit", "VN:", "CL:"} {
 		if !strings.Contains(pg, want) {
 			t.Errorf("@PG line missing %q: %s", want, pg)
 		}
