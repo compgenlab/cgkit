@@ -1,9 +1,9 @@
-module github.com/compgenlab/cgio
+module github.com/compgenlab/cgkit
 
 go 1.23
 
 require (
-	github.com/compgenlab/hts v0.3.2
+	github.com/compgenlab/hts v0.4.0
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/pflag v1.0.5
 )

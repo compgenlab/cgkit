@@ -7,7 +7,7 @@ import (
 )
 
 // normVcfData reduces VCF output to its data rows with QUAL ".0" trimmed and
-// FILTER codes sorted, matching the documented deviations (cgio keeps untouched
+// FILTER codes sorted, matching the documented deviations (cgkit keeps untouched
 // QUALs verbatim and emits FILTER codes in command-line order).
 func normVcfData(s string) string {
 	var lines []string
@@ -27,7 +27,7 @@ func normVcfData(s string) string {
 }
 
 // stripComments drops blank and "##"-prefixed lines (tab outputs whose only
-// differing lines are cgio-branded provenance comments).
+// differing lines are cgkit-branded provenance comments).
 func stripComments(s string) string {
 	var keep []string
 	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
@@ -77,7 +77,7 @@ func TestParityGroup1(t *testing.T) {
 			want := normVcfData(runJava(t, bin, tc.args...))
 			got := normVcfData(runVcf(t, tc.args...))
 			if got != want {
-				t.Errorf("%s parity\n java: %q\n cgio: %q", tc.name, want, got)
+				t.Errorf("%s parity\n java: %q\n cgkit: %q", tc.name, want, got)
 			}
 		})
 	}
@@ -85,11 +85,11 @@ func TestParityGroup1(t *testing.T) {
 	// vcf-rename only changes the #CHROM sample columns.
 	t.Run("rename", func(t *testing.T) {
 		// ngsutilsj's renameSample only supports renaming by name (a numeric
-		// old-name throws), so parity uses name-based renames; cgio additionally
+		// old-name throws), so parity uses name-based renames; cgkit additionally
 		// accepts a sample number.
 		args := []string{"vcf-rename", "--sample", "NORMAL:GERMLINE", "--sample", "TUMOR:CANCER", sample}
 		if got, want := chromLine(runVcf(t, args...)), chromLine(runJava(t, bin, args...)); got != want {
-			t.Errorf("rename #CHROM parity\n java: %q\n cgio: %q", want, got)
+			t.Errorf("rename #CHROM parity\n java: %q\n cgkit: %q", want, got)
 		}
 	})
 
@@ -111,7 +111,7 @@ func TestParityGroup1(t *testing.T) {
 			want := stripComments(runJava(t, bin, tc.args...))
 			got := stripComments(runVcf(t, tc.args...))
 			if got != want {
-				t.Errorf("%s parity\n java: %q\n cgio: %q", tc.name, want, got)
+				t.Errorf("%s parity\n java: %q\n cgkit: %q", tc.name, want, got)
 			}
 		})
 	}

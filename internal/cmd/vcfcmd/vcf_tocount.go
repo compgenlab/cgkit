@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/compgenlab/cgio/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/buildinfo"
 	"github.com/compgenlab/hts/vcf"
 	"github.com/spf13/cobra"
 )

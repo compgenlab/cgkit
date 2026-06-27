@@ -22,7 +22,7 @@ func resetBedSetFlags() {
 
 // runBedErr executes a bed subcommand and returns (stdout, error).
 func runBedErr(args ...string) (string, error) {
-	root := &cobra.Command{Use: "cgio"}
+	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
 	var buf bytes.Buffer
 	root.SetOut(&buf)

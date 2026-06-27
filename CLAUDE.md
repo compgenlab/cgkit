@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-cgio is a Go CLI toolkit for computational genomics research. It provides commands for sequence analysis, NGS data wrangling, and bioinformatics operations, with particular focus on Oxford Nanopore (long-read) sequence processing. The underlying library (sequence I/O, alignment, SAM/BAM/CRAM handling) lives in the separate `hts` module (`github.com/compgenlab/hts`).
+cgkit is a Go CLI toolkit for computational genomics research. It provides commands for sequence analysis, NGS data wrangling, and bioinformatics operations, with particular focus on Oxford Nanopore (long-read) sequence processing. The underlying library (sequence I/O, alignment, SAM/BAM/CRAM handling) lives in the separate `hts` module (`github.com/compgenlab/hts`).
 
-**Module:** `github.com/compgenlab/cgio`
+**Module:** `github.com/compgenlab/cgkit`
 **Go version:** 1.23
 **CLI framework:** Cobra
 **Library dependency:** `github.com/compgenlab/hts`
@@ -26,17 +26,30 @@ GOCACHE=/tmp/go-build-cache go test ./...
 go test ./internal/cmd/samcmd/... -run TestSamStats
 
 # Run with CPU profiling
-./cgio --profile=cpu.prof <subcommand>
+./cgkit --profile=cpu.prof <subcommand>
 ```
 
 ## Dependency on hts
 
 All format I/O and algorithms come from `github.com/compgenlab/hts` (packages
 `seqio`, `align`, `htsio` and its subpackages, `support/*`, `analysis/seq`).
-During local development the `hts` dependency is resolved through a `go.work`
-workspace that joins a sibling `hts` checkout; release builds use the pinned
-module version in `go.mod`. The `Makefile` deliberately does **not** set
-`GOWORK=off`, so local builds pick up the workspace.
+
+How the `hts` dependency resolves, by context:
+- **Local builds** use the `go.work` workspace (parent dir, untracked) that joins
+  a sibling `hts` checkout, so you build against your live local `hts` tree. The
+  `Makefile` deliberately does **not** set `GOWORK=off`.
+- **Remote/CI builds** (no `go.work` present) use the **latest released hts from
+  GitHub**: the GitHub Actions workflow runs `go get github.com/compgenlab/hts@latest`
+  before vet/test/build, with `GOPRIVATE=github.com/compgenlab/*` so a freshly
+  pushed hts tag is fetched directly from GitHub (no module-proxy/sumdb lag).
+- The committed `go.mod` pin is the fallback for `go install` users and the
+  source archive; keep it current with `make bump-hts`.
+
+### Cutting a release
+The hts tag must land on GitHub before cgkit builds against it:
+1. **hts**: tag `vX.Y.Z` on `main`, push the tag.
+2. **cgkit**: `make bump-hts` (pins `go.mod` to the new hts), commit
+   `go.mod`/`go.sum`, push. CI's `go get hts@latest` then resolves the same tag.
 
 ## Architecture
 

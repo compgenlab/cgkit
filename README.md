@@ -1,10 +1,10 @@
-# cgio
+# cgkit
 
 CLI commands for computational genomics: sequence analysis, NGS data wrangling,
 and bioinformatics operations, with particular focus on Oxford Nanopore
 (long-read) sequencing workflows.
 
-**Module:** `github.com/compgenlab/cgio`
+**Module:** `github.com/compgenlab/cgkit`
 
 The underlying library (sequence I/O, alignment, SAM/BAM/CRAM handling) lives in
 [`hts`](https://github.com/compgenlab/hts) (`github.com/compgenlab/hts`).
@@ -22,7 +22,7 @@ joins a sibling `hts` checkout; release builds use the pinned module version in
 
 ## CLI commands
 
-Usage: `cgio [--profile=cpu.prof] <command>`
+Usage: `cgkit [--profile=cpu.prof] <command>`
 
 ### FASTA
 

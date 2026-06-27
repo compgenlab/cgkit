@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/compgenlab/cgio/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/buildinfo"
 	"github.com/compgenlab/hts/htsio"
 	"github.com/compgenlab/hts/htsio/bam"
 	_ "github.com/compgenlab/hts/htsio/cram"
@@ -321,7 +321,7 @@ func removeFromBin(bin []*bufferedRead, id int) []*bufferedRead {
 //
 // Parallelism model (rewritten 2026-04-11):
 //
-//   - When --region is set, cgio processes that region only. The caller
+//   - When --region is set, cgkit processes that region only. The caller
 //     is expected to be orchestrating per-region jobs externally (e.g.
 //     one SLURM task per chromosome), so we do not also do per-chromosome
 //     parallelism inside a single invocation. Skipped refs and unmapped
@@ -1323,7 +1323,7 @@ func updateRecordUMI(rec *htsio.SamRecord, representative map[string]string) boo
 
 // addUMIClusterPGLine appends the ont-umi-cluster @PG header line.
 func addUMIClusterPGLine(header *htsio.SamHeader) {
-	header.AddPGLine("ont-umi-cluster", "cgio", buildinfo.String(), fmt.Sprintf("DS:UMI collapsing; representative UMI written to %s, original preserved in %s, molecule ID in MI", umiClusterTag, umiClusterOrigTag))
+	header.AddPGLine("ont-umi-cluster", "cgkit", buildinfo.String(), fmt.Sprintf("DS:UMI collapsing; representative UMI written to %s, original preserved in %s, molecule ID in MI", umiClusterTag, umiClusterOrigTag))
 }
 
 // levBuf holds reusable DP buffers for Levenshtein computation.

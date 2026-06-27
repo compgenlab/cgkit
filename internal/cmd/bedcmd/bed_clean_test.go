@@ -14,7 +14,7 @@ const bedCleanGolden = "chr1\t100\t200\t\t0\t+\n" +
 	"chr1\t100\t200\tregionA\t1\t+\tfoo\tbar\n"
 
 func TestBedClean(t *testing.T) {
-	root := &cobra.Command{Use: "cgio"}
+	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
 
 	var buf bytes.Buffer
