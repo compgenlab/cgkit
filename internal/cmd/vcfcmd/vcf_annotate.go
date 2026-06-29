@@ -18,6 +18,7 @@ var (
 	vcfAnnotateAltPos      string
 	vcfAnnotateEndPos      string
 	vcfAnnotateAutoConvert bool
+	vcfAnnotateGtfTags     []string
 
 	// vcfAnnotateChain records the annotator flags in command-line order so the
 	// pipeline is built in that order. See chainValue (vcf_chain.go).
@@ -209,6 +210,8 @@ func buildAnnotatePipeline() (*annotate.Pipeline, error) {
 				return nil, e
 			}
 			err = addOpened(annotate.NewVcfAnnotation(o))
+		case "gtf":
+			err = addOpened(annotate.NewGtfAnnotator(parseGtfArg(c.value)))
 		case "vcf-id":
 			err = addOpened(annotate.NewVcfAnnotation(annotate.VcfOptions{Name: "@ID", Filename: c.value}))
 		case "in-file":
@@ -386,6 +389,20 @@ func parseTabOptions(name, sample, fileAndOpts string) (annotate.TabixOptions, e
 	return o, nil
 }
 
+// parseGtfArg parses "[PREFIX:]FILE" for --gtf. The prefix (default "CG_") is
+// prepended to every INFO key the annotator adds; the --gtf-tag filter applies
+// to every --gtf source.
+func parseGtfArg(arg string) annotate.GtfOptions {
+	o := annotate.GtfOptions{RequiredTags: vcfAnnotateGtfTags}
+	if i := strings.IndexByte(arg, ':'); i >= 0 {
+		o.Prefix = arg[:i]
+		o.Filename = arg[i+1:]
+	} else {
+		o.Filename = arg
+	}
+	return o
+}
+
 // parseVcfArg parses "NAME:FIELD:FILE[:!@$n]" for --vcf.
 func parseVcfArg(arg string) (annotate.VcfOptions, error) {
 	spl := strings.Split(arg, ":")
@@ -483,6 +500,7 @@ func init() {
 	f.StringVar(&vcfAnnotateAltPos, "alt-pos", "", "Use an INFO field as the position for coordinate-based annotators")
 	f.StringVar(&vcfAnnotateEndPos, "end-pos", "", "Use an INFO field as the end position for coordinate-based annotators")
 	f.BoolVar(&vcfAnnotateAutoConvert, "auto-convert", false, "Auto-convert contig names across UCSC/Ensembl/NCBI naming when matching annotation sources (human primary contigs 1-22,X,Y,MT)")
+	f.StringSliceVar(&vcfAnnotateGtfTags, "gtf-tag", nil, "Required GTF tag(s) for --gtf, e.g. 'basic'; only features carrying every listed tag are used (applies to every --gtf; repeatable)")
 
 	// Annotator flags are recorded in command-line order via chainValue.
 	chainBool := func(name, usage string) { registerChainBool(f, &vcfAnnotateChain, name, usage) }
@@ -505,6 +523,7 @@ func init() {
 	chainVal("vcf", "Annotate INFO from a tabix-indexed VCF: NAME:FIELD:FILE{:!@$n} (!=exact ref/alt, @=passing only, $=unique, n=no header def; repeatable)")
 	chainVal("vcf-flag", "Flag variants present in a tabix-indexed VCF: NAME:FILE{:!@$n} (repeatable)")
 	chainVal("vcf-id", "Copy the ID column from a tabix-indexed VCF (exact ref/alt match)")
+	chainVal("gtf", "Add gene annotations from a GTF: [PREFIX:]FILE.gtf[.gz] (GTF_GENE/GTF_GENEID/GTF_STRAND/GTF_BIOTYPE/GTF_REGION/GTF_CODING/GTF_NONCODING, default prefix GTF_; repeatable)")
 	chainVal("in-file", "Flag when an INFO value is present in a text file: FLAGNAME:INFOKEY:FILE{:csv:tabcol=n} (csv splits the INFO value; tabcol=n adds that 1-based column's value; repeatable)")
 	chainVal("flanking", "Add flanking reference context and normalized substitution from an indexed FASTA: ref.fa[:size] (CG_FLANKING, CG_FLANKING_SUB; SNVs only)")
 }
