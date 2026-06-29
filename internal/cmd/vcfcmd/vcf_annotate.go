@@ -12,11 +12,12 @@ import (
 )
 
 var (
-	vcfAnnotateOutput   string
-	vcfAnnotatePassing  bool
-	vcfAnnotateAltChrom string
-	vcfAnnotateAltPos   string
-	vcfAnnotateEndPos   string
+	vcfAnnotateOutput      string
+	vcfAnnotatePassing     bool
+	vcfAnnotateAltChrom    string
+	vcfAnnotateAltPos      string
+	vcfAnnotateEndPos      string
+	vcfAnnotateAutoConvert bool
 
 	// vcfAnnotateChain records the annotator flags in command-line order so the
 	// pipeline is built in that order. See chainValue (vcf_chain.go).
@@ -33,6 +34,11 @@ INFO/FORMAT fields onto every record. Annotators are applied in the order the
 flags appear on the command line (so a later annotator can use a field an
 earlier one added), and a matching ##INFO/##FORMAT header line is added for each
 new field.
+
+With --auto-convert, contig names are matched across UCSC (chr1), Ensembl (1),
+and NCBI RefSeq (NC_000001.11) naming for every external annotation source
+(human primary contigs 1-22,X,Y,MT). The input VCF's own contig names are not
+rewritten; conversion is applied only when looking up each source.
 
 Self-contained annotators (read only the variant):
   --auto-id        set ID to chrom_pos_ref_alt
@@ -133,6 +139,7 @@ func buildAnnotatePipeline() (*annotate.Pipeline, error) {
 	p := annotate.NewPipeline()
 	add := func(a annotate.Annotator) {
 		applyAltCoords(a)
+		applyContigMatching(a)
 		p.Add(a)
 	}
 	// addOpened adds an annotator from a constructor that may fail to open a file.
@@ -241,6 +248,18 @@ func applyAltCoords(a any) {
 	}
 	if vcfAnnotateEndPos != "" {
 		c.SetEndPos(vcfAnnotateEndPos)
+	}
+}
+
+// applyContigMatching enables cross-scheme contig-name matching (UCSC/Ensembl/
+// NCBI) on every external-file annotator when --auto-convert is set. Annotators
+// without an external source (which do not implement ContigMatcher) are skipped.
+func applyContigMatching(a any) {
+	if !vcfAnnotateAutoConvert {
+		return
+	}
+	if m, ok := a.(annotate.ContigMatcher); ok {
+		m.EnableContigMatching()
 	}
 }
 
@@ -463,6 +482,7 @@ func init() {
 	f.StringVar(&vcfAnnotateAltChrom, "alt-chrom", "", "Use an INFO field as the chromosome for coordinate-based annotators")
 	f.StringVar(&vcfAnnotateAltPos, "alt-pos", "", "Use an INFO field as the position for coordinate-based annotators")
 	f.StringVar(&vcfAnnotateEndPos, "end-pos", "", "Use an INFO field as the end position for coordinate-based annotators")
+	f.BoolVar(&vcfAnnotateAutoConvert, "auto-convert", false, "Auto-convert contig names across UCSC/Ensembl/NCBI naming when matching annotation sources (human primary contigs 1-22,X,Y,MT)")
 
 	// Annotator flags are recorded in command-line order via chainValue.
 	chainBool := func(name, usage string) { registerChainBool(f, &vcfAnnotateChain, name, usage) }
