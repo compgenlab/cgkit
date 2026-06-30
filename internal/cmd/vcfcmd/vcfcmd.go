@@ -21,6 +21,7 @@ func InitCmd(rootCmd *cobra.Command) {
 	rootCmd.AddCommand(vcfSplitCmd)
 	rootCmd.AddCommand(vcfSampleExportCmd)
 	rootCmd.AddCommand(vcfToCountCmd)
+	rootCmd.AddCommand(vcfGtCountCmd)
 	rootCmd.AddCommand(vcfStripCmd)
 	rootCmd.AddCommand(vcfConcatCmd)
 	rootCmd.AddCommand(vcfMergeCmd)
