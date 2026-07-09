@@ -1840,6 +1840,13 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 			// At each distance d, compute FPR(≤d) = E_false(≤d) / actual_edges(≤d).
 			// Once the cumulative FPR exceeds alpha, that distance and all
 			// higher distances are excluded.
+			//
+			// Distances at or below --adaptive-min-dist are never excluded,
+			// regardless of FPR: this floors the effective threshold so that
+			// (with the default of 1) at least single-error merges are always
+			// permitted rather than the filter collapsing to exact-match-only.
+			// We still accumulate cumActual from d=1 so the cumulative-FPR
+			// denominator stays correct.
 			excludeAbove := edgeThreshold + 1 // nothing excluded by default
 			var cumActual int
 			for d := 1; d <= edgeThreshold; d++ {
@@ -1849,7 +1856,7 @@ func clusterUMIs(umiCounts map[string]int, globalRepresentative map[string]strin
 				}
 				cumExpectedFalse := nPairs * collisionProb(umiLen, d)
 				fpr := cumExpectedFalse / float64(cumActual)
-				if fpr > umiClusterAdaptiveAlpha {
+				if d > umiClusterAdaptiveMinDist && fpr > umiClusterAdaptiveAlpha {
 					excludeAbove = d
 					fmt.Fprintf(os.Stderr, "  adaptive: excluding d>=%d edges (FPR=%.1f%%, %d cumulative edges, %.0f expected false)\n",
 						d, fpr*100, cumActual, cumExpectedFalse)
@@ -2206,6 +2213,7 @@ var umiClusterHPDist bool
 var umiClusterMethod string
 var umiClusterAdaptiveThreshold bool
 var umiClusterAdaptiveAlpha float64
+var umiClusterAdaptiveMinDist int
 var umiClusterNoCountsIndex bool
 var umiClusterMatchJunctions bool
 var umiClusterJunctionWindow int
@@ -2238,6 +2246,7 @@ func init() {
 	ontUmiClusterCmd.Flags().StringVar(&umiClusterMethod, "umi-cluster-method", "adjacency", "UMI clustering method: connected (single-linkage), adjacency (greedy, no chaining), directional (PCR error count model), tiered (distance-attenuated BFS clustering)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterAdaptiveThreshold, "adaptive-threshold", false, "Discard edges at distances where random collisions exceed the FPR threshold")
 	ontUmiClusterCmd.Flags().Float64Var(&umiClusterAdaptiveAlpha, "adaptive-alpha", 0.10, "Maximum cumulative false positive rate per edit distance level (used with --adaptive-threshold)")
+	ontUmiClusterCmd.Flags().IntVar(&umiClusterAdaptiveMinDist, "adaptive-min-dist", 1, "Minimum edit distance always kept by --adaptive-threshold, regardless of FPR (0 disables the floor)")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterNoCountsIndex, "no-summary-counts-index", false, "Disable automatic tabix index generation for the summary counts file")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchJunctions, "junction-match", false, "Require compatible splice junctions (CIGAR N ops) when grouping reads")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterJunctionWindow, "junction-window", 20, "Tolerance (bp) for matching junction positions and merging adjacent junctions")
