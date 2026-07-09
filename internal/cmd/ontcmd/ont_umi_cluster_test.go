@@ -184,6 +184,61 @@ func TestClusterUMIs_SingleLinkageChaining(t *testing.T) {
 	}
 }
 
+func TestClusterUMIs_AdaptiveMinDist(t *testing.T) {
+	// Five short (4-base) UMIs. Only AAAA/AAAT are within edit distance
+	// (d=1); the other three are mutually >3 apart, so the sole edge is
+	// the AAAA-AAAT pair at d=1. With 10 total pairs and a 4-base UMI, the
+	// expected random-collision rate at d=1 already blows past alpha=0.10,
+	// so the adaptive filter *wants* to exclude d>=1 and collapse the
+	// effective threshold to 0 (exact-match-only, no merge).
+	umiCounts := map[string]int{
+		"AAAA": 10,
+		"AAAT": 3, // dist to AAAA = 1
+		"CGCG": 5, // >3 from all others
+		"GTGT": 5,
+		"TCTC": 5,
+	}
+
+	saveEdit := umiClusterEditThreshold
+	saveAdaptive := umiClusterAdaptiveThreshold
+	saveAlpha := umiClusterAdaptiveAlpha
+	saveMin := umiClusterAdaptiveMinDist
+	t.Cleanup(func() {
+		umiClusterEditThreshold = saveEdit
+		umiClusterAdaptiveThreshold = saveAdaptive
+		umiClusterAdaptiveAlpha = saveAlpha
+		umiClusterAdaptiveMinDist = saveMin
+	})
+
+	umiClusterEditThreshold = 3
+	umiClusterAdaptiveThreshold = true
+	umiClusterAdaptiveAlpha = 0.10
+
+	// Default floor (min=1): distance-1 edges are always kept, so AAAA and
+	// AAAT still merge and the effective threshold floors at 1.
+	umiClusterAdaptiveMinDist = 1
+	rep := make(map[string]string)
+	_, effThreshold := clusterUMIs(umiCounts, rep, 1)
+	if effThreshold < 1 {
+		t.Errorf("with --adaptive-min-dist 1, effective threshold = %d, want >= 1", effThreshold)
+	}
+	if got := rep["AAAT"]; got != "AAAA" {
+		t.Errorf("with floor, AAAT representative = %q, want %q (should still merge)", got, "AAAA")
+	}
+
+	// Floor disabled (min=0): the filter is free to exclude d>=1, dropping
+	// the only edge and preventing the merge.
+	umiClusterAdaptiveMinDist = 0
+	rep0 := make(map[string]string)
+	_, effThreshold0 := clusterUMIs(umiCounts, rep0, 1)
+	if effThreshold0 != 0 {
+		t.Errorf("with --adaptive-min-dist 0, effective threshold = %d, want 0", effThreshold0)
+	}
+	if got := rep0["AAAT"]; got != "AAAT" {
+		t.Errorf("without floor, AAAT representative = %q, want self (no merge)", got)
+	}
+}
+
 func TestComputeRepresentativeUMI_MostCommon(t *testing.T) {
 	// Highest count UMI is picked as representative
 	members := []umiCount{
