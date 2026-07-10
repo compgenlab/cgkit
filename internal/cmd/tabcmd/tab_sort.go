@@ -2,7 +2,9 @@ package tabcmd
 
 import (
 	"bufio"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -59,17 +61,32 @@ with --seq, --begin, --end.`,
 		tw := tabix.NewWriter(tabSortOutput, opts)
 
 		// Open input.
-		var scanner *bufio.Scanner
+		var raw io.Reader
 		if args[0] == "-" {
-			scanner = bufio.NewScanner(os.Stdin)
+			raw = os.Stdin
 		} else {
 			f, err := os.Open(args[0])
 			if err != nil {
 				return fmt.Errorf("opening input: %w", err)
 			}
 			defer f.Close()
-			scanner = bufio.NewScanner(f)
+			raw = f
 		}
+
+		// Transparently decompress gzip/BGZF input, detected by magic bytes
+		// (never by filename) so '-'/stdin and misnamed files work too.
+		br := bufio.NewReaderSize(raw, 1024*1024)
+		var reader io.Reader = br
+		if magic, err := br.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
+			gz, err := gzip.NewReader(br)
+			if err != nil {
+				return fmt.Errorf("decompressing input: %w", err)
+			}
+			defer gz.Close()
+			reader = gz
+		}
+
+		scanner := bufio.NewScanner(reader)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 
 		metaCh := byte(0)
@@ -82,8 +99,17 @@ with --seq, --begin, --end.`,
 			}
 		}
 
+		lineNum := 0
 		for scanner.Scan() {
 			line := scanner.Text()
+			lineNum++
+			// Pass leading --skip header lines through verbatim, ahead of
+			// the sorted data, without parsing them as records.
+			if lineNum <= tabSortSkip {
+				tw.WriteHeader(line)
+				continue
+			}
+			// Pass meta/comment lines through verbatim as well.
 			if metaCh != 0 && len(line) > 0 && line[0] == metaCh {
 				tw.WriteHeader(line)
 				continue
