@@ -12,7 +12,7 @@ import (
 
 // TestSamFilterProvenance verifies that sam-filter stamps a @PG provenance line
 // (with PN, VN, and CL) into the output header. The output is written as BAM
-// (the default SAM-text output goes to stdout), then the header is read back.
+// (auto-detected from the .bam extension), then the header is read back.
 func TestSamFilterProvenance(t *testing.T) {
 	dir := t.TempDir()
 	in := filepath.Join(dir, "in.sam")
@@ -26,7 +26,7 @@ func TestSamFilterProvenance(t *testing.T) {
 
 	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
-	root.SetArgs([]string{"sam-filter", "--bam", in, out})
+	root.SetArgs([]string{"sam-filter", in, out})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("sam-filter: %v", err)
 	}
