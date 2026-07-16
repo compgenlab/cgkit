@@ -59,6 +59,8 @@ Usage: `cgkit [--profile=cpu.prof] <command>`
 
 | Command | Description |
 |---------|-------------|
+| `ont-polya` | Find per-read poly(A)/cleavage sites in a strand-specific aligned BAM |
 | `ont-tags` | Find and trim common ONT adapter/primer tags from FASTQ reads |
 | `ont-umi-cluster` | Collapse similar UMIs in a coordinate-sorted BAM file |
+| `ont-umi-dedup` | Keep one representative read per UMI group (`MI` tag) from a coordinate-sorted BAM |
 | `ont-umi-lookup` | Match reads to UMI clusters from `ont-umi-cluster` output |
