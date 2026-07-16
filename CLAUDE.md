@@ -64,5 +64,8 @@ Commands are registered in `internal/cmd/root.go` and grouped by file format or 
 - `fastq-gc` — FASTQ operations
 - `sam-stats` — Summary statistics for SAM/BAM/CRAM: read counts, mapping rates, Q30, depth, SAM flag breakdown, per-reference counts, optional `--tags` value distributions and `--calc-insert` median. Profiles the first read of each pair only (ports `ngsutils bam-stats`). Phase 1 omits the `--gtf` gene-model and `--bed` on-target stats.
 - `seq-pairwise`, `seq-revcomp` — Sequence analysis
-- `ont-primers` — ONT primer detection/trimming with alignment statistics
+- `ont-polya` — Per-read poly(A)/cleavage site calling from a strand-specific aligned BAM. Finds the mRNA 3' end (FLAG 0x10, or `--antisense`), traces back through the tail with a windowed A-fraction test, and reports the first tail base's 1-based genomic position. The trace deliberately continues past the soft-clip boundary into aligned bases, since aligners absorb genome-encoded A's at real sites — which also makes the tool prone to reporting internal priming; `polya_source` (`--polya-src`) is the partial hook for filtering that downstream. Secondary/supplementary alignments are skipped. PAS motif annotation is deliberately out of scope: it is a per-site property needing a reference, so it belongs after clustering reads into sites.
+- `ont-tags` — ONT adapter/primer detection and trimming from FASTQ, with alignment statistics (embeds a default primer set; override with `--primers-fasta`)
+- `ont-umi-cluster` — Collapse similar UMIs in a coordinate-sorted BAM into `MI` groups
 - `ont-umi-dedup` — UMI deduplication: selects one representative per MI group from coordinate-sorted BAM. Secondary/supplementary alignments are dropped (cannot be reliably resolved in coordinate order). Supports `--threads` for parallel BGZF compression.
+- `ont-umi-lookup` — Match reads in an aligned BAM to UMI clusters from `ont-umi-cluster` output
