@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compgenlab/hts/htsio"
+	"github.com/compgenlab/cghts/htsio"
 	"github.com/spf13/cobra"
 )
 

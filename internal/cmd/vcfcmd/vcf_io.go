@@ -7,9 +7,9 @@ import (
 	"math"
 	"os"
 
+	"github.com/compgenlab/cghts/htsio"
+	"github.com/compgenlab/cghts/vcf"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
-	"github.com/compgenlab/hts/htsio"
-	"github.com/compgenlab/hts/vcf"
 	"github.com/spf13/cobra"
 )
 

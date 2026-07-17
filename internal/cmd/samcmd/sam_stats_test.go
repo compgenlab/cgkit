@@ -4,7 +4,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/compgenlab/hts/htsio"
+	"github.com/compgenlab/cghts/htsio"
 )
 
 func loadStats(t *testing.T, path string, opt statsOpts) *statsResult {

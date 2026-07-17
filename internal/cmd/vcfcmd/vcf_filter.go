@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/compgenlab/hts/vcf"
-	"github.com/compgenlab/hts/vcf/filter"
+	"github.com/compgenlab/cghts/vcf"
+	"github.com/compgenlab/cghts/vcf/filter"
 	"github.com/spf13/cobra"
 )
 

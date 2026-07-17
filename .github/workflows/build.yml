@@ -15,9 +15,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    # Fetch the hts dependency straight from GitHub (not the public module
-    # proxy/sumdb), so a freshly pushed hts tag is visible to this build
-    # immediately and "go get hts@latest" resolves it without proxy-cache lag.
+    # Fetch the cghts dependency straight from GitHub (not the public module
+    # proxy/sumdb), so a freshly pushed cghts tag is visible to this build
+    # immediately and "go get cghts@latest" resolves it without proxy-cache lag.
     env:
       GOPRIVATE: github.com/compgenlab/*
 
@@ -31,10 +31,10 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Remote/CI builds use the latest released hts from GitHub. Local builds
+      # Remote/CI builds use the latest released cghts from GitHub. Local builds
       # instead use the live sibling checkout via the go.work workspace.
-      - name: Use latest hts from GitHub
-        run: GOCACHE=/tmp/go-build-cache go get github.com/compgenlab/hts@latest
+      - name: Use latest cghts from GitHub
+        run: GOCACHE=/tmp/go-build-cache go get github.com/compgenlab/cghts@latest
 
       - name: Install samtools
         run: sudo apt-get update && sudo apt-get install -y samtools

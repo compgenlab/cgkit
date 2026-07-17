@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/compgenlab/cghts/htsio"
+	"github.com/compgenlab/cghts/htsio/bam"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
-	"github.com/compgenlab/hts/htsio"
-	"github.com/compgenlab/hts/htsio/bam"
 	"github.com/spf13/cobra"
 )
 
