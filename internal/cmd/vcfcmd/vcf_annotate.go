@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/compgenlab/hts/vcf"
-	"github.com/compgenlab/hts/vcf/annotate"
+	"github.com/compgenlab/cghts/vcf"
+	"github.com/compgenlab/cghts/vcf/annotate"
 	"github.com/spf13/cobra"
 )
 

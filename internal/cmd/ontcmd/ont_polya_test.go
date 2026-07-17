@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compgenlab/hts/htsio"
+	"github.com/compgenlab/cghts/htsio"
 )
 
 // polyaNonA returns n bases containing neither A nor T, so it works as filler on

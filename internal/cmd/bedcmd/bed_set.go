@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/compgenlab/hts/bed"
+	"github.com/compgenlab/cghts/bed"
 	"github.com/spf13/cobra"
 )
 

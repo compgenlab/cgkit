@@ -3,8 +3,8 @@ package seqcmd
 import (
 	"fmt"
 
-	"github.com/compgenlab/hts/align"
-	"github.com/compgenlab/hts/seqio"
+	"github.com/compgenlab/cghts/align"
+	"github.com/compgenlab/cghts/seqio"
 	"github.com/spf13/cobra"
 )
 

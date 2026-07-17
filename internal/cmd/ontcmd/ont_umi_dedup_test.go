@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compgenlab/hts/htsio"
-	"github.com/compgenlab/hts/htsio/bam"
+	"github.com/compgenlab/cghts/htsio"
+	"github.com/compgenlab/cghts/htsio/bam"
 )
 
 // makeTestBAM writes a coordinate-sorted BAM to path with the given records.
