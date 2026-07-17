@@ -3,11 +3,11 @@ package samcmd
 import (
 	"fmt"
 
+	"github.com/compgenlab/cghts/htsio"
+	_ "github.com/compgenlab/cghts/htsio/bam"
+	_ "github.com/compgenlab/cghts/htsio/cram"
+	"github.com/compgenlab/cghts/htsio/sam"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
-	"github.com/compgenlab/hts/htsio"
-	_ "github.com/compgenlab/hts/htsio/bam"
-	_ "github.com/compgenlab/hts/htsio/cram"
-	"github.com/compgenlab/hts/htsio/sam"
 	"github.com/spf13/cobra"
 )
 

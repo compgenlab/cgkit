@@ -5,13 +5,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/compgenlab/hts/htsio"
-	_ "github.com/compgenlab/hts/htsio/bam"
-	_ "github.com/compgenlab/hts/htsio/cram"
-	_ "github.com/compgenlab/hts/htsio/sam"
-	"github.com/compgenlab/hts/seqio"
-	"github.com/compgenlab/hts/support/sequtils"
-	"github.com/compgenlab/hts/support/stringutils"
+	"github.com/compgenlab/cghts/htsio"
+	_ "github.com/compgenlab/cghts/htsio/bam"
+	_ "github.com/compgenlab/cghts/htsio/cram"
+	_ "github.com/compgenlab/cghts/htsio/sam"
+	"github.com/compgenlab/cghts/seqio"
+	"github.com/compgenlab/cghts/support/sequtils"
+	"github.com/compgenlab/cghts/support/stringutils"
 	"github.com/spf13/cobra"
 )
 

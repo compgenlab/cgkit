@@ -7,17 +7,17 @@ and bioinformatics operations, with particular focus on Oxford Nanopore
 **Module:** `github.com/compgenlab/cgkit`
 
 The underlying library (sequence I/O, alignment, SAM/BAM/CRAM handling) lives in
-[`hts`](https://github.com/compgenlab/hts) (`github.com/compgenlab/hts`).
+[`cghts`](https://github.com/compgenlab/cghts) (`github.com/compgenlab/cghts`).
 
 ## Building
 
 ```bash
-make build     # Build all targets (darwin_arm64, linux_arm64, linux_amd64)
+make build     # Build all targets (darwin_arm64, darwin_amd64, linux_arm64, linux_amd64, windows_amd64)
 make test      # Run all tests
 ```
 
-Local development resolves the `hts` dependency via a `go.work` workspace that
-joins a sibling `hts` checkout; release builds use the pinned module version in
+Local development resolves the `cghts` dependency via a `go.work` workspace that
+joins a sibling `cghts` checkout; release builds use the pinned module version in
 `go.mod`.
 
 ## CLI commands
