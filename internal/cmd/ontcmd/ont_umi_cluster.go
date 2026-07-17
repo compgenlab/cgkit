@@ -10,12 +10,12 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/compgenlab/cghts/htsio"
+	"github.com/compgenlab/cghts/htsio/bam"
+	_ "github.com/compgenlab/cghts/htsio/cram"
+	_ "github.com/compgenlab/cghts/htsio/sam"
+	"github.com/compgenlab/cghts/htsio/tabix"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
-	"github.com/compgenlab/hts/htsio"
-	"github.com/compgenlab/hts/htsio/bam"
-	_ "github.com/compgenlab/hts/htsio/cram"
-	_ "github.com/compgenlab/hts/htsio/sam"
-	"github.com/compgenlab/hts/htsio/tabix"
 	"github.com/spf13/cobra"
 )
 

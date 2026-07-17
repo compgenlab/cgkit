@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compgenlab/hts/vcf"
+	"github.com/compgenlab/cghts/vcf"
 )
 
 func TestVcfClearFilter(t *testing.T) {

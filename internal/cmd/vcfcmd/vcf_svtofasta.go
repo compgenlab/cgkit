@@ -5,9 +5,9 @@ import (
 	"io"
 	"os"
 
-	"github.com/compgenlab/hts/seqio"
-	"github.com/compgenlab/hts/support/sequtils"
-	"github.com/compgenlab/hts/vcf"
+	"github.com/compgenlab/cghts/seqio"
+	"github.com/compgenlab/cghts/support/sequtils"
+	"github.com/compgenlab/cghts/vcf"
 	"github.com/spf13/cobra"
 )
 

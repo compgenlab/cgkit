@@ -4,7 +4,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/compgenlab/hts/seqio"
+	"github.com/compgenlab/cghts/seqio"
 	"github.com/spf13/cobra"
 )
 

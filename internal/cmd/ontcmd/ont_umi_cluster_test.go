@@ -3,7 +3,7 @@ package ontcmd
 import (
 	"testing"
 
-	"github.com/compgenlab/hts/htsio"
+	"github.com/compgenlab/cghts/htsio"
 )
 
 func TestDetectSeparator(t *testing.T) {

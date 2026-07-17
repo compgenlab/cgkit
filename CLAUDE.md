@@ -4,17 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-cgkit is a Go CLI toolkit for computational genomics research. It provides commands for sequence analysis, NGS data wrangling, and bioinformatics operations, with particular focus on Oxford Nanopore (long-read) sequence processing. The underlying library (sequence I/O, alignment, SAM/BAM/CRAM handling) lives in the separate `hts` module (`github.com/compgenlab/hts`).
+cgkit is a Go CLI toolkit for computational genomics research. It provides commands for sequence analysis, NGS data wrangling, and bioinformatics operations, with particular focus on Oxford Nanopore (long-read) sequence processing. The underlying library (sequence I/O, alignment, SAM/BAM/CRAM handling) lives in the separate `cghts` module (`github.com/compgenlab/cghts`).
 
 **Module:** `github.com/compgenlab/cgkit`
 **Go version:** 1.23
 **CLI framework:** Cobra
-**Library dependency:** `github.com/compgenlab/hts`
+**Library dependency:** `github.com/compgenlab/cghts`
 
 ## Commands
 
 ```bash
-# Build all targets (darwin_arm64, linux_arm64, linux_amd64)
+# Build all targets (darwin_arm64, darwin_amd64, linux_arm64, linux_amd64, windows_amd64)
 make build
 
 # Run all tests
@@ -29,33 +29,33 @@ go test ./internal/cmd/samcmd/... -run TestSamStats
 ./cgkit --profile=cpu.prof <subcommand>
 ```
 
-## Dependency on hts
+## Dependency on cghts
 
-All format I/O and algorithms come from `github.com/compgenlab/hts` (packages
+All format I/O and algorithms come from `github.com/compgenlab/cghts` (packages
 `seqio`, `align`, `htsio` and its subpackages, `support/*`, `analysis/seq`).
 
-How the `hts` dependency resolves, by context:
+How the `cghts` dependency resolves, by context:
 - **Local builds** use the `go.work` workspace (parent dir, untracked) that joins
-  a sibling `hts` checkout, so you build against your live local `hts` tree. The
+  a sibling `cghts` checkout, so you build against your live local `cghts` tree. The
   `Makefile` deliberately does **not** set `GOWORK=off`.
-- **Remote/CI builds** (no `go.work` present) use the **latest released hts from
-  GitHub**: the GitHub Actions workflow runs `go get github.com/compgenlab/hts@latest`
+- **Remote/CI builds** (no `go.work` present) use the **latest released cghts from
+  GitHub**: the GitHub Actions workflow runs `go get github.com/compgenlab/cghts@latest`
   before vet/test/build, with `GOPRIVATE=github.com/compgenlab/*` so a freshly
-  pushed hts tag is fetched directly from GitHub (no module-proxy/sumdb lag).
+  pushed cghts tag is fetched directly from GitHub (no module-proxy/sumdb lag).
 - The committed `go.mod` pin is the fallback for `go install` users and the
-  source archive; keep it current with `make bump-hts`.
+  source archive; keep it current with `make bump-cghts`.
 
 ### Cutting a release
-The hts tag must land on GitHub before cgkit builds against it:
-1. **hts**: tag `vX.Y.Z` on `main`, push the tag.
-2. **cgkit**: `make bump-hts` (pins `go.mod` to the new hts), commit
-   `go.mod`/`go.sum`, push. CI's `go get hts@latest` then resolves the same tag.
+The cghts tag must land on GitHub before cgkit builds against it:
+1. **cghts**: tag `vX.Y.Z` on `main`, push the tag.
+2. **cgkit**: `make bump-cghts` (pins `go.mod` to the new cghts), commit
+   `go.mod`/`go.sum`, push. CI's `go get cghts@latest` then resolves the same tag.
 
 ## Architecture
 
 This repo holds only the CLI layer: `main.go` (entry point with `--profile`
 support) and `internal/cmd/` (Cobra commands). The third-party dependencies are
-cobra/pflag; everything genomics-related is delegated to `hts`.
+cobra/pflag; everything genomics-related is delegated to `cghts`.
 
 ### CLI Command Structure
 

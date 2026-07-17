@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/compgenlab/cghts/htsio"
+	"github.com/compgenlab/cghts/htsio/bam"
+	"github.com/compgenlab/cghts/htsio/cram"
+	"github.com/compgenlab/cghts/htsio/sam"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
-	"github.com/compgenlab/hts/htsio"
-	"github.com/compgenlab/hts/htsio/bam"
-	"github.com/compgenlab/hts/htsio/cram"
-	"github.com/compgenlab/hts/htsio/sam"
 	"github.com/spf13/cobra"
 )
 

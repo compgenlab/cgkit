@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/compgenlab/hts/htsio"
+	"github.com/compgenlab/cghts/htsio"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )

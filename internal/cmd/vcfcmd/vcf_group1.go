@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/compgenlab/hts/vcf"
+	"github.com/compgenlab/cghts/vcf"
 	"github.com/spf13/cobra"
 )
 
