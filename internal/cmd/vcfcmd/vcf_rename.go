@@ -100,7 +100,7 @@ unchanged; only the sample names in the header are updated.
 
 func init() {
 	f := vcfRenameCmd.Flags()
-	f.StringVarP(&vcfRenameOutput, "output", "o", "-", "Output filename (gzip-compressed if it ends in .gz; - for stdout)")
+	addVcfOutputFlags(vcfRenameCmd, &vcfRenameOutput)
 	f.StringArrayVar(&vcfRenameSamples, "sample", nil, "Rename a sample as OLD:NEW (OLD may be a 1-based number; repeatable)")
 	f.StringArrayVarP(&vcfRenameFiles, "samples-file", "f", nil, "Tab-delimited file of oldname<TAB>newname (repeatable)")
 }

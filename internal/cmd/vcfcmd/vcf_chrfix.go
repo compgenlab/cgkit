@@ -134,7 +134,7 @@ and optionally drop non-primary contigs.
 
 func init() {
 	f := vcfChrFixCmd.Flags()
-	f.StringVarP(&vcfChrFixOutput, "output", "o", "-", "Output filename (gzip-compressed if it ends in .gz; - for stdout)")
+	addVcfOutputFlags(vcfChrFixCmd, &vcfChrFixOutput)
 	f.BoolVar(&vcfChrFixUCSC, "ucsc", false, "Convert to UCSC references (chr1, chr2, ...)")
 	f.BoolVar(&vcfChrFixEnsembl, "ensembl", false, "Convert to Ensembl references (1, 2, ...)")
 	f.BoolVar(&vcfChrFixPrimary, "primary-human", false, "Keep only primary human contigs (1-22, X, Y, M)")

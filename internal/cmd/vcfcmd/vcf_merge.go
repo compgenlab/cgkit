@@ -170,5 +170,5 @@ func mergeRecord(rec, next *vcf.VcfRecord, srcName string) error {
 }
 
 func init() {
-	vcfMergeCmd.Flags().StringVarP(&vcfMergeOutput, "output", "o", "-", "Output filename (gzip-compressed if it ends in .gz; - for stdout)")
+	addVcfOutputFlags(vcfMergeCmd, &vcfMergeOutput)
 }
