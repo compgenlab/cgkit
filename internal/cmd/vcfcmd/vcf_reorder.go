@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/compgenlab/cghts/vcf"
 	"github.com/spf13/cobra"
 )
 
@@ -83,17 +82,9 @@ FORMAT values are not parsed: the sample columns are moved verbatim.`,
 		header.SetSamples(newNames)
 		stampVcfProvenance(header, "vcf-reorder")
 
-		var writer *vcf.VcfWriter
-		var closeErr func() error
-		if vcfReorderOutput == "" || vcfReorderOutput == "-" {
-			writer = vcf.NewVcfWriter(cmd.OutOrStdout())
-		} else {
-			w, err := vcf.OpenVcfWriter(vcfReorderOutput)
-			if err != nil {
-				return err
-			}
-			writer = w
-			closeErr = w.Close
+		writer, closeErr, err := openVcfWriter(cmd, vcfReorderOutput)
+		if err != nil {
+			return err
 		}
 
 		if err := writer.WriteHeader(header); err != nil {
@@ -136,7 +127,7 @@ func readLines(filename string) ([]string, error) {
 }
 
 func init() {
-	vcfReorderCmd.Flags().StringVarP(&vcfReorderOutput, "output", "o", "-", "Output filename (gzip-compressed if it ends in .gz; - for stdout)")
+	addVcfOutputFlags(vcfReorderCmd, &vcfReorderOutput)
 	vcfReorderCmd.Flags().StringArrayVarP(&vcfReorderSamples, "sample", "s", nil, "New sample order (comma-separated, repeatable)")
 	vcfReorderCmd.Flags().StringVar(&vcfReorderSamplesFile, "samples-file", "", "File with the new sample order, one per line")
 }

@@ -103,7 +103,7 @@ a comma-separated list (FOO;BAR => FLAGS=FOO,BAR).
 
 func init() {
 	f := vcfRemoveFlagsCmd.Flags()
-	f.StringVarP(&vcfRemoveFlagsOutput, "output", "o", "-", "Output filename (gzip-compressed if it ends in .gz; - for stdout)")
+	addVcfOutputFlags(vcfRemoveFlagsCmd, &vcfRemoveFlagsOutput)
 	f.StringVar(&vcfRemoveFlagsKey, "key", "FLAGS", "Name for the new INFO key")
 	f.BoolVar(&vcfRemoveFlagsAlways, "always", false, "Always include the key (use '.' when no flags set)")
 }

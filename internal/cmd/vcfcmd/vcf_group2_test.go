@@ -51,6 +51,17 @@ func TestVcfConcatChunks(t *testing.T) {
 	}
 }
 
+// TestVcfConcatChunksOneArg covers the rule that --chunks names a single series.
+func TestVcfConcatChunksOneArg(t *testing.T) {
+	err := runVcfErr(t, "vcf-concat", "--chunks", "a.1.vcf.gz", "b.1.vcf.gz")
+	if err == nil {
+		t.Fatalf("expected an error for --chunks with two arguments")
+	}
+	if !strings.Contains(err.Error(), "single argument") {
+		t.Errorf("error = %v, want single-argument complaint", err)
+	}
+}
+
 func TestVcfMerge(t *testing.T) {
 	out := runVcf(t, "vcf-merge", "testdata/merge_a.vcf", "testdata/merge_b.vcf")
 	// Primary ID kept; INFO and FORMAT unioned (primary first).
