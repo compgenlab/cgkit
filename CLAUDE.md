@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cgkit is a Go CLI toolkit for computational genomics research. It provides commands for sequence analysis, NGS data wrangling, and bioinformatics operations, with particular focus on Oxford Nanopore (long-read) sequence processing. The underlying library (sequence I/O, alignment, SAM/BAM/CRAM handling) lives in the separate `cghts` module (`github.com/compgenlab/cghts`).
 
 **Module:** `github.com/compgenlab/cgkit`
-**Go version:** 1.23
+**Go version:** 1.24.9
 **CLI framework:** Cobra
 **Library dependency:** `github.com/compgenlab/cghts`
 
