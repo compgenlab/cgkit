@@ -8,7 +8,22 @@
 //
 //	BASE.calls.parquet     one row per ALT-carrying genotype
 //	BASE.sites.parquet     one row per interrogated site, sample-independent
-//	BASE.regions.parquet   one row per contiguous run of adequately-covered sites
+//	BASE.regions.parquet   runs of catalog sites at which a sample was called
+//
+// # What a store built from a plain VCF can answer
+//
+// Only the variants the VCF actually contains. A plain VCF asserts nothing
+// about the positions between its records: an absent base was not observed to
+// be reference, it simply was not reported. So the sites catalog is the exact
+// boundary of what is knowable, and a query for any locus outside it yields
+// StateNotAssayed for every sample -- not StateNonCarrier.
+//
+// This is why the run intervals in the regions file must never be read as
+// coverage. They compress a per-sample, per-site record of "this sample was
+// called at these catalog sites"; the gaps between those sites are not part of
+// the claim. A gVCF is different, because its reference blocks (END, MIN_DP)
+// are positive statements about spans, and only such a store could answer
+// off-catalog positions.
 //
 // The sites file cannot be reconstructed from the calls file. Taking the
 // distinct loci out of the calls recovers every site only when the store holds
@@ -62,25 +77,29 @@ func (s Site) Locus() Locus {
 	return Locus{Chrom: s.Chrom, Pos: s.Pos, Ref: s.Ref, Alt: s.Alt}
 }
 
-// CallableRegion is a maximal run of consecutive variant sites at which one
-// sample had DP at or above the conversion threshold. Start and End are the
-// first and last such site positions.
+// CalledSiteRun records that one sample was successfully called, at adequate
+// depth, at every catalog site in [Start, End]. Start and End are the first and
+// last such site positions, and NSites is how many catalog sites the run covers.
 //
-// The span between two in-run sites is assumed callable, not observed: a
-// plain VCF records nothing between its variant records. Only a gVCF, with
-// reference blocks carrying END and MIN_DP, would make these intervals
-// observations rather than interpolations.
-type CallableRegion struct {
+// IT SAYS NOTHING ABOUT THE GAPS BETWEEN THOSE SITES. A plain VCF records
+// nothing between its variant records, so there is no basis for calling an
+// intervening base reference -- the caller may simply never have looked. The
+// interval form is a COMPRESSION of a per-sample, per-site fact ("called here,
+// and here, and here"), not a statement about genomic territory. Reading it as
+// a coverage interval would silently manufacture reference observations for
+// positions that were never interrogated, which is the precise error the
+// four-way classification exists to prevent.
+//
+// Consequently a run is only meaningful at positions that appear in the sites
+// catalog, and Classify checks the catalog first for exactly that reason. A
+// gVCF, whose reference blocks carry END and MIN_DP, is what would license
+// answering off-catalog positions; see SpanSemantics.
+type CalledSiteRun struct {
 	SampleID string `parquet:"sample_id,dict"`
 	Chrom    string `parquet:"chrom,dict"`
 	Start    int32  `parquet:"start"`
 	End      int32  `parquet:"end"`
 	NSites   int32  `parquet:"n_sites"`
-}
-
-// Covers reports whether pos falls inside this run.
-func (r CallableRegion) Covers(chrom string, pos int32) bool {
-	return r.Chrom == chrom && pos >= r.Start && pos <= r.End
 }
 
 // File suffixes of the three members of a Parquet store.

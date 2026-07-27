@@ -236,6 +236,23 @@ func (s *VcfStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 	return out, nil
 }
 
+// SiteKnown reports whether the VCF actually contains a record for this exact
+// REF/ALT at this position. A plain VCF asserts nothing about anything else --
+// an unreported base was not observed to be reference, it was simply not
+// reported -- so this is the boundary of what the store can answer.
+func (s *VcfStore) SiteKnown(l Locus) (bool, error) {
+	found := false
+	err := s.scan(s.spanFor(l), func(rec *vcf.VcfRecord) (bool, error) {
+		if NormChrom(rec.Chrom) == NormChrom(l.Chrom) && int32(rec.Pos) == l.Pos &&
+			rec.Ref == l.Ref && altIndex(rec, l.Alt) > 0 {
+			found = true
+			return false, nil
+		}
+		return true, nil
+	})
+	return found, err
+}
+
 // Close is a no-op; VcfStore opens the file per query.
 func (s *VcfStore) Close() error { return nil }
 

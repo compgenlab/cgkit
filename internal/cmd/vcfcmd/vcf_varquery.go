@@ -116,6 +116,7 @@ a non-carrier would invent an observation.
 		if nSample > 0 {
 			err = runVarQuerySamples(out, store, span, gate, format, args[0])
 		} else {
+			warnUnknownSites(cmd, store)
 			err = runVarQueryVariants(out, store, gate, format, args[0])
 		}
 		if err != nil {
@@ -165,6 +166,27 @@ func provenance(out *bufio.Writer, source string) {
 	fmt.Fprintln(out, "## program: "+buildinfo.String())
 	fmt.Fprintln(out, "## cmd: "+buildinfo.CommandLine())
 	fmt.Fprintln(out, "## input: "+source)
+}
+
+// warnUnknownSites notes any queried variant the source never reported.
+//
+// Without this, such a variant returns zero carriers -- or all not-assayed
+// under --classify -- which reads exactly like a real negative result. The
+// source simply never looked there, and only a gVCF could say otherwise.
+func warnUnknownSites(cmd *cobra.Command, store varstore.Store) {
+	for _, v := range vcfVarQueryVariants {
+		locus, err := varstore.ParseLocus(v)
+		if err != nil {
+			continue // reported properly by the query itself
+		}
+		known, err := store.SiteKnown(locus)
+		if err != nil || known {
+			continue
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"warning: %s is not in the source; reporting not-assayed for every sample.\n"+
+				"         A VCF only supports queries for the variants it contains.\n", locus)
+	}
 }
 
 // varQuerySampleResult is one subject's carried variants.

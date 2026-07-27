@@ -49,10 +49,19 @@ so a 1/2 sample is correctly a carrier of both alleles. AD is taken per allele
 depth supporting one alternate says nothing about another. Indels are NOT
 left-aligned; normalize beforehand if the source is not already.
 
-Callable regions are runs of consecutive variant sites at which a sample had
-DP >= --min-dp. The span between two in-run sites is assumed callable, not
-observed: a plain VCF says nothing between its records. Only a gVCF, whose
-reference blocks carry END and MIN_DP, would make these true observations.
+The regions file records, per sample, runs of catalog sites at which that
+sample was successfully called at DP >= --min-dp. The interval form is only a
+compression of that per-site fact; it makes NO claim about the bases between
+those sites.
+
+This bounds what the store can answer. A plain VCF reports variants and says
+nothing whatsoever about any other position -- an unreported base was not
+observed to be reference, it was simply never reported. The sites catalog is
+therefore the exact boundary of what is knowable, and a query for a locus
+outside it returns not-assayed for every sample rather than a set of reference
+calls, even where run intervals appear to bracket it. Only a gVCF, whose
+reference blocks carry END and MIN_DP, makes positive statements about spans and
+could answer off-catalog positions.
 
   --out BASE            base name for the three output files (required)
   --min-dp N            depth at or above which a site counts as callable
@@ -255,7 +264,7 @@ func (c *parquetConverter) emitRun(i int) error {
 		return nil
 	}
 	c.runs[i] = nil
-	return c.w.WriteRegion(varstore.CallableRegion{
+	return c.w.WriteRegion(varstore.CalledSiteRun{
 		SampleID: c.samples[i],
 		Chrom:    c.curChrom,
 		Start:    r.start,
