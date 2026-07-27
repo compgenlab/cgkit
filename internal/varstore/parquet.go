@@ -436,7 +436,7 @@ func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 	// run bracketing the position genuinely means "called here".
 	called := map[string]bool{}
 	if err := scanParquet(RegionsPath(s.base), func(r CalledSiteRun) bool {
-		if NormChrom(r.Chrom) == NormChrom(l.Chrom) && l.Pos >= r.Start && l.Pos <= r.End {
+		if SameChrom(r.Chrom, l.Chrom) && l.Pos >= r.Start && l.Pos <= r.End {
 			called[r.SampleID] = true
 		}
 		return true

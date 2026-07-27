@@ -158,7 +158,7 @@ func RecordLoci(rec *vcf.VcfRecord) []Locus {
 	out := make([]Locus, 0, len(alts))
 	for _, a := range alts {
 		out = append(out, Locus{
-			Chrom: NormChrom(rec.Chrom),
+			Chrom: rec.Chrom,
 			Pos:   int32(rec.Pos),
 			Ref:   rec.Ref,
 			Alt:   a,
@@ -177,7 +177,7 @@ func CallFor(rec *vcf.VcfRecord, sample string, sf SampleFields, altIdx int, alt
 	adRef, adAlt := SplitAD(sf.AD, altIdx)
 	return Call{
 		SampleID: sample,
-		Chrom:    NormChrom(rec.Chrom),
+		Chrom:    rec.Chrom,
 		Pos:      int32(rec.Pos),
 		Ref:      rec.Ref,
 		Alt:      alt,
