@@ -24,14 +24,19 @@ and position; overlapping positions are an error. Header INFO/FORMAT/FILTER/ALT
 definitions from all inputs are combined, and every input's chromosomes must be
 declared as ##contig lines in a consistent order.
 
-  --chunks    treat each argument as the first file of a numbered chunk sequence
-              (base.1.vcf.gz, base.2.vcf.gz, ...) and read it one file at a time,
-              so recombining thousands of vcf-split chunks stays within the
-              file-descriptor limit`,
+  --chunks    reassemble one vcf-split series, given only its first file. Pass a
+              single argument (BASE.1.vcf.gz); the rest of the series
+              (BASE.2.vcf.gz, BASE.3.vcf.gz, ...) is found by incrementing the
+              number in the filename, and the files are read one at a time.
+              Numbering stops at the first missing file. This keeps recombining
+              thousands of chunks within the open-file limit.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
 			return nil
+		}
+		if vcfConcatChunks && len(args) != 1 {
+			return fmt.Errorf("--chunks takes a single argument: the first file of the series (BASE.1.vcf.gz)")
 		}
 
 		var streams []*recordSource
@@ -133,8 +138,9 @@ declared as ##contig lines in a consistent order.
 	},
 }
 
-// openConcatStream opens filename as a record source. With chunks set, it reads
-// the numbered chunk sequence beginning at filename one file at a time.
+// openConcatStream opens filename as a record source. With chunks set, filename
+// is the first file of a vcf-split series and the whole series is read as one
+// stream, one file at a time.
 func openConcatStream(cmd *cobra.Command, filename string, chunks bool) (*recordSource, error) {
 	if chunks {
 		c, err := vcf.NewChunkedVcfReader(filename)
@@ -225,6 +231,6 @@ func unionHeaderInto(dst, src *vcf.VcfHeader, addContigs bool) error {
 
 func init() {
 	f := vcfConcatCmd.Flags()
-	f.StringVarP(&vcfConcatOutput, "output", "o", "-", "Output filename (gzip-compressed if it ends in .gz; - for stdout)")
-	f.BoolVar(&vcfConcatChunks, "chunks", false, "Treat each argument as the first file of a numbered chunk sequence (base.1.vcf.gz, ...)")
+	addVcfOutputFlags(vcfConcatCmd, &vcfConcatOutput)
+	f.BoolVar(&vcfConcatChunks, "chunks", false, "Reassemble a vcf-split series from its first file alone (BASE.1.vcf.gz, then BASE.2.vcf.gz, ...); takes exactly one argument")
 }

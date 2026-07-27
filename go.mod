@@ -3,7 +3,7 @@ module github.com/compgenlab/cgkit
 go 1.24.9
 
 require (
-	github.com/compgenlab/cghts v0.6.3
+	github.com/compgenlab/cghts v0.6.4
 	github.com/parquet-go/parquet-go v0.30.1
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/pflag v1.0.5
