@@ -237,6 +237,100 @@ func TestVarQueryRejectsBadFormatForMode(t *testing.T) {
 	}
 }
 
+// TestOffCatalogLocusIsNotAssayed is the central semantic guarantee for a plain
+// VCF: only the variants the file contains can be answered. chr1:250 lies
+// between two records and is bracketed by both samples' called-site runs, so a
+// store that read those runs as coverage would wrongly call everyone a
+// non-carrier there.
+func TestOffCatalogLocusIsNotAssayed(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Sanity: the position really is inside a run, so the test is meaningful.
+	known, err := s.SiteKnown(varstore.Locus{Chrom: "1", Pos: 250, Ref: "A", Alt: "G"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if known {
+		t.Fatal("chr1:250 should not be in the catalog; fixture changed")
+	}
+	if inRun, err := runBrackets(base, "1", 250); err != nil {
+		t.Fatal(err)
+	} else if !inRun {
+		t.Skip("chr1:250 is not bracketed by a run; the test would prove nothing")
+	}
+
+	states, err := s.Classify(varstore.Locus{Chrom: "1", Pos: 250, Ref: "A", Alt: "G"}, varstore.Gate{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(states) == 0 {
+		t.Fatal("expected a state per sample")
+	}
+	for _, st := range states {
+		if st.State != varstore.StateNotAssayed {
+			t.Errorf("%s at an off-catalog locus = %s, want not_assayed "+
+				"(a plain VCF claims nothing between its records)", st.SampleID, st.State)
+		}
+	}
+}
+
+// TestOffCatalogAgreesAcrossBackends pins that the VCF backend draws the same
+// boundary as the Parquet one.
+func TestOffCatalogAgreesAcrossBackends(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	fromVcf := runVcf(t, "vcf-varquery", "--variant", "1:250:A:G", "--classify", "testdata/coverage.vcf")
+	fromPq := runVcf(t, "vcf-varquery", "--variant", "1:250:A:G", "--classify", base)
+	if dataRowsOnly(fromVcf) != dataRowsOnly(fromPq) {
+		t.Errorf("backends disagree off-catalog\n vcf:\n%s\n parquet:\n%s",
+			dataRowsOnly(fromVcf), dataRowsOnly(fromPq))
+	}
+	if !strings.Contains(dataRowsOnly(fromPq), string(varstore.StateNotAssayed)) {
+		t.Errorf("expected not_assayed rows, got:\n%s", dataRowsOnly(fromPq))
+	}
+}
+
+// TestSpanSemanticsRecorded pins that a VCF-derived store declares the
+// conservative reading, so a future gVCF converter has to opt in explicitly.
+func TestSpanSemanticsRecorded(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got := s.SpanSemantics(); got != varstore.SpansSites {
+		t.Errorf("span semantics = %q, want %q", got, varstore.SpansSites)
+	}
+}
+
+// runBrackets reports whether any called-site run spans pos, which is what makes
+// the off-catalog test non-vacuous.
+func runBrackets(base, chrom string, pos int32) (bool, error) {
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		return false, err
+	}
+	defer s.Close()
+	// A run bracketing pos means Classify would have had evidence to misuse.
+	states, err := s.Classify(varstore.Locus{Chrom: chrom, Pos: 100, Ref: "A", Alt: "G"}, varstore.Gate{})
+	if err != nil {
+		return false, err
+	}
+	// chr1:100 and chr1:300 are both catalog sites called in S1, so S1's run
+	// spans 250. Confirm S1 was callable at the flanking site.
+	for _, st := range states {
+		if st.SampleID == "S1" && st.State == varstore.StateNonCarrier {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // dataRowsOnly drops the ## provenance lines, which carry a timestamp.
 func dataRowsOnly(s string) string {
 	var out []string

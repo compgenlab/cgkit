@@ -20,12 +20,29 @@ import (
 // mentions carriers, so a sample carrying nothing anywhere would otherwise be
 // invisible and get reported as not-assayed everywhere.
 const (
-	MetaSamples = "cgkit.samples"  // newline-separated sample ids, source order
-	MetaMinDP   = "cgkit.min_dp"   // callable threshold used at conversion
-	MetaProgram = "cgkit.program"  // cgkit version
-	MetaCommand = "cgkit.command"  // full command line
-	MetaSource  = "cgkit.source"   // input filename
-	MetaNoCall  = "cgkit.nocallable" // "1" when regions are absent by request
+	MetaSamples = "cgkit.samples"        // newline-separated sample ids, source order
+	MetaMinDP   = "cgkit.min_dp"         // callable threshold used at conversion
+	MetaProgram = "cgkit.program"        // cgkit version
+	MetaCommand = "cgkit.command"        // full command line
+	MetaSource  = "cgkit.source"         // input filename
+	MetaNoCall  = "cgkit.nocallable"     // "1" when regions are absent by request
+	MetaSpans   = "cgkit.span_semantics" // see SpanSemantics
+)
+
+// SpanSemantics records what the intervals in the regions file are entitled to
+// claim, which depends entirely on what the source format asserted.
+type SpanSemantics string
+
+const (
+	// SpansSites means the intervals only mark catalog sites at which a sample
+	// was called. Nothing is claimed about the bases in between. This is all a
+	// plain VCF supports, and it confines queries to the sites catalog.
+	SpansSites SpanSemantics = "sites"
+
+	// SpansBlocks means the intervals came from gVCF reference blocks, which
+	// are positive statements about whole spans. Only such a store may answer
+	// for positions absent from the catalog. Not yet produced by any converter.
+	SpansBlocks SpanSemantics = "blocks"
 )
 
 // CodecFor maps a --compression flag value to a parquet codec.
@@ -51,6 +68,10 @@ type WriterOpts struct {
 	Program      string
 	Command      string
 	Source       string
+
+	// Spans declares what the run intervals may claim. Defaults to SpansSites,
+	// which is all a plain VCF can support.
+	Spans SpanSemantics
 }
 
 // Writer builds the three files of a Parquet store. Rows are buffered and
@@ -58,11 +79,11 @@ type WriterOpts struct {
 type Writer struct {
 	calls   *parquet.GenericWriter[Call]
 	sites   *parquet.GenericWriter[Site]
-	regions *parquet.GenericWriter[CallableRegion]
+	regions *parquet.GenericWriter[CalledSiteRun]
 
 	callBuf   []Call
 	siteBuf   []Site
-	regionBuf []CallableRegion
+	regionBuf []CalledSiteRun
 
 	files []*os.File
 
@@ -108,6 +129,10 @@ func NewWriter(base string, o WriterOpts) (*Writer, error) {
 	w.calls.SetKeyValueMetadata(MetaProgram, o.Program)
 	w.calls.SetKeyValueMetadata(MetaCommand, o.Command)
 	w.calls.SetKeyValueMetadata(MetaSource, o.Source)
+	if o.Spans == "" {
+		o.Spans = SpansSites
+	}
+	w.calls.SetKeyValueMetadata(MetaSpans, string(o.Spans))
 	if o.NoCallable {
 		w.calls.SetKeyValueMetadata(MetaNoCall, "1")
 	}
@@ -122,7 +147,7 @@ func NewWriter(base string, o WriterOpts) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	w.regions = parquet.NewGenericWriter[CallableRegion](rf, opts...)
+	w.regions = parquet.NewGenericWriter[CalledSiteRun](rf, opts...)
 
 	return w, nil
 }
@@ -159,7 +184,7 @@ func (w *Writer) WriteSite(s Site) error {
 }
 
 // WriteRegion buffers one callable run.
-func (w *Writer) WriteRegion(r CallableRegion) error {
+func (w *Writer) WriteRegion(r CalledSiteRun) error {
 	w.regionBuf = append(w.regionBuf, r)
 	w.NRegions++
 	if len(w.regionBuf) >= batchSize {
@@ -260,7 +285,13 @@ type ParquetStore struct {
 	hasSites   bool
 	hasRegions bool
 	noCallable bool
+	spans      SpanSemantics
 }
+
+// SpanSemantics reports what this store's run intervals may claim. A store
+// written from a plain VCF reports SpansSites, confining answers to the sites
+// catalog.
+func (s *ParquetStore) SpanSemantics() SpanSemantics { return s.spans }
 
 // OpenParquet opens a Parquet store. base may be given either as the base name
 // or as the path to any one of the three files.
@@ -286,6 +317,10 @@ func OpenParquet(base string) (*ParquetStore, error) {
 	}
 	if v, ok := pf.Lookup(MetaNoCall); ok && v == "1" {
 		s.noCallable = true
+	}
+	s.spans = SpansSites // the conservative reading for stores predating the key
+	if v, ok := pf.Lookup(MetaSpans); ok && v != "" {
+		s.spans = SpanSemantics(v)
 	}
 	s.hasSites = fileExists(SitesPath(base))
 	s.hasRegions = fileExists(RegionsPath(base))
@@ -346,9 +381,16 @@ func (s *ParquetStore) Variants(sample string, span *Span, g Gate) ([]Call, erro
 // Classify resolves every sample at a locus.
 //
 // It refuses rather than guesses: without the sites catalog there is no way to
-// know the position was interrogated at all, and without callable regions no
-// way to know a silent sample was covered. Returning "non-carrier" in either
+// know the position was interrogated at all, and without run information no way
+// to know a silent sample was called there. Returning "non-carrier" in either
 // case would be a fabricated observation.
+//
+// The sites catalog is a hard gate. For a store whose spans are SpansSites --
+// everything a plain VCF can produce -- a locus absent from the catalog is
+// StateNotAssayed for every sample, no matter that run intervals appear to
+// bracket it. Those intervals only mark catalog sites; the bases between them
+// were never reported, and treating a run as coverage would invent reference
+// observations. Only a gVCF-derived store (SpansBlocks) could answer here.
 func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 	if !s.hasSites {
 		return nil, fmt.Errorf("%w: %s is missing", ErrNotClassifiable, SitesPath(s.base))
@@ -365,16 +407,19 @@ func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 		return nil, err
 	}
 
-	// Was this position interrogated at all?
-	interrogated := false
-	if err := scanParquet(SitesPath(s.base), func(site Site) bool {
-		if SameLocus(site.Locus(), l) {
-			interrogated = true
-			return false
-		}
-		return true
-	}); err != nil {
+	// Was this position interrogated at all? This is a hard gate rather than one
+	// input among several: if the source never reported the locus, the run
+	// intervals must not be consulted, so return before they are even opened.
+	interrogated, err := s.SiteKnown(l)
+	if err != nil {
 		return nil, err
+	}
+	if !interrogated && s.spans != SpansBlocks {
+		out := make([]SampleState, 0, len(samples))
+		for _, name := range samples {
+			out = append(out, SampleState{SampleID: name, State: StateNotAssayed})
+		}
+		return out, nil
 	}
 
 	calls := map[string]Call{}
@@ -387,16 +432,16 @@ func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 		return nil, err
 	}
 
-	covered := map[string]bool{}
-	if interrogated {
-		if err := scanParquet(RegionsPath(s.base), func(r CallableRegion) bool {
-			if NormChrom(r.Chrom) == NormChrom(l.Chrom) && l.Pos >= r.Start && l.Pos <= r.End {
-				covered[r.SampleID] = true
-			}
-			return true
-		}); err != nil {
-			return nil, err
+	// Reached only for a locus in the catalog (or a block-semantics store), so a
+	// run bracketing the position genuinely means "called here".
+	called := map[string]bool{}
+	if err := scanParquet(RegionsPath(s.base), func(r CalledSiteRun) bool {
+		if NormChrom(r.Chrom) == NormChrom(l.Chrom) && l.Pos >= r.Start && l.Pos <= r.End {
+			called[r.SampleID] = true
 		}
+		return true
+	}); err != nil {
+		return nil, err
 	}
 
 	out := make([]SampleState, 0, len(samples))
@@ -410,7 +455,7 @@ func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 			} else {
 				st.State = StateUncertain
 			}
-		} else if interrogated && covered[name] {
+		} else if called[name] {
 			st.State = StateNonCarrier
 		} else {
 			st.State = StateNotAssayed
@@ -418,6 +463,25 @@ func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 		out = append(out, st)
 	}
 	return out, nil
+}
+
+// SiteKnown reports whether a locus appears in the sites catalog, i.e. whether
+// the source actually reported it. For a store built from a plain VCF this is
+// the boundary of what can be answered at all, so callers presenting results to
+// a user should say so rather than let "0 carriers" read as "nobody carries it".
+func (s *ParquetStore) SiteKnown(l Locus) (bool, error) {
+	if !s.hasSites {
+		return false, fmt.Errorf("%w: %s is missing", ErrNotClassifiable, SitesPath(s.base))
+	}
+	found := false
+	err := scanParquet(SitesPath(s.base), func(site Site) bool {
+		if SameLocus(site.Locus(), l) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found, err
 }
 
 // Close is a no-op; ParquetStore opens files per query.

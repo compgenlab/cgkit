@@ -111,6 +111,13 @@ type Store interface {
 	// ErrNotClassifiable if the backend lacks the evidence to do so.
 	Classify(l Locus, g Gate) ([]SampleState, error)
 
+	// SiteKnown reports whether the source actually reported this locus. For a
+	// plain VCF, and for a Parquet store derived from one, this is the limit of
+	// what is answerable: nothing is claimed about positions the source did not
+	// report, so an unknown locus yields StateNotAssayed throughout rather than
+	// a set of reference calls.
+	SiteKnown(l Locus) (bool, error)
+
 	// Close releases any open files.
 	Close() error
 }
