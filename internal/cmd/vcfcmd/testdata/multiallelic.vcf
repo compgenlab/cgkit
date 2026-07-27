@@ -1,0 +1,10 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=1000>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=AD,Number=.,Type=Integer,Description="Allelic depths">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3	S4
+chr1	100	.	A	G	.	PASS	.	GT:AD:DP:GQ	0/1:20,10:30:99	0/0:30,0:30:99	1/1:0,28:28:99	0/0:25,0:25:60
+chr1	200	.	C	T,G	.	PASS	.	GT:AD:DP:GQ	1/2:5,12,9:26:99	0/1:18,11,0:29:45	0/0:31,0,0:31:99	2/2:0,0,27:27:99
+chr1	300	.	G	A	.	PASS	.	GT:AD:DP:GQ	0/0:33,0:33:99	0/0:30,0:30:99	0/0:29,0:29:99	0/0:31,0:31:99

@@ -66,6 +66,8 @@ func vcfTestRoot(args ...string) (*cobra.Command, *bytes.Buffer) {
 	vcfStripKeepFilter = nil
 	vcfStripKeepSample = nil
 	vcfConcatChunks = false
+	vcfVarQuerySamples = nil
+	vcfVarQueryVariants = nil
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)

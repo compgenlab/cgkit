@@ -27,5 +27,7 @@ func InitCmd(rootCmd *cobra.Command) {
 	rootCmd.AddCommand(vcfMergeCmd)
 	rootCmd.AddCommand(vcfToBedpeCmd)
 	rootCmd.AddCommand(vcfSvToFastaCmd)
+	rootCmd.AddCommand(vcfToParquetCmd)
+	rootCmd.AddCommand(vcfVarQueryCmd)
 	rootCmd.AddGroup(&cobra.Group{ID: "vcfcmd", Title: "VCF"})
 }

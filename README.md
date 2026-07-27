@@ -108,4 +108,6 @@ command's help shows the cgkit version it was added in.
 | `vcf-tobed` | Export allele positions from a VCF file to BED format |
 | `vcf-tobedpe` | Convert a structural-variant VCF to BEDPE format |
 | `vcf-tocount` | Convert a VCF to a count file using the AD (or RO/AO) format field |
+| `vcf-toparquet` | Convert a VCF to a sparse Parquet genotype store |
 | `vcf-tstv` | Calculate a Ts/Tv ratio for SNVs |
+| `vcf-varquery` | Query which subjects carry a variant, or which variants a subject carries |
