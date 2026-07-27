@@ -1,0 +1,437 @@
+package varstore
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
+
+	"github.com/parquet-go/parquet-go"
+	"github.com/parquet-go/parquet-go/compress"
+	"github.com/parquet-go/parquet-go/compress/snappy"
+	"github.com/parquet-go/parquet-go/compress/uncompressed"
+	"github.com/parquet-go/parquet-go/compress/zstd"
+)
+
+// Parquet file metadata keys. The sample roster lives here rather than in a
+// fourth file: Classify needs every sample, but the calls file only ever
+// mentions carriers, so a sample carrying nothing anywhere would otherwise be
+// invisible and get reported as not-assayed everywhere.
+const (
+	MetaSamples = "cgkit.samples"  // newline-separated sample ids, source order
+	MetaMinDP   = "cgkit.min_dp"   // callable threshold used at conversion
+	MetaProgram = "cgkit.program"  // cgkit version
+	MetaCommand = "cgkit.command"  // full command line
+	MetaSource  = "cgkit.source"   // input filename
+	MetaNoCall  = "cgkit.nocallable" // "1" when regions are absent by request
+)
+
+// CodecFor maps a --compression flag value to a parquet codec.
+func CodecFor(name string) (compress.Codec, error) {
+	switch strings.ToLower(name) {
+	case "zstd", "":
+		return &zstd.Codec{}, nil
+	case "snappy":
+		return &snappy.Codec{}, nil
+	case "none", "uncompressed":
+		return &uncompressed.Codec{}, nil
+	}
+	return nil, fmt.Errorf("unknown compression %q (use zstd, snappy, or none)", name)
+}
+
+// WriterOpts configures a Parquet store writer.
+type WriterOpts struct {
+	Codec        compress.Codec
+	RowGroupSize int64
+	Samples      []string
+	MinDP        int32
+	NoCallable   bool
+	Program      string
+	Command      string
+	Source       string
+}
+
+// Writer builds the three files of a Parquet store. Rows are buffered and
+// flushed in batches so memory stays bounded no matter how large the input is.
+type Writer struct {
+	calls   *parquet.GenericWriter[Call]
+	sites   *parquet.GenericWriter[Site]
+	regions *parquet.GenericWriter[CallableRegion]
+
+	callBuf   []Call
+	siteBuf   []Site
+	regionBuf []CallableRegion
+
+	files []*os.File
+
+	NCalls   int64
+	NSites   int64
+	NRegions int64
+}
+
+const batchSize = 8192
+
+// NewWriter creates the three store files for base.
+func NewWriter(base string, o WriterOpts) (*Writer, error) {
+	if o.Codec == nil {
+		o.Codec = &zstd.Codec{}
+	}
+	if o.RowGroupSize <= 0 {
+		o.RowGroupSize = 250_000
+	}
+	w := &Writer{}
+
+	open := func(path string) (*os.File, error) {
+		f, err := os.Create(path)
+		if err != nil {
+			w.abort()
+			return nil, err
+		}
+		w.files = append(w.files, f)
+		return f, nil
+	}
+
+	opts := []parquet.WriterOption{
+		parquet.Compression(o.Codec),
+		parquet.MaxRowsPerRowGroup(o.RowGroupSize),
+	}
+
+	cf, err := open(CallsPath(base))
+	if err != nil {
+		return nil, err
+	}
+	w.calls = parquet.NewGenericWriter[Call](cf, opts...)
+	w.calls.SetKeyValueMetadata(MetaSamples, strings.Join(o.Samples, "\n"))
+	w.calls.SetKeyValueMetadata(MetaMinDP, fmt.Sprint(o.MinDP))
+	w.calls.SetKeyValueMetadata(MetaProgram, o.Program)
+	w.calls.SetKeyValueMetadata(MetaCommand, o.Command)
+	w.calls.SetKeyValueMetadata(MetaSource, o.Source)
+	if o.NoCallable {
+		w.calls.SetKeyValueMetadata(MetaNoCall, "1")
+	}
+
+	sf, err := open(SitesPath(base))
+	if err != nil {
+		return nil, err
+	}
+	w.sites = parquet.NewGenericWriter[Site](sf, opts...)
+
+	rf, err := open(RegionsPath(base))
+	if err != nil {
+		return nil, err
+	}
+	w.regions = parquet.NewGenericWriter[CallableRegion](rf, opts...)
+
+	return w, nil
+}
+
+// abort closes and removes any files opened so far, used when construction
+// fails partway; a partial store is worse than none, since the set is meant to
+// be inseparable.
+func (w *Writer) abort() {
+	for _, f := range w.files {
+		f.Close()
+		os.Remove(f.Name())
+	}
+	w.files = nil
+}
+
+// WriteCall buffers one ALT-carrying genotype.
+func (w *Writer) WriteCall(c Call) error {
+	w.callBuf = append(w.callBuf, c)
+	w.NCalls++
+	if len(w.callBuf) >= batchSize {
+		return w.flushCalls()
+	}
+	return nil
+}
+
+// WriteSite buffers one catalog entry.
+func (w *Writer) WriteSite(s Site) error {
+	w.siteBuf = append(w.siteBuf, s)
+	w.NSites++
+	if len(w.siteBuf) >= batchSize {
+		return w.flushSites()
+	}
+	return nil
+}
+
+// WriteRegion buffers one callable run.
+func (w *Writer) WriteRegion(r CallableRegion) error {
+	w.regionBuf = append(w.regionBuf, r)
+	w.NRegions++
+	if len(w.regionBuf) >= batchSize {
+		return w.flushRegions()
+	}
+	return nil
+}
+
+func (w *Writer) flushCalls() error {
+	if len(w.callBuf) == 0 {
+		return nil
+	}
+	if _, err := w.calls.Write(w.callBuf); err != nil {
+		return fmt.Errorf("writing calls: %w", err)
+	}
+	w.callBuf = w.callBuf[:0]
+	return nil
+}
+
+func (w *Writer) flushSites() error {
+	if len(w.siteBuf) == 0 {
+		return nil
+	}
+	if _, err := w.sites.Write(w.siteBuf); err != nil {
+		return fmt.Errorf("writing sites: %w", err)
+	}
+	w.siteBuf = w.siteBuf[:0]
+	return nil
+}
+
+func (w *Writer) flushRegions() error {
+	if len(w.regionBuf) == 0 {
+		return nil
+	}
+	if _, err := w.regions.Write(w.regionBuf); err != nil {
+		return fmt.Errorf("writing regions: %w", err)
+	}
+	w.regionBuf = w.regionBuf[:0]
+	return nil
+}
+
+// Close flushes and finalizes all three files.
+func (w *Writer) Close() error {
+	var errs []error
+	for _, fn := range []func() error{w.flushCalls, w.flushSites, w.flushRegions} {
+		if err := fn(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, c := range []io.Closer{w.calls, w.sites, w.regions} {
+		if err := c.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, f := range w.files {
+		if err := f.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// scanParquet streams path in batches, calling fn per row. fn returns false to
+// stop early. Batching keeps a whole-genome store from having to be resident.
+func scanParquet[T any](path string, fn func(T) bool) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	r := parquet.NewGenericReader[T](f)
+	defer r.Close()
+
+	buf := make([]T, 1024)
+	for {
+		n, err := r.Read(buf)
+		for i := 0; i < n; i++ {
+			if !fn(buf[i]) {
+				return nil
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+	}
+}
+
+// ParquetStore is a Store backed by the three-file Parquet set.
+type ParquetStore struct {
+	base       string
+	samples    []string
+	hasSites   bool
+	hasRegions bool
+	noCallable bool
+}
+
+// OpenParquet opens a Parquet store. base may be given either as the base name
+// or as the path to any one of the three files.
+func OpenParquet(base string) (*ParquetStore, error) {
+	base = TrimStoreSuffix(base)
+	callsPath := CallsPath(base)
+	f, err := os.Open(callsPath)
+	if err != nil {
+		return nil, fmt.Errorf("opening parquet store %s: %w", base, err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	pf, err := parquet.OpenFile(f, st.Size())
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", callsPath, err)
+	}
+	s := &ParquetStore{base: base}
+	if v, ok := pf.Lookup(MetaSamples); ok && v != "" {
+		s.samples = strings.Split(v, "\n")
+	}
+	if v, ok := pf.Lookup(MetaNoCall); ok && v == "1" {
+		s.noCallable = true
+	}
+	s.hasSites = fileExists(SitesPath(base))
+	s.hasRegions = fileExists(RegionsPath(base))
+	return s, nil
+}
+
+// TrimStoreSuffix reduces any member path of a store to its base name.
+func TrimStoreSuffix(p string) string {
+	for _, sfx := range []string{CallsSuffix, SitesSuffix, RegionsSuffix} {
+		if strings.HasSuffix(p, sfx) {
+			return strings.TrimSuffix(p, sfx)
+		}
+	}
+	return p
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
+}
+
+// Samples returns the roster recorded at conversion time.
+func (s *ParquetStore) Samples() ([]string, error) {
+	if len(s.samples) == 0 {
+		return nil, fmt.Errorf("%s records no sample list", CallsPath(s.base))
+	}
+	return s.samples, nil
+}
+
+// Carriers returns the gated ALT calls at a locus.
+func (s *ParquetStore) Carriers(l Locus, g Gate) ([]Call, error) {
+	var out []Call
+	err := scanParquet(CallsPath(s.base), func(c Call) bool {
+		if SameLocus(c.Locus(), l) && g.Admits(c) {
+			out = append(out, c)
+		}
+		return true
+	})
+	return out, err
+}
+
+// Variants returns the gated ALT calls for one sample.
+func (s *ParquetStore) Variants(sample string, span *Span, g Gate) ([]Call, error) {
+	var out []Call
+	err := scanParquet(CallsPath(s.base), func(c Call) bool {
+		if c.SampleID != sample || !g.Admits(c) {
+			return true
+		}
+		if span != nil && !span.Contains(c.Chrom, c.Pos) {
+			return true
+		}
+		out = append(out, c)
+		return true
+	})
+	return out, err
+}
+
+// Classify resolves every sample at a locus.
+//
+// It refuses rather than guesses: without the sites catalog there is no way to
+// know the position was interrogated at all, and without callable regions no
+// way to know a silent sample was covered. Returning "non-carrier" in either
+// case would be a fabricated observation.
+func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
+	if !s.hasSites {
+		return nil, fmt.Errorf("%w: %s is missing", ErrNotClassifiable, SitesPath(s.base))
+	}
+	if !s.hasRegions {
+		return nil, fmt.Errorf("%w: %s is missing", ErrNotClassifiable, RegionsPath(s.base))
+	}
+	if s.noCallable {
+		return nil, fmt.Errorf("%w: %s was built with --no-callable (the source had no DP field)",
+			ErrNotClassifiable, s.base)
+	}
+	samples, err := s.Samples()
+	if err != nil {
+		return nil, err
+	}
+
+	// Was this position interrogated at all?
+	interrogated := false
+	if err := scanParquet(SitesPath(s.base), func(site Site) bool {
+		if SameLocus(site.Locus(), l) {
+			interrogated = true
+			return false
+		}
+		return true
+	}); err != nil {
+		return nil, err
+	}
+
+	calls := map[string]Call{}
+	if err := scanParquet(CallsPath(s.base), func(c Call) bool {
+		if SameLocus(c.Locus(), l) {
+			calls[c.SampleID] = c
+		}
+		return true
+	}); err != nil {
+		return nil, err
+	}
+
+	covered := map[string]bool{}
+	if interrogated {
+		if err := scanParquet(RegionsPath(s.base), func(r CallableRegion) bool {
+			if NormChrom(r.Chrom) == NormChrom(l.Chrom) && l.Pos >= r.Start && l.Pos <= r.End {
+				covered[r.SampleID] = true
+			}
+			return true
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	out := make([]SampleState, 0, len(samples))
+	for _, name := range samples {
+		st := SampleState{SampleID: name}
+		if c, ok := calls[name]; ok {
+			cc := c
+			st.Call = &cc
+			if g.Admits(c) {
+				st.State = StateCarrier
+			} else {
+				st.State = StateUncertain
+			}
+		} else if interrogated && covered[name] {
+			st.State = StateNonCarrier
+		} else {
+			st.State = StateNotAssayed
+		}
+		out = append(out, st)
+	}
+	return out, nil
+}
+
+// Close is a no-op; ParquetStore opens files per query.
+func (s *ParquetStore) Close() error { return nil }
+
+// SortCalls orders calls by position then sample, for stable output.
+func SortCalls(c []Call) {
+	sort.SliceStable(c, func(i, j int) bool {
+		if c[i].Chrom != c[j].Chrom {
+			return c[i].Chrom < c[j].Chrom
+		}
+		if c[i].Pos != c[j].Pos {
+			return c[i].Pos < c[j].Pos
+		}
+		return c[i].SampleID < c[j].SampleID
+	})
+}

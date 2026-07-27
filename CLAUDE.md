@@ -55,7 +55,16 @@ The cghts tag must land on GitHub before cgkit builds against it:
 
 This repo holds only the CLI layer: `main.go` (entry point with `--profile`
 support) and `internal/cmd/` (Cobra commands). The third-party dependencies are
-cobra/pflag; everything genomics-related is delegated to `cghts`.
+cobra/pflag plus `parquet-go/parquet-go`; everything genomics-related is
+delegated to `cghts`.
+
+`internal/varstore/` is the one exception to "CLI layer only": it holds the
+on-disk schema for the Parquet genotype store and a `Store` interface with VCF
+and Parquet implementations. It lives here rather than in `cghts` because it is
+storage/IO glue rather than a genomics algorithm. Its `vcfrecord.go` is the
+single authoritative reading of a VCF genotype — both `vcf-toparquet` and the
+VCF-backed `Store` go through it, so a query against a VCF and the same query
+against a store converted from it cannot drift apart.
 
 ### CLI Command Structure
 
@@ -69,3 +78,5 @@ Commands are registered in `internal/cmd/root.go` and grouped by file format or 
 - `ont-umi-cluster` — Collapse similar UMIs in a coordinate-sorted BAM into `MI` groups
 - `ont-umi-dedup` — UMI deduplication: selects one representative per MI group from coordinate-sorted BAM. Secondary/supplementary alignments are dropped (cannot be reliably resolved in coordinate order). Supports `--threads` for parallel BGZF compression.
 - `ont-umi-lookup` — Match reads in an aligned BAM to UMI clusters from `ont-umi-cluster` output
+- `vcf-toparquet` — Convert a VCF into a sparse Parquet genotype store: `BASE.calls.parquet` (one row per ALT-carrying genotype), `BASE.sites.parquet` (one row per interrogated site), `BASE.regions.parquet` (contiguous runs of covered sites per sample). All three are one inseparable set. The sites file is **not** derivable from the calls: taking distinct loci out of the calls only recovers every site when the store holds an entire joint callset, and over a sample subset the sites nobody in that subset carries vanish silently, so a later query reports "never interrogated" for a position that was in fact observed and reference. Records are normalized to one variant per row (multiallelics split, focal allele recoded to 1, other alternates masked to `.` so a `1/2` sample is correctly a carrier of both; AD taken per allele, not summed). Indels are **not** left-aligned. A site counts as callable only when the caller actually made a call there *and* DP ≥ `--min-dp` — `./.` at high depth is a declined call, not a covered one. Callable runs interpolate between variant sites, which is an approximation a gVCF (with `END`/`MIN_DP` reference blocks) would remove; see the GVCF memory.
+- `vcf-varquery` — Query which subjects carry a variant (`--variant chrom:pos:ref:alt`) or which variants a subject carries (`--sample`), over either a VCF or a `vcf-toparquet` store, chosen by path or `--store`. `--classify` resolves every sample to carrier / uncertain / non-carrier / not-assayed rather than listing only carriers. The backends must agree: verified identical on 3,202 1KG samples, including at the worst-covered site in BRCA1. For that equivalence the query `--min-dp` should match the conversion `--min-dp`, since the Parquet side baked that threshold into its callable regions. An incomplete store (missing sites/regions, or built with `--no-callable`) makes `--classify` return `ErrNotClassifiable` rather than degrade — reporting an unobserved sample as a non-carrier is exactly the error the four states exist to prevent.
