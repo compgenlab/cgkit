@@ -180,7 +180,7 @@ type parquetConverter struct {
 // record splits one VCF record into per-allele calls, a catalog entry per
 // allele, and callable-run bookkeeping.
 func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
-	chrom := varstore.NormChrom(rec.Chrom)
+	chrom := rec.Chrom
 	if chrom != c.curChrom {
 		// Runs cannot span chromosomes.
 		if err := c.closeRuns(); err != nil {

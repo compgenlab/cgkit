@@ -80,7 +80,7 @@ func TestVcfToParquetSplitsMultiallelic(t *testing.T) {
 
 	// S1 is 1/2 at the multiallelic site: a carrier of BOTH alleles, appearing
 	// once per split row, with the other allele masked out.
-	t1, ok := got["S1@1:200:C:T"]
+	t1, ok := got["S1@chr1:200:C:T"]
 	if !ok {
 		t.Fatalf("S1 missing from the C>T split row; got keys %v", keys(got))
 	}
@@ -90,7 +90,7 @@ func TestVcfToParquetSplitsMultiallelic(t *testing.T) {
 	if t1.ADRef != 5 || t1.ADAlt != 12 {
 		t.Errorf("S1 C>T ad = %d,%d, want 5,12", t1.ADRef, t1.ADAlt)
 	}
-	g1, ok := got["S1@1:200:C:G"]
+	g1, ok := got["S1@chr1:200:C:G"]
 	if !ok {
 		t.Fatal("S1 missing from the C>G split row")
 	}
@@ -102,15 +102,15 @@ func TestVcfToParquetSplitsMultiallelic(t *testing.T) {
 	}
 
 	// S4 is 2/2: a homozygous carrier of the second alt only.
-	if c, ok := got["S4@1:200:C:G"]; !ok || c.GT != "1/1" {
+	if c, ok := got["S4@chr1:200:C:G"]; !ok || c.GT != "1/1" {
 		t.Errorf("S4 C>G = %+v, want gt 1/1", c)
 	}
-	if _, ok := got["S4@1:200:C:T"]; ok {
+	if _, ok := got["S4@chr1:200:C:T"]; ok {
 		t.Error("S4 should not appear as a carrier of C>T")
 	}
 
 	// A site where nobody carries anything produces no calls at all...
-	if _, ok := got["S1@1:300:G:A"]; ok {
+	if _, ok := got["S1@chr1:300:G:A"]; ok {
 		t.Error("monomorphic site should produce no calls")
 	}
 }
@@ -329,6 +329,105 @@ func runBrackets(base, chrom string, pos int32) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// TestVarQueryChromNamingIsAutoConverted covers both naming conventions against
+// an indexed, chr-prefixed VCF. Tabix looks reference names up verbatim, so
+// before contig resolution a "22"-style query against a "chr22" index failed
+// with `tabix: unknown reference "22"` rather than simply finding the record.
+//
+// This only bites on the indexed path: an unindexed file is scanned and
+// compared canonically, which is why the earlier tests missed it.
+func TestVarQueryChromNamingIsAutoConverted(t *testing.T) {
+	for _, q := range []string{"chr1:100:A:G", "1:100:A:G"} {
+		out := runVcf(t, "vcf-varquery", "--variant", q, "testdata/sample.vcf.gz")
+		if !strings.Contains(out, "NORMAL") && !strings.Contains(out, "TUMOR") {
+			t.Errorf("query %q returned no carriers:\n%s", q, out)
+		}
+	}
+	// The carriers must be identical either way. The leading "variant" column
+	// deliberately echoes the spelling the user typed, so compare past it.
+	a := dropFirstColumn(dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "testdata/sample.vcf.gz")))
+	b := dropFirstColumn(dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "1:100:A:G", "testdata/sample.vcf.gz")))
+	if a != b {
+		t.Errorf("chr-prefixed and bare spellings disagree\n chr1:\n%s\n 1:\n%s", a, b)
+	}
+}
+
+// dropFirstColumn strips the leading tab-separated field of every line.
+func dropFirstColumn(s string) string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if _, rest, ok := strings.Cut(l, "\t"); ok {
+			out = append(out, rest)
+		} else {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// TestVarQueryUnknownContigIsAnAbsence pins that asking about a contig the file
+// does not have is answered, not rejected: it is simply not in the source. The
+// behaviour must not depend on whether the file happens to be indexed.
+func TestVarQueryUnknownContigIsAnAbsence(t *testing.T) {
+	// The harness folds stderr into the same buffer, so assert on the absence of
+	// carriers rather than on line counts.
+	for _, in := range []string{"testdata/sample.vcf.gz", "testdata/sample.vcf"} {
+		out := runVcf(t, "vcf-varquery", "--variant", "chrZZ:100:A:G", in)
+		for _, sample := range []string{"NORMAL", "TUMOR"} {
+			if strings.Contains(out, sample+"\t") {
+				t.Errorf("%s: absent contig reported %s as a carrier:\n%s", in, sample, out)
+			}
+		}
+		if !strings.Contains(out, "not in the source") {
+			t.Errorf("%s: expected a warning that the variant is absent, got:\n%s", in, out)
+		}
+	}
+}
+
+// TestVarQueryBadRegionIsRejected pins the other half: --region names a contig
+// the caller asserts exists, so an unresolvable one is an error that says what
+// the file does have.
+func TestVarQueryBadRegionIsRejected(t *testing.T) {
+	err := runVcfErr(t, "vcf-varquery", "--sample", "NORMAL", "--region", "chrZZ:1-100", "testdata/sample.vcf.gz")
+	if err == nil {
+		t.Fatal("expected an error for a --region on a contig not in the index")
+	}
+	if !strings.Contains(err.Error(), "unknown reference") || !strings.Contains(err.Error(), "chr1") {
+		t.Errorf("error should name the available references, got: %v", err)
+	}
+}
+
+// TestParquetStorePreservesSourceChromNaming pins that conversion records the
+// source's own spelling rather than rewriting it, while queries stay
+// convention-agnostic.
+func TestParquetStorePreservesSourceChromNaming(t *testing.T) {
+	base := convert(t, "testdata/multiallelic.vcf") // chr-prefixed
+	calls := readCalls(t, base)
+	if len(calls) == 0 {
+		t.Fatal("no calls")
+	}
+	for _, c := range calls {
+		if !strings.HasPrefix(c.Chrom, "chr") {
+			t.Errorf("stored chrom = %q, want the source's chr-prefixed spelling", c.Chrom)
+			break
+		}
+	}
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, q := range []string{"chr1", "1"} {
+		known, err := s.SiteKnown(varstore.Locus{Chrom: q, Pos: 100, Ref: "A", Alt: "G"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !known {
+			t.Errorf("SiteKnown(%s:100:A:G) = false, want true", q)
+		}
+	}
 }
 
 // dataRowsOnly drops the ## provenance lines, which carry a timestamp.
