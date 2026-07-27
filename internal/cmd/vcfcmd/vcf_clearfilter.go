@@ -131,7 +131,7 @@ func clearRecordFilters(rec *vcf.VcfRecord, clearSet map[string]bool) {
 
 func init() {
 	f := vcfClearFilterCmd.Flags()
-	f.StringVarP(&vcfClearFilterOutput, "output", "o", "-", "Output filename (gzip-compressed if it ends in .gz; - for stdout)")
+	addVcfOutputFlags(vcfClearFilterCmd, &vcfClearFilterOutput)
 	f.StringArrayVar(&vcfClearFilterFilters, "filter", nil, "Filter code to clear (comma-separated, repeatable)")
 	f.BoolVar(&vcfClearFilterOnly, "only", false, "Only clear when the named filters are the only codes")
 	f.BoolVar(&vcfClearFilterPassing, "passing", false, "Only output passing variants")

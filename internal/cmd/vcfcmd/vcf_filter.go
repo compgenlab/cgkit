@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/compgenlab/cghts/vcf"
 	"github.com/compgenlab/cghts/vcf/filter"
 	"github.com/spf13/cobra"
 )
@@ -76,17 +75,9 @@ variants that pass all filters; --failing writes only variants that fail one.
 		}
 		stampVcfProvenance(header, "vcf-filter")
 
-		var writer *vcf.VcfWriter
-		var closeFile func() error
-		if vcfFilterOutput == "" || vcfFilterOutput == "-" {
-			writer = vcf.NewVcfWriter(cmd.OutOrStdout())
-		} else {
-			w, err := vcf.OpenVcfWriter(vcfFilterOutput)
-			if err != nil {
-				return err
-			}
-			writer = w
-			closeFile = w.Close
+		writer, closeFile, err := openVcfWriter(cmd, vcfFilterOutput)
+		if err != nil {
+			return err
 		}
 		if err := writer.WriteHeader(header); err != nil {
 			return err
@@ -293,7 +284,7 @@ func newValueFilter(kind, key, val, sample, allele string) (filter.Filter, error
 
 func init() {
 	f := vcfFilterCmd.Flags()
-	f.StringVarP(&vcfFilterOutput, "output", "o", "-", "Output filename (gzip-compressed if it ends in .gz; - for stdout)")
+	addVcfOutputFlags(vcfFilterCmd, &vcfFilterOutput)
 	f.BoolVar(&vcfFilterPassing, "passing", false, "Only output passing variants")
 	f.BoolVar(&vcfFilterFailing, "failing", false, "Only output failing variants")
 	f.StringVar(&vcfFilterStats, "stats", "", "Write per-filter-combination counts (tab-separated) to this file")

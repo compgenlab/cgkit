@@ -21,10 +21,11 @@ var vcfSplitCmd = &cobra.Command{
 	Short:       "Split a VCF file into smaller files with N variants each",
 	Long: `Split a VCF file into multiple bgzipped files of N variants each. Each output
 file gets a fresh copy of the header. Outputs are named BASE.1.vcf.gz,
-BASE.2.vcf.gz, and so on.
+BASE.2.vcf.gz, and so on. Recombine them with "vcf-concat --chunks BASE.1.vcf.gz".
 
   --out BASE    base output name (required)
-  --num N       variants per output file (required)`,
+  --num N       variants per output file (required)
+  --tbi         also write a tabix index (BASE.N.vcf.gz.tbi) for each chunk`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -49,15 +50,20 @@ BASE.2.vcf.gz, and so on.
 		}
 		stampVcfProvenance(header, "vcf-split")
 
+		// Each chunk is a separate file, so with --tbi each gets its own index.
 		var writer *vcf.VcfWriter
 		fileNum, inFile := 0, 0
+		chunkPath := ""
 		closeChunk := func() error {
 			if writer == nil {
 				return nil
 			}
 			err := writer.Close()
 			writer = nil
-			return err
+			if err != nil || !vcfTbi {
+				return err
+			}
+			return writeVcfTbi(chunkPath)
 		}
 
 		for {
@@ -71,7 +77,8 @@ BASE.2.vcf.gz, and so on.
 			}
 			if writer == nil {
 				fileNum++
-				w, oerr := vcf.OpenVcfWriter(vcfSplitOut + "." + strconv.Itoa(fileNum) + ".vcf.gz")
+				chunkPath = vcfSplitOut + "." + strconv.Itoa(fileNum) + ".vcf.gz"
+				w, oerr := vcf.OpenVcfWriter(chunkPath)
 				if oerr != nil {
 					return oerr
 				}
@@ -101,4 +108,5 @@ func init() {
 	f := vcfSplitCmd.Flags()
 	f.StringVar(&vcfSplitOut, "out", "", "Base output name (outputs are BASE.N.vcf.gz)")
 	f.IntVar(&vcfSplitNum, "num", 0, "Number of variants per output file")
+	f.BoolVar(&vcfTbi, "tbi", false, "Also write a tabix (.tbi) index for each chunk")
 }

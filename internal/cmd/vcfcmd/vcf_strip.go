@@ -242,7 +242,7 @@ func expandStripValues(vals []string) ([]string, error) {
 
 func init() {
 	f := vcfStripCmd.Flags()
-	f.StringVarP(&vcfStripOutput, "output", "o", "-", "Output filename (gzip-compressed if it ends in .gz; - for stdout)")
+	addVcfOutputFlags(vcfStripCmd, &vcfStripOutput)
 	f.BoolVar(&vcfStripAll, "all", false, "Remove all annotations and samples")
 	f.BoolVar(&vcfStripDBSNP, "dbsnp", false, "Remove the ID column")
 	f.BoolVar(&vcfStripPassing, "passing", false, "Only output passing variants (post-strip)")

@@ -81,17 +81,9 @@ Sample-count annotators (require GATK-style FORMAT fields):
 		}
 		stampVcfProvenance(header, "vcf-annotate")
 
-		var writer *vcf.VcfWriter
-		var closeFile func() error
-		if vcfAnnotateOutput == "" || vcfAnnotateOutput == "-" {
-			writer = vcf.NewVcfWriter(cmd.OutOrStdout())
-		} else {
-			w, err := vcf.OpenVcfWriter(vcfAnnotateOutput)
-			if err != nil {
-				return err
-			}
-			writer = w
-			closeFile = w.Close
+		writer, closeFile, err := openVcfWriter(cmd, vcfAnnotateOutput)
+		if err != nil {
+			return err
 		}
 		if err := writer.WriteHeader(header); err != nil {
 			return err
@@ -494,7 +486,7 @@ func parseCopyLogRatio(arg string) (*annotate.CopyNumberLogRatio, error) {
 
 func init() {
 	f := vcfAnnotateCmd.Flags()
-	f.StringVarP(&vcfAnnotateOutput, "output", "o", "-", "Output filename (gzip-compressed if it ends in .gz; - for stdout)")
+	addVcfOutputFlags(vcfAnnotateCmd, &vcfAnnotateOutput)
 	f.BoolVar(&vcfAnnotatePassing, "passing", false, "Only output passing variants")
 	f.StringVar(&vcfAnnotateAltChrom, "alt-chrom", "", "Use an INFO field as the chromosome for coordinate-based annotators")
 	f.StringVar(&vcfAnnotateAltPos, "alt-pos", "", "Use an INFO field as the position for coordinate-based annotators")
