@@ -23,6 +23,7 @@ var (
 	vcfToParquetCompression  string
 	vcfToParquetRowGroupSize int
 	vcfToParquetVerbose      bool
+	vcfToParquetForce        bool
 )
 
 var vcfToParquetCmd = &cobra.Command{
@@ -48,6 +49,11 @@ and the members go inside it under their bare names:
 That keeps the set as a single thing to copy, move or delete -- worth having,
 since the three files are only meaningful together. vcf-varquery accepts either
 form, and either member path within it.
+
+Conversion refuses to overwrite an existing store: if any of the three members
+is already present under --out, or if a prefix-form base names an existing
+directory, it stops and asks for --force. Writing truncates all three, and a
+half-replaced set is worse than either keeping or replacing the old one.
 
 The sites file carries both allele counts (AC, AN) and sample counts
 (n_carriers, n_called, n_lowdp). They are not interchangeable: a 1/1 genotype is
@@ -87,6 +93,7 @@ reference blocks carry END and MIN_DP, makes positive statements about spans and
 could answer off-catalog positions.
 
   --out BASE            base name for the three output files, or DIR/ (required)
+  --force               overwrite an existing store at --out
   --min-dp N            depth at or above which a site counts as callable
   --no-callable         proceed when the input has no DP field at all
   --passing             skip filtered records
@@ -124,6 +131,12 @@ could answer off-catalog positions.
 			return fmt.Errorf("%s has no samples; a genotype store needs per-sample calls", args[0])
 		}
 
+		// Refuse to clobber an existing store before opening anything: the
+		// writer truncates all three members, so this is the last moment the
+		// previous one still exists.
+		if err := varstore.CheckStoreTarget(vcfToParquetOut, vcfToParquetForce); err != nil {
+			return err
+		}
 		// A base ending in "/" names a directory to put the members in.
 		if err := varstore.EnsureStoreDir(vcfToParquetOut); err != nil {
 			return err
@@ -464,4 +477,5 @@ func init() {
 	f.StringVar(&vcfToParquetCompression, "compression", "zstd", "Parquet compression: zstd, snappy, or none")
 	f.IntVar(&vcfToParquetRowGroupSize, "row-group-size", 250000, "Rows per parquet row group")
 	f.BoolVarP(&vcfToParquetVerbose, "verbose", "v", false, "Report progress and a conversion summary on stderr")
+	f.BoolVar(&vcfToParquetForce, "force", false, "Overwrite an existing store at --out")
 }

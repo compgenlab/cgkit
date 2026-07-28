@@ -33,6 +33,7 @@
 package varstore
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,4 +187,43 @@ func EnsureStoreDir(base string) error {
 		return nil
 	}
 	return os.MkdirAll(base, 0o755)
+}
+
+// ExistingMembers lists which of the three member files already exist at base.
+func ExistingMembers(base string) []string {
+	var found []string
+	for _, m := range []string{CallsMember, SitesMember, RegionsMember} {
+		if p := MemberPath(base, m); fileExists(p) {
+			found = append(found, p)
+		}
+	}
+	return found
+}
+
+// CheckStoreTarget refuses to write over an existing store unless force is set.
+//
+// Conversion truncates all three members, so an accidental re-run against a
+// populated base destroys the previous store outright -- and because the three
+// files are only meaningful together, a half-replaced set is worse than either
+// outcome. Any single surviving member is therefore enough to stop.
+//
+// A prefix-form base that is itself a directory is refused separately: writing
+// "cohort.calls.parquet" beside an existing "cohort/" directory is legal but
+// almost certainly means the trailing slash was forgotten.
+func CheckStoreTarget(base string, force bool) error {
+	if force {
+		return nil
+	}
+	if !IsDirBase(base) {
+		if st, err := os.Stat(base); err == nil && st.IsDir() {
+			return fmt.Errorf("%s is a directory; write inside it with --out %s%c, "+
+				"or pass --force to use the name as a filename prefix",
+				base, base, os.PathSeparator)
+		}
+	}
+	if existing := ExistingMembers(base); len(existing) > 0 {
+		return fmt.Errorf("refusing to overwrite an existing store: %s; pass --force to replace it",
+			strings.Join(existing, ", "))
+	}
+	return nil
 }
