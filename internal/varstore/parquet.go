@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/parquet-go/parquet-go"
@@ -286,12 +287,41 @@ type ParquetStore struct {
 	hasRegions bool
 	noCallable bool
 	spans      SpanSemantics
+	minDP      int32
+	meta       map[string]string
 }
 
 // SpanSemantics reports what this store's run intervals may claim. A store
 // written from a plain VCF reports SpansSites, confining answers to the sites
 // catalog.
 func (s *ParquetStore) SpanSemantics() SpanSemantics { return s.spans }
+
+// Provenance is what a store records about how it was built. It matters at
+// query time chiefly because of MinDP: a store baked that threshold into its
+// called-site runs, so a query gating at a different value is not asking the
+// same question the store can answer.
+type Provenance struct {
+	Source     string
+	Program    string
+	Command    string
+	MinDP      int32
+	NoCallable bool
+	Spans      SpanSemantics
+	NumSamples int
+}
+
+// Provenance returns the conversion metadata recorded in the calls file.
+func (s *ParquetStore) Provenance() Provenance {
+	return Provenance{
+		Source:     s.meta[MetaSource],
+		Program:    s.meta[MetaProgram],
+		Command:    s.meta[MetaCommand],
+		MinDP:      s.minDP,
+		NoCallable: s.noCallable,
+		Spans:      s.spans,
+		NumSamples: len(s.samples),
+	}
+}
 
 // OpenParquet opens a Parquet store. base may be given either as the base name
 // or as the path to any one of the three files.
@@ -311,7 +341,15 @@ func OpenParquet(base string) (*ParquetStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", callsPath, err)
 	}
-	s := &ParquetStore{base: base}
+	s := &ParquetStore{base: base, meta: map[string]string{}}
+	for _, k := range []string{MetaSource, MetaProgram, MetaCommand, MetaMinDP} {
+		if v, ok := pf.Lookup(k); ok {
+			s.meta[k] = v
+		}
+	}
+	if v, err := strconv.Atoi(s.meta[MetaMinDP]); err == nil {
+		s.minDP = int32(v)
+	}
 	if v, ok := pf.Lookup(MetaSamples); ok && v != "" {
 		s.samples = strings.Split(v, "\n")
 	}

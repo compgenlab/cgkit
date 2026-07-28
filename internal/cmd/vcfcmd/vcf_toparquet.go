@@ -3,6 +3,10 @@ package vcfcmd
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/compgenlab/cghts/vcf"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
@@ -18,6 +22,7 @@ var (
 	vcfToParquetPassing      bool
 	vcfToParquetCompression  string
 	vcfToParquetRowGroupSize int
+	vcfToParquetVerbose      bool
 )
 
 var vcfToParquetCmd = &cobra.Command{
@@ -77,7 +82,9 @@ could answer off-catalog positions.
   --no-callable         proceed when the input has no DP field at all
   --passing             skip filtered records
   --compression C       zstd (default), snappy, or none
-  --row-group-size N    rows per parquet row group`,
+  --row-group-size N    rows per parquet row group
+  -v, --verbose         report progress and a conversion summary on stderr,
+                        including which of DP/GQ/AD the input actually carries`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -122,12 +129,18 @@ could answer off-catalog positions.
 			return err
 		}
 
+		started := time.Now()
 		conv := &parquetConverter{
 			w:          w,
 			samples:    samples,
 			minDP:      int32(vcfToParquetMinDP),
 			noCallable: vcfToParquetNoCallable,
 			runs:       make([]*callableRun, len(samples)),
+			verbose:    vcfToParquetVerbose,
+			progress:   cmd.ErrOrStderr(),
+		}
+		if vcfToParquetVerbose {
+			fmt.Fprintf(cmd.ErrOrStderr(), "reading %s (%d samples)\n", args[0], len(samples))
 		}
 
 		for {
@@ -140,6 +153,7 @@ could answer off-catalog positions.
 				return err
 			}
 			if vcfToParquetPassing && rec.IsFiltered() {
+				conv.nFiltered++
 				continue
 			}
 			if err := conv.record(rec); err != nil {
@@ -159,6 +173,9 @@ could answer off-catalog positions.
 			return fmt.Errorf("no DP field found in %s, so callable regions cannot be built\n"+
 				"       re-run with --no-callable to accept a store that cannot distinguish\n"+
 				"       non-carrier from not-assayed", args[0])
+		}
+		if vcfToParquetVerbose {
+			conv.report(cmd.ErrOrStderr(), vcfToParquetOut, time.Since(started))
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"wrote %s: %d calls, %d sites, %d callable runs over %d samples\n",
@@ -184,6 +201,38 @@ type parquetConverter struct {
 	runs       []*callableRun
 	curChrom   string
 	sawDP      int64
+
+	// verbose reporting
+	verbose       bool
+	progress      io.Writer
+	nRecords      int64
+	nFiltered     int64
+	nMultiAllelic int64
+	nExtraRows    int64
+	sawGQ         int64
+	sawAD         int64
+	nGenotypes    int64
+	nBelowDP      int64
+	nNoCall       int64
+	chroms        []string
+}
+
+// note records a per-chromosome transition for the verbose summary.
+func (c *parquetConverter) note(chrom string) {
+	c.chroms = append(c.chroms, chrom)
+	if c.verbose {
+		fmt.Fprintf(c.progress, "  %s: starting\n", chrom)
+	}
+}
+
+// tick emits periodic progress, which matters because a whole-chromosome
+// conversion streams for minutes with nothing else to show for it.
+func (c *parquetConverter) tick() {
+	const every = 100_000
+	if c.verbose && c.nRecords%every == 0 {
+		fmt.Fprintf(c.progress, "  %s: %d records, %d calls so far\n",
+			c.curChrom, c.nRecords, c.w.NCalls)
+	}
 }
 
 // record splits one VCF record into per-allele calls, a catalog entry per
@@ -196,11 +245,18 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 			return err
 		}
 		c.curChrom = chrom
+		c.note(chrom)
 	}
+	c.nRecords++
+	c.tick()
 
 	alts := rec.Alt()
 	pos := int32(rec.Pos)
 	nAlts := len(alts)
+	if nAlts > 1 {
+		c.nMultiAllelic++
+		c.nExtraRows += int64(nAlts - 1)
+	}
 	carriers := make([]int32, nAlts)
 	acCounts := make([]int32, nAlts)
 	var an int32
@@ -215,8 +271,20 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 		if err != nil {
 			return fmt.Errorf("%w (%s:%d)", err, rec.Chrom, rec.Pos)
 		}
+		c.nGenotypes++
 		if sf.DP != varstore.Missing {
 			c.sawDP++
+		}
+		if sf.GQ != varstore.Missing {
+			c.sawGQ++
+		}
+		if sf.AD != "" {
+			c.sawAD++
+		}
+		if !varstore.HasCall(sf.GT) {
+			c.nNoCall++
+		} else if sf.DP != varstore.Missing && sf.DP < c.minDP {
+			c.nBelowDP++
 		}
 
 		// Allele counts come straight from GT and are deliberately outside the
@@ -304,6 +372,74 @@ func (c *parquetConverter) closeRuns() error {
 // finish flushes any runs still open at end of input.
 func (c *parquetConverter) finish() error { return c.closeRuns() }
 
+// report writes the verbose conversion summary.
+//
+// The field-presence section is the part worth having. A gate can only act on a
+// field the data carries, and --min-gq over GQ-less input admits everything
+// rather than rejecting it. That is deliberate -- absent quality is not evidence
+// of poor quality -- but it means a filter can silently do nothing, so a store
+// built from such input should say so at the point it is created.
+func (c *parquetConverter) report(out io.Writer, base string, elapsed time.Duration) {
+	pct := func(n int64) string {
+		if c.nGenotypes == 0 {
+			return "0%"
+		}
+		return fmt.Sprintf("%.1f%%", 100*float64(n)/float64(c.nGenotypes))
+	}
+
+	fmt.Fprintf(out, "\ninput\n")
+	fmt.Fprintf(out, "  records read          %d\n", c.nRecords)
+	if c.nFiltered > 0 {
+		fmt.Fprintf(out, "  skipped (--passing)   %d\n", c.nFiltered)
+	}
+	fmt.Fprintf(out, "  multiallelic records  %d (split into %d extra rows)\n",
+		c.nMultiAllelic, c.nExtraRows)
+	fmt.Fprintf(out, "  chromosomes           %s\n", strings.Join(c.chroms, ", "))
+	fmt.Fprintf(out, "  genotypes examined    %d\n", c.nGenotypes)
+
+	fmt.Fprintf(out, "\nfields present (a gate can only act on a field the data has)\n")
+	for _, f := range []struct {
+		name string
+		n    int64
+		note string
+	}{
+		{"DP", c.sawDP, "callable runs and --min-dp depend on this"},
+		{"GQ", c.sawGQ, "--min-gq depends on this"},
+		{"AD", c.sawAD, "per-allele depths"},
+	} {
+		state := pct(f.n)
+		if f.n == 0 {
+			state = "ABSENT -- " + f.note + " will have no effect"
+		}
+		fmt.Fprintf(out, "  %-3s %s\n", f.name, state)
+	}
+
+	fmt.Fprintf(out, "\ncoverage at --min-dp %d\n", c.minDP)
+	if c.noCallable {
+		fmt.Fprintf(out, "  not tracked (--no-callable)\n")
+	} else {
+		fmt.Fprintf(out, "  no call made          %d  (%s)\n", c.nNoCall, pct(c.nNoCall))
+		fmt.Fprintf(out, "  called but below DP   %d  (%s)\n", c.nBelowDP, pct(c.nBelowDP))
+	}
+
+	fmt.Fprintf(out, "\noutput\n")
+	for _, f := range []struct {
+		path string
+		n    int64
+	}{
+		{varstore.CallsPath(base), c.w.NCalls},
+		{varstore.SitesPath(base), c.w.NSites},
+		{varstore.RegionsPath(base), c.w.NRegions},
+	} {
+		size := int64(-1)
+		if st, err := os.Stat(f.path); err == nil {
+			size = st.Size()
+		}
+		fmt.Fprintf(out, "  %-24s %9d rows  %10d bytes\n", filepath.Base(f.path), f.n, size)
+	}
+	fmt.Fprintf(out, "  elapsed               %s\n", elapsed.Round(time.Millisecond))
+}
+
 func init() {
 	f := vcfToParquetCmd.Flags()
 	f.StringVar(&vcfToParquetOut, "out", "", "Base output name (outputs are BASE.calls.parquet, BASE.sites.parquet, BASE.regions.parquet)")
@@ -313,4 +449,5 @@ func init() {
 	f.BoolVar(&vcfToParquetPassing, "passing", false, "Only convert passing variants")
 	f.StringVar(&vcfToParquetCompression, "compression", "zstd", "Parquet compression: zstd, snappy, or none")
 	f.IntVar(&vcfToParquetRowGroupSize, "row-group-size", 250000, "Rows per parquet row group")
+	f.BoolVarP(&vcfToParquetVerbose, "verbose", "v", false, "Report progress and a conversion summary on stderr")
 }
