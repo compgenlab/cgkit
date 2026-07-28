@@ -32,8 +32,17 @@ confidently-called reference apart from a position that was never assayed.
 Three files are written from --out BASE, and they form one inseparable set:
 
   BASE.calls.parquet     one row per ALT-carrying genotype
-  BASE.sites.parquet     one row per interrogated site, sample-independent
+  BASE.sites.parquet     one row per interrogated site, with AC/AN and counts
   BASE.regions.parquet   contiguous runs of adequately-covered sites, per sample
+
+The sites file carries both allele counts (AC, AN) and sample counts
+(n_carriers, n_called, n_lowdp). They are not interchangeable: a 1/1 genotype is
+one carrier but two alt alleles, so AC >= n_carriers wherever a homozygote
+occurs, and AN counts alleles without regard to depth while n_called counts
+samples that cleared --min-dp. AF is exactly AC/AN. Both are computed over the
+samples in this store rather than copied from the source's INFO fields, which
+would be wrong after splitting a multiallelic record or converting a subset of a
+cohort.
 
 The sites file is not redundant with the calls. Deriving the site list from the
 distinct loci in the calls only works when the store holds an entire joint
@@ -193,6 +202,8 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 	pos := int32(rec.Pos)
 	nAlts := len(alts)
 	carriers := make([]int32, nAlts)
+	acCounts := make([]int32, nAlts)
+	var an int32
 	var nLowDP, nCalled int32
 
 	n := rec.NumSamples()
@@ -207,6 +218,11 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 		if sf.DP != varstore.Missing {
 			c.sawDP++
 		}
+
+		// Allele counts come straight from GT and are deliberately outside the
+		// --no-callable guard below: AC/AN are properties of the genotypes, not
+		// of coverage, so they stay meaningful even for a source with no DP.
+		an += varstore.AddAlleleCounts(sf.GT, acCounts)
 
 		// Coverage bookkeeping is per site, not per allele. A site counts as
 		// callable only when the caller actually made a call there AND depth
@@ -247,6 +263,8 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 			Pos:       pos,
 			Ref:       rec.Ref,
 			Alt:       alt,
+			AC:        acCounts[j],
+			AN:        an,
 			NCarriers: carriers[j],
 			NLowDP:    nLowDP,
 			NCalled:   nCalled,

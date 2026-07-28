@@ -465,6 +465,28 @@ func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 	return out, nil
 }
 
+// Sites streams the catalog, calling fn per site. fn returns false to stop.
+func (s *ParquetStore) Sites(fn func(Site) bool) error {
+	if !s.hasSites {
+		return fmt.Errorf("%s is missing", SitesPath(s.base))
+	}
+	return scanParquet(SitesPath(s.base), fn)
+}
+
+// Site returns the catalog entry for a locus, if the source reported it.
+func (s *ParquetStore) Site(l Locus) (Site, bool, error) {
+	var got Site
+	found := false
+	err := s.Sites(func(site Site) bool {
+		if SameLocus(site.Locus(), l) {
+			got, found = site, true
+			return false
+		}
+		return true
+	})
+	return got, found, err
+}
+
 // SiteKnown reports whether a locus appears in the sites catalog, i.e. whether
 // the source actually reported it. For a store built from a plain VCF this is
 // the boundary of what can be answered at all, so callers presenting results to
