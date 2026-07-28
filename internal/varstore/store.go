@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/compgenlab/cghts/vcf"
 )
 
 // State is how one sample stands at one locus.
@@ -51,7 +53,7 @@ type Span struct {
 
 // Contains reports whether a 1-based position falls in the span.
 func (s Span) Contains(chrom string, pos int32) bool {
-	if NormChrom(s.Chrom) != NormChrom(chrom) {
+	if !SameChrom(s.Chrom, chrom) {
 		return false
 	}
 	p := pos - 1 // to 0-based
@@ -111,6 +113,13 @@ type Store interface {
 	// ErrNotClassifiable if the backend lacks the evidence to do so.
 	Classify(l Locus, g Gate) ([]SampleState, error)
 
+	// SiteKnown reports whether the source actually reported this locus. For a
+	// plain VCF, and for a Parquet store derived from one, this is the limit of
+	// what is answerable: nothing is claimed about positions the source did not
+	// report, so an unknown locus yields StateNotAssayed throughout rather than
+	// a set of reference calls.
+	SiteKnown(l Locus) (bool, error)
+
 	// Close releases any open files.
 	Close() error
 }
@@ -128,17 +137,29 @@ func ParseLocus(s string) (Locus, error) {
 	if f[2] == "" || f[3] == "" {
 		return Locus{}, fmt.Errorf("invalid variant %q (ref and alt are required)", s)
 	}
-	return Locus{Chrom: NormChrom(f[0]), Pos: int32(pos), Ref: f[2], Alt: f[3]}, nil
+	return Locus{Chrom: strings.TrimSpace(f[0]), Pos: int32(pos), Ref: f[2], Alt: f[3]}, nil
 }
 
-// NormChrom strips a leading "chr" so "chr17" and "17" compare equal. Stores
-// record whatever the source used; queries should not have to know which.
-func NormChrom(c string) string {
-	return strings.TrimPrefix(strings.TrimSpace(c), "chr")
+// CanonKey reduces a chromosome name to a canonical identity so that UCSC
+// ("chr17"), Ensembl ("17") and NCBI RefSeq ("NC_000017.11") spellings of the
+// same chromosome compare equal. Stores record whatever the source called it;
+// a query should not have to know which convention that was.
+//
+// Names with no canonical identity -- unplaced scaffolds, alt loci, non-human
+// contigs -- fall back to exact matching, which is what cghts recommends.
+func CanonKey(c string) string {
+	c = strings.TrimSpace(c)
+	if key, ok := vcf.CanonicalContig(c); ok {
+		return key
+	}
+	return c
 }
 
-// SameLocus compares two loci with chromosome naming normalized.
+// SameChrom reports whether two chromosome names denote the same contig.
+func SameChrom(a, b string) bool { return CanonKey(a) == CanonKey(b) }
+
+// SameLocus compares two loci, tolerating differing chromosome conventions.
 func SameLocus(a, b Locus) bool {
-	return NormChrom(a.Chrom) == NormChrom(b.Chrom) &&
+	return SameChrom(a.Chrom, b.Chrom) &&
 		a.Pos == b.Pos && a.Ref == b.Ref && a.Alt == b.Alt
 }

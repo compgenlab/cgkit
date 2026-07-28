@@ -32,8 +32,17 @@ confidently-called reference apart from a position that was never assayed.
 Three files are written from --out BASE, and they form one inseparable set:
 
   BASE.calls.parquet     one row per ALT-carrying genotype
-  BASE.sites.parquet     one row per interrogated site, sample-independent
+  BASE.sites.parquet     one row per interrogated site, with AC/AN and counts
   BASE.regions.parquet   contiguous runs of adequately-covered sites, per sample
+
+The sites file carries both allele counts (AC, AN) and sample counts
+(n_carriers, n_called, n_lowdp). They are not interchangeable: a 1/1 genotype is
+one carrier but two alt alleles, so AC >= n_carriers wherever a homozygote
+occurs, and AN counts alleles without regard to depth while n_called counts
+samples that cleared --min-dp. AF is exactly AC/AN. Both are computed over the
+samples in this store rather than copied from the source's INFO fields, which
+would be wrong after splitting a multiallelic record or converting a subset of a
+cohort.
 
 The sites file is not redundant with the calls. Deriving the site list from the
 distinct loci in the calls only works when the store holds an entire joint
@@ -49,10 +58,19 @@ so a 1/2 sample is correctly a carrier of both alleles. AD is taken per allele
 depth supporting one alternate says nothing about another. Indels are NOT
 left-aligned; normalize beforehand if the source is not already.
 
-Callable regions are runs of consecutive variant sites at which a sample had
-DP >= --min-dp. The span between two in-run sites is assumed callable, not
-observed: a plain VCF says nothing between its records. Only a gVCF, whose
-reference blocks carry END and MIN_DP, would make these true observations.
+The regions file records, per sample, runs of catalog sites at which that
+sample was successfully called at DP >= --min-dp. The interval form is only a
+compression of that per-site fact; it makes NO claim about the bases between
+those sites.
+
+This bounds what the store can answer. A plain VCF reports variants and says
+nothing whatsoever about any other position -- an unreported base was not
+observed to be reference, it was simply never reported. The sites catalog is
+therefore the exact boundary of what is knowable, and a query for a locus
+outside it returns not-assayed for every sample rather than a set of reference
+calls, even where run intervals appear to bracket it. Only a gVCF, whose
+reference blocks carry END and MIN_DP, makes positive statements about spans and
+could answer off-catalog positions.
 
   --out BASE            base name for the three output files (required)
   --min-dp N            depth at or above which a site counts as callable
@@ -171,7 +189,7 @@ type parquetConverter struct {
 // record splits one VCF record into per-allele calls, a catalog entry per
 // allele, and callable-run bookkeeping.
 func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
-	chrom := varstore.NormChrom(rec.Chrom)
+	chrom := rec.Chrom
 	if chrom != c.curChrom {
 		// Runs cannot span chromosomes.
 		if err := c.closeRuns(); err != nil {
@@ -184,6 +202,8 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 	pos := int32(rec.Pos)
 	nAlts := len(alts)
 	carriers := make([]int32, nAlts)
+	acCounts := make([]int32, nAlts)
+	var an int32
 	var nLowDP, nCalled int32
 
 	n := rec.NumSamples()
@@ -198,6 +218,11 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 		if sf.DP != varstore.Missing {
 			c.sawDP++
 		}
+
+		// Allele counts come straight from GT and are deliberately outside the
+		// --no-callable guard below: AC/AN are properties of the genotypes, not
+		// of coverage, so they stay meaningful even for a source with no DP.
+		an += varstore.AddAlleleCounts(sf.GT, acCounts)
 
 		// Coverage bookkeeping is per site, not per allele. A site counts as
 		// callable only when the caller actually made a call there AND depth
@@ -238,6 +263,8 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 			Pos:       pos,
 			Ref:       rec.Ref,
 			Alt:       alt,
+			AC:        acCounts[j],
+			AN:        an,
 			NCarriers: carriers[j],
 			NLowDP:    nLowDP,
 			NCalled:   nCalled,
@@ -255,7 +282,7 @@ func (c *parquetConverter) emitRun(i int) error {
 		return nil
 	}
 	c.runs[i] = nil
-	return c.w.WriteRegion(varstore.CallableRegion{
+	return c.w.WriteRegion(varstore.CalledSiteRun{
 		SampleID: c.samples[i],
 		Chrom:    c.curChrom,
 		Start:    r.start,
