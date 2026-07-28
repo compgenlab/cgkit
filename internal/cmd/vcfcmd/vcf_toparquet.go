@@ -23,6 +23,7 @@ var (
 	vcfToParquetCompression  string
 	vcfToParquetRowGroupSize int
 	vcfToParquetVerbose      bool
+	vcfToParquetForce        bool
 )
 
 var vcfToParquetCmd = &cobra.Command{
@@ -34,11 +35,25 @@ var vcfToParquetCmd = &cobra.Command{
 alternate-allele calls, along with enough context to still tell a
 confidently-called reference apart from a position that was never assayed.
 
-Three files are written from --out BASE, and they form one inseparable set:
+Three files are written from --out, and they form one inseparable set:
 
   BASE.calls.parquet     one row per ALT-carrying genotype
   BASE.sites.parquet     one row per interrogated site, with AC/AN and counts
   BASE.regions.parquet   contiguous runs of adequately-covered sites, per sample
+
+Ending --out with a "/" instead names a directory, which is created if needed,
+and the members go inside it under their bare names:
+
+  --out cohort/   ->  cohort/calls.parquet, cohort/sites.parquet, cohort/regions.parquet
+
+That keeps the set as a single thing to copy, move or delete -- worth having,
+since the three files are only meaningful together. vcf-varquery accepts either
+form, and either member path within it.
+
+Conversion refuses to overwrite an existing store: if any of the three members
+is already present under --out, or if a prefix-form base names an existing
+directory, it stops and asks for --force. Writing truncates all three, and a
+half-replaced set is worse than either keeping or replacing the old one.
 
 The sites file carries both allele counts (AC, AN) and sample counts
 (n_carriers, n_called, n_lowdp). They are not interchangeable: a 1/1 genotype is
@@ -77,7 +92,8 @@ calls, even where run intervals appear to bracket it. Only a gVCF, whose
 reference blocks carry END and MIN_DP, makes positive statements about spans and
 could answer off-catalog positions.
 
-  --out BASE            base name for the three output files (required)
+  --out BASE            base name for the three output files, or DIR/ (required)
+  --force               overwrite an existing store at --out
   --min-dp N            depth at or above which a site counts as callable
   --no-callable         proceed when the input has no DP field at all
   --passing             skip filtered records
@@ -113,6 +129,17 @@ could answer off-catalog positions.
 		samples := src.header.Samples()
 		if len(samples) == 0 {
 			return fmt.Errorf("%s has no samples; a genotype store needs per-sample calls", args[0])
+		}
+
+		// Refuse to clobber an existing store before opening anything: the
+		// writer truncates all three members, so this is the last moment the
+		// previous one still exists.
+		if err := varstore.CheckStoreTarget(vcfToParquetOut, vcfToParquetForce); err != nil {
+			return err
+		}
+		// A base ending in "/" names a directory to put the members in.
+		if err := varstore.EnsureStoreDir(vcfToParquetOut); err != nil {
+			return err
 		}
 
 		w, err := varstore.NewWriter(vcfToParquetOut, varstore.WriterOpts{
@@ -442,7 +469,7 @@ func (c *parquetConverter) report(out io.Writer, base string, elapsed time.Durat
 
 func init() {
 	f := vcfToParquetCmd.Flags()
-	f.StringVar(&vcfToParquetOut, "out", "", "Base output name (outputs are BASE.calls.parquet, BASE.sites.parquet, BASE.regions.parquet)")
+	f.StringVar(&vcfToParquetOut, "out", "", "Base output name; BASE.calls.parquet etc, or DIR/ for DIR/calls.parquet etc (the directory is created)")
 	f.StringVar(&vcfToParquetRegion, "region", "", "Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
 	f.IntVar(&vcfToParquetMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
 	f.BoolVar(&vcfToParquetNoCallable, "no-callable", false, "Accept a source with no DP field; callable regions will be empty")
@@ -450,4 +477,5 @@ func init() {
 	f.StringVar(&vcfToParquetCompression, "compression", "zstd", "Parquet compression: zstd, snappy, or none")
 	f.IntVar(&vcfToParquetRowGroupSize, "row-group-size", 250000, "Rows per parquet row group")
 	f.BoolVarP(&vcfToParquetVerbose, "verbose", "v", false, "Report progress and a conversion summary on stderr")
+	f.BoolVar(&vcfToParquetForce, "force", false, "Overwrite an existing store at --out")
 }
