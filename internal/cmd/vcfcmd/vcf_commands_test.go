@@ -70,6 +70,7 @@ func vcfTestRoot(args ...string) (*cobra.Command, *bytes.Buffer) {
 	vcfVarQueryVariants = nil
 	vcfVarQueryVerbose = false
 	vcfToParquetVerbose = false
+	vcfToParquetForce = false
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)

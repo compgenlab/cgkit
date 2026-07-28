@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -366,13 +367,50 @@ func OpenParquet(base string) (*ParquetStore, error) {
 }
 
 // TrimStoreSuffix reduces any member path of a store to its base name.
+// It accepts every spelling a user might reasonably type:
+//
+//	cohort                  prefix form
+//	cohort.calls.parquet    a member of the prefix form
+//	cohort/                 directory form
+//	cohort/calls.parquet    a member of the directory form
+//	cohort                  a directory, written without the trailing slash
+//
+// The last case is why this consults the filesystem: having asked for
+// "--out cohort/", nobody should have to remember the slash to read it back.
 func TrimStoreSuffix(p string) string {
+	// A member inside a directory-form store.
+	for _, m := range []string{CallsMember, SitesMember, RegionsMember} {
+		if filepath.Base(p) == m+".parquet" {
+			return ensureTrailingSep(filepath.Dir(p))
+		}
+	}
+	// A member of a prefix-form store.
 	for _, sfx := range []string{CallsSuffix, SitesSuffix, RegionsSuffix} {
 		if strings.HasSuffix(p, sfx) {
 			return strings.TrimSuffix(p, sfx)
 		}
 	}
+	if IsDirBase(p) {
+		return p
+	}
+	// A bare name that is really a directory holding a store.
+	if st, err := os.Stat(p); err == nil && st.IsDir() {
+		if fileExists(filepath.Join(p, CallsMember+".parquet")) {
+			return ensureTrailingSep(p)
+		}
+	}
 	return p
+}
+
+// ensureTrailingSep marks a path as a directory base.
+func ensureTrailingSep(p string) string {
+	if p == "" {
+		return "." + string(os.PathSeparator)
+	}
+	if IsDirBase(p) {
+		return p
+	}
+	return p + string(os.PathSeparator)
 }
 
 func fileExists(p string) bool {

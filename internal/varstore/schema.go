@@ -32,6 +32,13 @@
 // "never interrogated" for a position that was in fact interrogated.
 package varstore
 
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
 // Missing marks an absent integer field (DP, GQ, AD) in a Parquet row. VCFs
 // routinely omit these -- a GT-only phased panel has no DP at all -- and the
 // columns are kept non-optional so reads stay a flat scan, so the absence has
@@ -127,18 +134,96 @@ type CalledSiteRun struct {
 	NSites   int32  `parquet:"n_sites"`
 }
 
-// File suffixes of the three members of a Parquet store.
+// The three members of a store, and the two ways a base name can address them.
+//
+// A base ending in a path separator names a DIRECTORY, and the members sit
+// inside it under their bare names:
+//
+//	--out cohort/   ->  cohort/calls.parquet, cohort/sites.parquet, ...
+//
+// Any other base is a filename PREFIX, and the member name is appended:
+//
+//	--out cohort    ->  cohort.calls.parquet, cohort.sites.parquet, ...
+//
+// The directory form keeps the set as one thing to copy, move or delete, which
+// matters because the three files are only meaningful together.
 const (
-	CallsSuffix   = ".calls.parquet"
-	SitesSuffix   = ".sites.parquet"
-	RegionsSuffix = ".regions.parquet"
+	CallsMember   = "calls"
+	SitesMember   = "sites"
+	RegionsMember = "regions"
+
+	CallsSuffix   = "." + CallsMember + ".parquet"
+	SitesSuffix   = "." + SitesMember + ".parquet"
+	RegionsSuffix = "." + RegionsMember + ".parquet"
 )
 
+// IsDirBase reports whether a base names a directory rather than a filename
+// prefix, i.e. whether it ends in a path separator.
+func IsDirBase(base string) bool {
+	return strings.HasSuffix(base, "/") || strings.HasSuffix(base, string(os.PathSeparator))
+}
+
+// MemberPath returns the file holding one member of the store at base.
+func MemberPath(base, member string) string {
+	if IsDirBase(base) {
+		return filepath.Join(base, member+".parquet")
+	}
+	return base + "." + member + ".parquet"
+}
+
 // CallsPath returns the calls file for a store base name.
-func CallsPath(base string) string { return base + CallsSuffix }
+func CallsPath(base string) string { return MemberPath(base, CallsMember) }
 
 // SitesPath returns the sites file for a store base name.
-func SitesPath(base string) string { return base + SitesSuffix }
+func SitesPath(base string) string { return MemberPath(base, SitesMember) }
 
 // RegionsPath returns the callable-regions file for a store base name.
-func RegionsPath(base string) string { return base + RegionsSuffix }
+func RegionsPath(base string) string { return MemberPath(base, RegionsMember) }
+
+// EnsureStoreDir creates the containing directory for a directory-form base.
+// It is a no-op for the prefix form, whose parent is the caller's business.
+func EnsureStoreDir(base string) error {
+	if !IsDirBase(base) {
+		return nil
+	}
+	return os.MkdirAll(base, 0o755)
+}
+
+// ExistingMembers lists which of the three member files already exist at base.
+func ExistingMembers(base string) []string {
+	var found []string
+	for _, m := range []string{CallsMember, SitesMember, RegionsMember} {
+		if p := MemberPath(base, m); fileExists(p) {
+			found = append(found, p)
+		}
+	}
+	return found
+}
+
+// CheckStoreTarget refuses to write over an existing store unless force is set.
+//
+// Conversion truncates all three members, so an accidental re-run against a
+// populated base destroys the previous store outright -- and because the three
+// files are only meaningful together, a half-replaced set is worse than either
+// outcome. Any single surviving member is therefore enough to stop.
+//
+// A prefix-form base that is itself a directory is refused separately: writing
+// "cohort.calls.parquet" beside an existing "cohort/" directory is legal but
+// almost certainly means the trailing slash was forgotten.
+func CheckStoreTarget(base string, force bool) error {
+	if force {
+		return nil
+	}
+	if !IsDirBase(base) {
+		if st, err := os.Stat(base); err == nil && st.IsDir() {
+			return fmt.Errorf("%s is a directory; write inside it with --out %s%c, "+
+				"or pass --force to use the name as a filename prefix",
+				base, base, os.PathSeparator)
+		}
+	}
+	if existing := ExistingMembers(base); len(existing) > 0 {
+		return fmt.Errorf("refusing to overwrite an existing store: %s; pass --force to replace it",
+			strings.Join(existing, ", "))
+	}
+	return nil
+}

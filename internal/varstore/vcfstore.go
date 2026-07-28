@@ -113,7 +113,7 @@ func (s *VcfStore) scan(span *Span, strictRef bool, fn func(*vcf.VcfRecord) (boo
 // instead of scanning. Falls back to a full scan when unindexed. The span is
 // 0-based half-open, so a 1-based locus position becomes [Pos-1, Pos).
 func (s *VcfStore) spanFor(l Locus) *Span {
-	if !fileExists(s.path + ".tbi") && !fileExists(s.path + ".csi") {
+	if !fileExists(s.path+".tbi") && !fileExists(s.path+".csi") {
 		return nil
 	}
 	return &Span{Chrom: l.Chrom, Start: l.Pos - 1, End: l.Pos}
