@@ -641,6 +641,91 @@ func TestQuietByDefault(t *testing.T) {
 	}
 }
 
+// TestStoreDirLayout pins the directory form: a base ending in "/" creates the
+// directory (including missing parents) and puts the members inside it under
+// bare names, with no prefix dot.
+func TestStoreDirLayout(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "cohort") + string(os.PathSeparator)
+	runVcf(t, "vcf-toparquet", "--out", dir, "testdata/coverage.vcf")
+
+	for _, name := range []string{"calls.parquet", "sites.parquet", "regions.parquet"} {
+		p := filepath.Join(dir, name)
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Errorf("missing %s: %v", p, err)
+			continue
+		}
+		if st.Size() == 0 {
+			t.Errorf("%s is empty", p)
+		}
+	}
+	// Nothing should have been created alongside the directory with a dot.
+	if matches, _ := filepath.Glob(strings.TrimSuffix(dir, string(os.PathSeparator)) + ".*.parquet"); len(matches) > 0 {
+		t.Errorf("directory form should not also write prefixed files: %v", matches)
+	}
+}
+
+// TestStoreDirAndPrefixAgree pins that the layout is purely cosmetic: the same
+// input converted either way answers identically.
+func TestStoreDirAndPrefixAgree(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "d") + string(os.PathSeparator)
+	pfx := filepath.Join(tmp, "p")
+	runVcf(t, "vcf-toparquet", "--out", dir, "testdata/coverage.vcf")
+	runVcf(t, "vcf-toparquet", "--out", pfx, "testdata/coverage.vcf")
+
+	a := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--classify", dir))
+	b := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--classify", pfx))
+	if a != b {
+		t.Errorf("directory and prefix layouts disagree\n dir:\n%s\n prefix:\n%s", a, b)
+	}
+}
+
+// TestStoreDirAcceptedEveryWay pins the spellings a user might reasonably type
+// for a directory-form store, including the bare directory with no slash --
+// having written "--out cohort/", nobody should need the slash to read it back.
+func TestStoreDirAcceptedEveryWay(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "cohort")
+	runVcf(t, "vcf-toparquet", "--out", dir+string(os.PathSeparator), "testdata/coverage.vcf")
+
+	want := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G",
+		dir+string(os.PathSeparator)))
+	for _, spelling := range []string{
+		dir,                                   // bare directory, no slash
+		filepath.Join(dir, "calls.parquet"),   // a member
+		filepath.Join(dir, "sites.parquet"),   // a different member
+		filepath.Join(dir, "regions.parquet"), // and the third
+	} {
+		got := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", spelling))
+		if got != want {
+			t.Errorf("%s resolved to a different answer:\n%s", spelling, got)
+		}
+	}
+}
+
+// TestStorePathHelpers pins the two shapes at the unit level, including that the
+// directory form introduces no dot.
+func TestStorePathHelpers(t *testing.T) {
+	cases := []struct{ base, calls, sites, regions string }{
+		{"cohort", "cohort.calls.parquet", "cohort.sites.parquet", "cohort.regions.parquet"},
+		{"cohort/", "cohort/calls.parquet", "cohort/sites.parquet", "cohort/regions.parquet"},
+		{"a/b/", "a/b/calls.parquet", "a/b/sites.parquet", "a/b/regions.parquet"},
+		{"a/b", "a/b.calls.parquet", "a/b.sites.parquet", "a/b.regions.parquet"},
+	}
+	for _, tc := range cases {
+		if got := varstore.CallsPath(tc.base); got != tc.calls {
+			t.Errorf("CallsPath(%q) = %q, want %q", tc.base, got, tc.calls)
+		}
+		if got := varstore.SitesPath(tc.base); got != tc.sites {
+			t.Errorf("SitesPath(%q) = %q, want %q", tc.base, got, tc.sites)
+		}
+		if got := varstore.RegionsPath(tc.base); got != tc.regions {
+			t.Errorf("RegionsPath(%q) = %q, want %q", tc.base, got, tc.regions)
+		}
+	}
+}
+
 // dataRowsOnly drops the ## provenance lines, which carry a timestamp.
 func dataRowsOnly(s string) string {
 	var out []string

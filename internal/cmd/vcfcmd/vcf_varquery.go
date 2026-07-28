@@ -31,9 +31,11 @@ var vcfVarQueryCmd = &cobra.Command{
 	Use:         "vcf-varquery <input.vcf | store-base>",
 	Short:       "Query which subjects carry a variant, or which variants a subject carries",
 	Long: `Query genotypes without caring which format holds them. The input may be
-a VCF (plain or bgzipped) or a Parquet store written by vcf-toparquet, given
-either as its base name or as any one of its three files. The backend is
-inferred from the path; override with --store.
+a VCF (plain or bgzipped) or a Parquet store written by vcf-toparquet. A store
+may be named by its base ("cohort" for cohort.calls.parquet...), by its
+directory ("cohort/" or "cohort" for cohort/calls.parquet...), or by any one of
+its three member files. The backend is inferred from the path; override with
+--store.
 
 Two modes, one of which must be given:
 
@@ -155,6 +157,14 @@ func openVarStore(path, kind string) (varstore.Store, error) {
 	case "":
 	default:
 		return nil, fmt.Errorf("unknown store %q (use vcf or parquet)", kind)
+	}
+
+	// A directory-form store: "cohort/", or the directory itself.
+	if varstore.IsDirBase(path) {
+		return varstore.OpenParquet(path)
+	}
+	if st, err := os.Stat(path); err == nil && st.IsDir() {
+		return varstore.OpenParquet(path)
 	}
 
 	lower := strings.ToLower(path)
