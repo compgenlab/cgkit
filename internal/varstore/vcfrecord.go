@@ -120,6 +120,31 @@ func atoi32(s string) int32 {
 	return int32(n)
 }
 
+// AddAlleleCounts tallies one raw GT into allele counts, returning that
+// genotype's contribution to AN and incrementing acc[k] once per copy of ALT
+// allele k+1.
+//
+// These are allele counts, not sample counts: a 1/1 genotype contributes 2 to
+// AC and 2 to AN where it would count as only one carrier. Missing alleles
+// contribute to neither. acc is written in place so a whole cohort can be
+// tallied without allocating per sample.
+func AddAlleleCounts(gt string, acc []int32) (an int32) {
+	for _, a := range strings.Split(strings.ReplaceAll(gt, "|", "/"), "/") {
+		if a == "" || a == "." {
+			continue
+		}
+		an++
+		n, err := strconv.Atoi(a)
+		if err != nil || n <= 0 { // 0 is the reference allele
+			continue
+		}
+		if n-1 < len(acc) {
+			acc[n-1]++
+		}
+	}
+	return an
+}
+
 // SampleFields is the subset of a per-sample FORMAT column this package reads.
 type SampleFields struct {
 	GT string
@@ -158,7 +183,7 @@ func RecordLoci(rec *vcf.VcfRecord) []Locus {
 	out := make([]Locus, 0, len(alts))
 	for _, a := range alts {
 		out = append(out, Locus{
-			Chrom: NormChrom(rec.Chrom),
+			Chrom: rec.Chrom,
 			Pos:   int32(rec.Pos),
 			Ref:   rec.Ref,
 			Alt:   a,
@@ -177,7 +202,7 @@ func CallFor(rec *vcf.VcfRecord, sample string, sf SampleFields, altIdx int, alt
 	adRef, adAlt := SplitAD(sf.AD, altIdx)
 	return Call{
 		SampleID: sample,
-		Chrom:    NormChrom(rec.Chrom),
+		Chrom:    rec.Chrom,
 		Pos:      int32(rec.Pos),
 		Ref:      rec.Ref,
 		Alt:      alt,

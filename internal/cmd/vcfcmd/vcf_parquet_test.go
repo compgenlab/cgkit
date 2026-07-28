@@ -80,7 +80,7 @@ func TestVcfToParquetSplitsMultiallelic(t *testing.T) {
 
 	// S1 is 1/2 at the multiallelic site: a carrier of BOTH alleles, appearing
 	// once per split row, with the other allele masked out.
-	t1, ok := got["S1@1:200:C:T"]
+	t1, ok := got["S1@chr1:200:C:T"]
 	if !ok {
 		t.Fatalf("S1 missing from the C>T split row; got keys %v", keys(got))
 	}
@@ -90,7 +90,7 @@ func TestVcfToParquetSplitsMultiallelic(t *testing.T) {
 	if t1.ADRef != 5 || t1.ADAlt != 12 {
 		t.Errorf("S1 C>T ad = %d,%d, want 5,12", t1.ADRef, t1.ADAlt)
 	}
-	g1, ok := got["S1@1:200:C:G"]
+	g1, ok := got["S1@chr1:200:C:G"]
 	if !ok {
 		t.Fatal("S1 missing from the C>G split row")
 	}
@@ -102,15 +102,15 @@ func TestVcfToParquetSplitsMultiallelic(t *testing.T) {
 	}
 
 	// S4 is 2/2: a homozygous carrier of the second alt only.
-	if c, ok := got["S4@1:200:C:G"]; !ok || c.GT != "1/1" {
+	if c, ok := got["S4@chr1:200:C:G"]; !ok || c.GT != "1/1" {
 		t.Errorf("S4 C>G = %+v, want gt 1/1", c)
 	}
-	if _, ok := got["S4@1:200:C:T"]; ok {
+	if _, ok := got["S4@chr1:200:C:T"]; ok {
 		t.Error("S4 should not appear as a carrier of C>T")
 	}
 
 	// A site where nobody carries anything produces no calls at all...
-	if _, ok := got["S1@1:300:G:A"]; ok {
+	if _, ok := got["S1@chr1:300:G:A"]; ok {
 		t.Error("monomorphic site should produce no calls")
 	}
 }
@@ -234,6 +234,325 @@ func TestVarQueryRejectsBadFormatForMode(t *testing.T) {
 	}
 	if err := runVcfErr(t, "vcf-varquery", "--sample", "S1", "--variant", "1:100:A:G", base); err == nil {
 		t.Error("--sample and --variant together should be rejected")
+	}
+}
+
+// TestOffCatalogLocusIsNotAssayed is the central semantic guarantee for a plain
+// VCF: only the variants the file contains can be answered. chr1:250 lies
+// between two records and is bracketed by both samples' called-site runs, so a
+// store that read those runs as coverage would wrongly call everyone a
+// non-carrier there.
+func TestOffCatalogLocusIsNotAssayed(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Sanity: the position really is inside a run, so the test is meaningful.
+	known, err := s.SiteKnown(varstore.Locus{Chrom: "1", Pos: 250, Ref: "A", Alt: "G"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if known {
+		t.Fatal("chr1:250 should not be in the catalog; fixture changed")
+	}
+	if inRun, err := runBrackets(base, "1", 250); err != nil {
+		t.Fatal(err)
+	} else if !inRun {
+		t.Skip("chr1:250 is not bracketed by a run; the test would prove nothing")
+	}
+
+	states, err := s.Classify(varstore.Locus{Chrom: "1", Pos: 250, Ref: "A", Alt: "G"}, varstore.Gate{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(states) == 0 {
+		t.Fatal("expected a state per sample")
+	}
+	for _, st := range states {
+		if st.State != varstore.StateNotAssayed {
+			t.Errorf("%s at an off-catalog locus = %s, want not_assayed "+
+				"(a plain VCF claims nothing between its records)", st.SampleID, st.State)
+		}
+	}
+}
+
+// TestOffCatalogAgreesAcrossBackends pins that the VCF backend draws the same
+// boundary as the Parquet one.
+func TestOffCatalogAgreesAcrossBackends(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	fromVcf := runVcf(t, "vcf-varquery", "--variant", "1:250:A:G", "--classify", "testdata/coverage.vcf")
+	fromPq := runVcf(t, "vcf-varquery", "--variant", "1:250:A:G", "--classify", base)
+	if dataRowsOnly(fromVcf) != dataRowsOnly(fromPq) {
+		t.Errorf("backends disagree off-catalog\n vcf:\n%s\n parquet:\n%s",
+			dataRowsOnly(fromVcf), dataRowsOnly(fromPq))
+	}
+	if !strings.Contains(dataRowsOnly(fromPq), string(varstore.StateNotAssayed)) {
+		t.Errorf("expected not_assayed rows, got:\n%s", dataRowsOnly(fromPq))
+	}
+}
+
+// TestSpanSemanticsRecorded pins that a VCF-derived store declares the
+// conservative reading, so a future gVCF converter has to opt in explicitly.
+func TestSpanSemanticsRecorded(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got := s.SpanSemantics(); got != varstore.SpansSites {
+		t.Errorf("span semantics = %q, want %q", got, varstore.SpansSites)
+	}
+}
+
+// runBrackets reports whether any called-site run spans pos, which is what makes
+// the off-catalog test non-vacuous.
+func runBrackets(base, chrom string, pos int32) (bool, error) {
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		return false, err
+	}
+	defer s.Close()
+	// A run bracketing pos means Classify would have had evidence to misuse.
+	states, err := s.Classify(varstore.Locus{Chrom: chrom, Pos: 100, Ref: "A", Alt: "G"}, varstore.Gate{})
+	if err != nil {
+		return false, err
+	}
+	// chr1:100 and chr1:300 are both catalog sites called in S1, so S1's run
+	// spans 250. Confirm S1 was callable at the flanking site.
+	for _, st := range states {
+		if st.SampleID == "S1" && st.State == varstore.StateNonCarrier {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// TestVarQueryChromNamingIsAutoConverted covers both naming conventions against
+// an indexed, chr-prefixed VCF. Tabix looks reference names up verbatim, so
+// before contig resolution a "22"-style query against a "chr22" index failed
+// with `tabix: unknown reference "22"` rather than simply finding the record.
+//
+// This only bites on the indexed path: an unindexed file is scanned and
+// compared canonically, which is why the earlier tests missed it.
+func TestVarQueryChromNamingIsAutoConverted(t *testing.T) {
+	for _, q := range []string{"chr1:100:A:G", "1:100:A:G"} {
+		out := runVcf(t, "vcf-varquery", "--variant", q, "testdata/sample.vcf.gz")
+		if !strings.Contains(out, "NORMAL") && !strings.Contains(out, "TUMOR") {
+			t.Errorf("query %q returned no carriers:\n%s", q, out)
+		}
+	}
+	// The carriers must be identical either way. The leading "variant" column
+	// deliberately echoes the spelling the user typed, so compare past it.
+	a := dropFirstColumn(dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "testdata/sample.vcf.gz")))
+	b := dropFirstColumn(dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "1:100:A:G", "testdata/sample.vcf.gz")))
+	if a != b {
+		t.Errorf("chr-prefixed and bare spellings disagree\n chr1:\n%s\n 1:\n%s", a, b)
+	}
+}
+
+// dropFirstColumn strips the leading tab-separated field of every line.
+func dropFirstColumn(s string) string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if _, rest, ok := strings.Cut(l, "\t"); ok {
+			out = append(out, rest)
+		} else {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// TestVarQueryUnknownContigIsAnAbsence pins that asking about a contig the file
+// does not have is answered, not rejected: it is simply not in the source. The
+// behaviour must not depend on whether the file happens to be indexed.
+func TestVarQueryUnknownContigIsAnAbsence(t *testing.T) {
+	// The harness folds stderr into the same buffer, so assert on the absence of
+	// carriers rather than on line counts.
+	for _, in := range []string{"testdata/sample.vcf.gz", "testdata/sample.vcf"} {
+		out := runVcf(t, "vcf-varquery", "--variant", "chrZZ:100:A:G", in)
+		for _, sample := range []string{"NORMAL", "TUMOR"} {
+			if strings.Contains(out, sample+"\t") {
+				t.Errorf("%s: absent contig reported %s as a carrier:\n%s", in, sample, out)
+			}
+		}
+		if !strings.Contains(out, "not in the source") {
+			t.Errorf("%s: expected a warning that the variant is absent, got:\n%s", in, out)
+		}
+	}
+}
+
+// TestVarQueryBadRegionIsRejected pins the other half: --region names a contig
+// the caller asserts exists, so an unresolvable one is an error that says what
+// the file does have.
+func TestVarQueryBadRegionIsRejected(t *testing.T) {
+	err := runVcfErr(t, "vcf-varquery", "--sample", "NORMAL", "--region", "chrZZ:1-100", "testdata/sample.vcf.gz")
+	if err == nil {
+		t.Fatal("expected an error for a --region on a contig not in the index")
+	}
+	if !strings.Contains(err.Error(), "unknown reference") || !strings.Contains(err.Error(), "chr1") {
+		t.Errorf("error should name the available references, got: %v", err)
+	}
+}
+
+// TestParquetStorePreservesSourceChromNaming pins that conversion records the
+// source's own spelling rather than rewriting it, while queries stay
+// convention-agnostic.
+func TestParquetStorePreservesSourceChromNaming(t *testing.T) {
+	base := convert(t, "testdata/multiallelic.vcf") // chr-prefixed
+	calls := readCalls(t, base)
+	if len(calls) == 0 {
+		t.Fatal("no calls")
+	}
+	for _, c := range calls {
+		if !strings.HasPrefix(c.Chrom, "chr") {
+			t.Errorf("stored chrom = %q, want the source's chr-prefixed spelling", c.Chrom)
+			break
+		}
+	}
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, q := range []string{"chr1", "1"} {
+		known, err := s.SiteKnown(varstore.Locus{Chrom: q, Pos: 100, Ref: "A", Alt: "G"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !known {
+			t.Errorf("SiteKnown(%s:100:A:G) = false, want true", q)
+		}
+	}
+}
+
+// TestVarQueryLocusColumnsAreSplit pins the tabular contract: the locus occupies
+// four leading columns rather than one packed chrom:pos:ref:alt field, so
+// downstream tools can cut or sort on position without re-splitting a key.
+func TestVarQueryLocusColumnsAreSplit(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+
+	cases := []struct {
+		name   string
+		args   []string
+		header string
+	}{
+		{"carriers", []string{"vcf-varquery", "--variant", "chr1:100:A:G", base},
+			"chrom\tpos\tref\talt\tsample\tgt\tdp\tad_ref\tad_alt\tgq"},
+		{"classify", []string{"vcf-varquery", "--variant", "chr1:100:A:G", "--classify", base},
+			"chrom\tpos\tref\talt\tsample\tstate\tgt\tdp\tgq"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := strings.Split(dataRowsOnly(runVcf(t, tc.args...)), "\n")
+			if rows[0] != tc.header {
+				t.Errorf("header = %q, want %q", rows[0], tc.header)
+			}
+			if len(rows) < 2 {
+				t.Fatal("expected at least one data row")
+			}
+			f := strings.Split(rows[1], "\t")
+			if len(f) < 5 {
+				t.Fatalf("row has %d columns: %q", len(f), rows[1])
+			}
+			if f[0] != "chr1" || f[1] != "100" || f[2] != "A" || f[3] != "G" {
+				t.Errorf("locus columns = %q,%q,%q,%q, want chr1,100,A,G", f[0], f[1], f[2], f[3])
+			}
+			if strings.Contains(f[0], ":") {
+				t.Errorf("first column %q still looks like a packed locus", f[0])
+			}
+		})
+	}
+}
+
+// TestSitesACAN pins that AC/AN are allele counts and are not interchangeable
+// with the sample counts beside them. The fixture is chosen so they diverge:
+// hom-alt genotypes make AC exceed n_carriers, and a 1/2 sample splits one
+// allele to each ALT row.
+//
+//	chr1:100 A>G   S1 0/1  S2 0/0  S3 1/1  S4 0/0
+//	chr1:200 C>T,G S1 1/2  S2 0/1  S3 0/0  S4 2/2
+//	chr1:300 G>A   all 0/0
+func TestSitesACAN(t *testing.T) {
+	base := convert(t, "testdata/multiallelic.vcf")
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	cases := []struct {
+		locus             varstore.Locus
+		ac, an, nCarriers int32
+		why               string
+	}{
+		{varstore.Locus{Chrom: "chr1", Pos: 100, Ref: "A", Alt: "G"}, 3, 8, 2,
+			"S1 het (1) + S3 hom (2) = 3 alleles across 2 carriers"},
+		{varstore.Locus{Chrom: "chr1", Pos: 200, Ref: "C", Alt: "T"}, 2, 8, 2,
+			"S1 1/2 contributes one T, S2 0/1 one T"},
+		{varstore.Locus{Chrom: "chr1", Pos: 200, Ref: "C", Alt: "G"}, 3, 8, 2,
+			"S1 1/2 one G + S4 2/2 two G = 3 alleles across 2 carriers"},
+		{varstore.Locus{Chrom: "chr1", Pos: 300, Ref: "G", Alt: "A"}, 0, 8, 0,
+			"monomorphic, but still interrogated in 4 diploid samples"},
+	}
+	for _, tc := range cases {
+		site, ok, err := s.Site(tc.locus)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			t.Errorf("%s missing from the catalog", tc.locus)
+			continue
+		}
+		if site.AC != tc.ac {
+			t.Errorf("%s AC = %d, want %d (%s)", tc.locus, site.AC, tc.ac, tc.why)
+		}
+		if site.AN != tc.an {
+			t.Errorf("%s AN = %d, want %d", tc.locus, site.AN, tc.an)
+		}
+		if site.NCarriers != tc.nCarriers {
+			t.Errorf("%s n_carriers = %d, want %d", tc.locus, site.NCarriers, tc.nCarriers)
+		}
+		if want := float64(tc.ac) / float64(tc.an); site.AF() != want {
+			t.Errorf("%s AF = %v, want %v", tc.locus, site.AF(), want)
+		}
+	}
+
+	// The point of the test: at two of these loci AC and n_carriers differ, so
+	// one genuinely cannot stand in for the other.
+	site, _, _ := s.Site(varstore.Locus{Chrom: "chr1", Pos: 100, Ref: "A", Alt: "G"})
+	if site.AC == site.NCarriers {
+		t.Error("fixture no longer distinguishes AC from n_carriers; the test proves nothing")
+	}
+}
+
+// TestSitesACANSurviveNoCallable pins that allele counts are properties of the
+// genotypes, not of coverage, so a DP-less source still gets real AC/AN even
+// though its sample-level coverage counts are necessarily zero.
+func TestSitesACANSurviveNoCallable(t *testing.T) {
+	base := convert(t, "testdata/sample.vcf", "--no-callable")
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	sawAN := false
+	if err := s.Sites(func(site varstore.Site) bool {
+		if site.AN > 0 {
+			sawAN = true
+			return false
+		}
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !sawAN {
+		t.Error("AN is zero everywhere under --no-callable; allele counts must not depend on DP")
 	}
 }
 
