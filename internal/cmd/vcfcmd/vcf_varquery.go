@@ -64,7 +64,12 @@ a non-carrier would invent an observation.
   --min-gq N          minimum genotype quality for a call to count
   --classify          resolve every sample, not just carriers
   --format F          tsv (default), json, vcf, or list
-  --store KIND        force the backend: vcf or parquet`,
+  --store KIND        force the backend: vcf or parquet
+
+Tabular output splits the locus into four leading columns (chrom, pos, ref,
+alt) rather than one packed chrom:pos:ref:alt field, so it can be cut and
+sorted on position directly. The chromosome is echoed the way it was asked for,
+whichever naming convention the file itself uses.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -292,6 +297,7 @@ func runVarQueryVariants(out *bufio.Writer, store varstore.Store,
 
 	type variantResult struct {
 		Variant string                 `json:"variant"`
+		Locus   varstore.Locus         `json:"locus"`
 		States  []varstore.SampleState `json:"states,omitempty"`
 		Calls   []varstore.Call        `json:"calls,omitempty"`
 	}
@@ -302,7 +308,7 @@ func runVarQueryVariants(out *bufio.Writer, store varstore.Store,
 		if err != nil {
 			return err
 		}
-		r := variantResult{Variant: locus.String()}
+		r := variantResult{Variant: locus.String(), Locus: locus}
 		if vcfVarQueryClassify {
 			states, err := store.Classify(locus, gate)
 			if err != nil {
@@ -345,25 +351,37 @@ func runVarQueryVariants(out *bufio.Writer, store varstore.Store,
 	}
 
 	provenance(out, source)
+	// The locus is emitted as four columns rather than one packed
+	// chrom:pos:ref:alt field, matching --sample mode and keeping the output
+	// sortable and cut-able on position without re-splitting a composite key.
 	if vcfVarQueryClassify {
-		fmt.Fprintln(out, strings.Join([]string{"variant", "sample", "state", "gt", "dp", "gq"}, "\t"))
+		fmt.Fprintln(out, strings.Join([]string{
+			"chrom", "pos", "ref", "alt", "sample", "state", "gt", "dp", "gq",
+		}, "\t"))
 		for _, r := range results {
 			for _, s := range r.States {
 				gt, dp, gq := ".", ".", "."
 				if s.Call != nil {
 					gt, dp, gq = s.Call.GT, intOrDot(s.Call.DP), intOrDot(s.Call.GQ)
 				}
-				fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\n", r.Variant, s.SampleID, s.State, gt, dp, gq)
+				fmt.Fprintf(out, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					r.Locus.Chrom, r.Locus.Pos, r.Locus.Ref, r.Locus.Alt,
+					s.SampleID, s.State, gt, dp, gq)
 			}
 		}
 		return nil
 	}
 	fmt.Fprintln(out, strings.Join([]string{
-		"variant", "sample", "gt", "dp", "ad_ref", "ad_alt", "gq",
+		"chrom", "pos", "ref", "alt", "sample", "gt", "dp", "ad_ref", "ad_alt", "gq",
 	}, "\t"))
 	for _, r := range results {
 		for _, c := range r.Calls {
-			fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Variant, c.SampleID, c.GT,
+			// The queried locus, not the call's stored spelling: every row of a
+			// --variant query then reads back the way it was asked for, and both
+			// sub-modes agree even though only this one has calls to draw on.
+			fmt.Fprintf(out, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r.Locus.Chrom, r.Locus.Pos, r.Locus.Ref, r.Locus.Alt,
+				c.SampleID, c.GT,
 				intOrDot(c.DP), intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ))
 		}
 	}

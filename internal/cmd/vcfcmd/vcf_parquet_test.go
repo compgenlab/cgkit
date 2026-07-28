@@ -430,6 +430,45 @@ func TestParquetStorePreservesSourceChromNaming(t *testing.T) {
 	}
 }
 
+// TestVarQueryLocusColumnsAreSplit pins the tabular contract: the locus occupies
+// four leading columns rather than one packed chrom:pos:ref:alt field, so
+// downstream tools can cut or sort on position without re-splitting a key.
+func TestVarQueryLocusColumnsAreSplit(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+
+	cases := []struct {
+		name   string
+		args   []string
+		header string
+	}{
+		{"carriers", []string{"vcf-varquery", "--variant", "chr1:100:A:G", base},
+			"chrom\tpos\tref\talt\tsample\tgt\tdp\tad_ref\tad_alt\tgq"},
+		{"classify", []string{"vcf-varquery", "--variant", "chr1:100:A:G", "--classify", base},
+			"chrom\tpos\tref\talt\tsample\tstate\tgt\tdp\tgq"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := strings.Split(dataRowsOnly(runVcf(t, tc.args...)), "\n")
+			if rows[0] != tc.header {
+				t.Errorf("header = %q, want %q", rows[0], tc.header)
+			}
+			if len(rows) < 2 {
+				t.Fatal("expected at least one data row")
+			}
+			f := strings.Split(rows[1], "\t")
+			if len(f) < 5 {
+				t.Fatalf("row has %d columns: %q", len(f), rows[1])
+			}
+			if f[0] != "chr1" || f[1] != "100" || f[2] != "A" || f[3] != "G" {
+				t.Errorf("locus columns = %q,%q,%q,%q, want chr1,100,A,G", f[0], f[1], f[2], f[3])
+			}
+			if strings.Contains(f[0], ":") {
+				t.Errorf("first column %q still looks like a packed locus", f[0])
+			}
+		})
+	}
+}
+
 // dataRowsOnly drops the ## provenance lines, which carry a timestamp.
 func dataRowsOnly(s string) string {
 	var out []string
