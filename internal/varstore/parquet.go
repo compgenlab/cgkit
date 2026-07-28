@@ -120,12 +120,23 @@ func NewWriter(base string, o WriterOpts) (*Writer, error) {
 		parquet.Compression(o.Codec),
 		parquet.MaxRowsPerRowGroup(o.RowGroupSize),
 	}
+	// Declare the order the rows are already in. Input is coordinate sorted and
+	// written in stream order, so saying so lets a reader trust the per-group
+	// min/max on pos, which is what makes locus lookups skip whole groups.
+	sortedByLocus := append(append([]parquet.WriterOption{}, opts...),
+		parquet.SortingWriterConfig(parquet.SortingColumns(
+			parquet.Ascending("chrom"), parquet.Ascending("pos"))))
+	// sample_id is high-cardinality and unsorted, so statistics cannot bound it;
+	// a bloom filter answers "is this sample absent from this group" exactly,
+	// which is what a --sample query needs.
+	callOpts := append(append([]parquet.WriterOption{}, sortedByLocus...),
+		parquet.BloomFilters(parquet.SplitBlockFilter(10, "sample_id")))
 
 	cf, err := open(CallsPath(base))
 	if err != nil {
 		return nil, err
 	}
-	w.calls = parquet.NewGenericWriter[Call](cf, opts...)
+	w.calls = parquet.NewGenericWriter[Call](cf, callOpts...)
 	w.calls.SetKeyValueMetadata(MetaSamples, strings.Join(o.Samples, "\n"))
 	w.calls.SetKeyValueMetadata(MetaMinDP, fmt.Sprint(o.MinDP))
 	w.calls.SetKeyValueMetadata(MetaProgram, o.Program)
@@ -143,13 +154,16 @@ func NewWriter(base string, o WriterOpts) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	w.sites = parquet.NewGenericWriter[Site](sf, opts...)
+	w.sites = parquet.NewGenericWriter[Site](sf, sortedByLocus...)
 
 	rf, err := open(RegionsPath(base))
 	if err != nil {
 		return nil, err
 	}
-	w.regions = parquet.NewGenericWriter[CalledSiteRun](rf, opts...)
+	w.regions = parquet.NewGenericWriter[CalledSiteRun](rf, append(append([]parquet.WriterOption{}, opts...),
+		parquet.SortingWriterConfig(parquet.SortingColumns(
+			parquet.Ascending("chrom"), parquet.Ascending("start"))),
+		parquet.BloomFilters(parquet.SplitBlockFilter(10, "sample_id")))...)
 
 	return w, nil
 }
@@ -429,7 +443,7 @@ func (s *ParquetStore) Samples() ([]string, error) {
 // Carriers returns the gated ALT calls at a locus.
 func (s *ParquetStore) Carriers(l Locus, g Gate) ([]Call, error) {
 	var out []Call
-	err := scanParquet(CallsPath(s.base), func(c Call) bool {
+	err := scanParquetPruned(CallsPath(s.base), locusFilter(l), func(c Call) bool {
 		if SameLocus(c.Locus(), l) && g.Admits(c) {
 			out = append(out, c)
 		}
@@ -441,7 +455,8 @@ func (s *ParquetStore) Carriers(l Locus, g Gate) ([]Call, error) {
 // Variants returns the gated ALT calls for one sample.
 func (s *ParquetStore) Variants(sample string, span *Span, g Gate) ([]Call, error) {
 	var out []Call
-	err := scanParquet(CallsPath(s.base), func(c Call) bool {
+	keep := bothFilters(sampleFilter(sample), spanFilter(span))
+	err := scanParquetPruned(CallsPath(s.base), keep, func(c Call) bool {
 		if c.SampleID != sample || !g.Admits(c) {
 			return true
 		}
@@ -499,7 +514,7 @@ func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 	}
 
 	calls := map[string]Call{}
-	if err := scanParquet(CallsPath(s.base), func(c Call) bool {
+	if err := scanParquetPruned(CallsPath(s.base), locusFilter(l), func(c Call) bool {
 		if SameLocus(c.Locus(), l) {
 			calls[c.SampleID] = c
 		}
@@ -511,7 +526,7 @@ func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 	// Reached only for a locus in the catalog (or a block-semantics store), so a
 	// run bracketing the position genuinely means "called here".
 	called := map[string]bool{}
-	if err := scanParquet(RegionsPath(s.base), func(r CalledSiteRun) bool {
+	if err := scanParquetPruned(RegionsPath(s.base), coveringFilter(l.Chrom, l.Pos), func(r CalledSiteRun) bool {
 		if SameChrom(r.Chrom, l.Chrom) && l.Pos >= r.Start && l.Pos <= r.End {
 			called[r.SampleID] = true
 		}
@@ -553,7 +568,7 @@ func (s *ParquetStore) Sites(fn func(Site) bool) error {
 func (s *ParquetStore) Site(l Locus) (Site, bool, error) {
 	var got Site
 	found := false
-	err := s.Sites(func(site Site) bool {
+	err := scanParquetPruned(SitesPath(s.base), locusFilter(l), func(site Site) bool {
 		if SameLocus(site.Locus(), l) {
 			got, found = site, true
 			return false
@@ -572,7 +587,7 @@ func (s *ParquetStore) SiteKnown(l Locus) (bool, error) {
 		return false, fmt.Errorf("%w: %s is missing", ErrNotClassifiable, SitesPath(s.base))
 	}
 	found := false
-	err := scanParquet(SitesPath(s.base), func(site Site) bool {
+	err := scanParquetPruned(SitesPath(s.base), locusFilter(l), func(site Site) bool {
 		if SameLocus(site.Locus(), l) {
 			found = true
 			return false
