@@ -469,6 +469,93 @@ func TestVarQueryLocusColumnsAreSplit(t *testing.T) {
 	}
 }
 
+// TestSitesACAN pins that AC/AN are allele counts and are not interchangeable
+// with the sample counts beside them. The fixture is chosen so they diverge:
+// hom-alt genotypes make AC exceed n_carriers, and a 1/2 sample splits one
+// allele to each ALT row.
+//
+//	chr1:100 A>G   S1 0/1  S2 0/0  S3 1/1  S4 0/0
+//	chr1:200 C>T,G S1 1/2  S2 0/1  S3 0/0  S4 2/2
+//	chr1:300 G>A   all 0/0
+func TestSitesACAN(t *testing.T) {
+	base := convert(t, "testdata/multiallelic.vcf")
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	cases := []struct {
+		locus             varstore.Locus
+		ac, an, nCarriers int32
+		why               string
+	}{
+		{varstore.Locus{Chrom: "chr1", Pos: 100, Ref: "A", Alt: "G"}, 3, 8, 2,
+			"S1 het (1) + S3 hom (2) = 3 alleles across 2 carriers"},
+		{varstore.Locus{Chrom: "chr1", Pos: 200, Ref: "C", Alt: "T"}, 2, 8, 2,
+			"S1 1/2 contributes one T, S2 0/1 one T"},
+		{varstore.Locus{Chrom: "chr1", Pos: 200, Ref: "C", Alt: "G"}, 3, 8, 2,
+			"S1 1/2 one G + S4 2/2 two G = 3 alleles across 2 carriers"},
+		{varstore.Locus{Chrom: "chr1", Pos: 300, Ref: "G", Alt: "A"}, 0, 8, 0,
+			"monomorphic, but still interrogated in 4 diploid samples"},
+	}
+	for _, tc := range cases {
+		site, ok, err := s.Site(tc.locus)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			t.Errorf("%s missing from the catalog", tc.locus)
+			continue
+		}
+		if site.AC != tc.ac {
+			t.Errorf("%s AC = %d, want %d (%s)", tc.locus, site.AC, tc.ac, tc.why)
+		}
+		if site.AN != tc.an {
+			t.Errorf("%s AN = %d, want %d", tc.locus, site.AN, tc.an)
+		}
+		if site.NCarriers != tc.nCarriers {
+			t.Errorf("%s n_carriers = %d, want %d", tc.locus, site.NCarriers, tc.nCarriers)
+		}
+		if want := float64(tc.ac) / float64(tc.an); site.AF() != want {
+			t.Errorf("%s AF = %v, want %v", tc.locus, site.AF(), want)
+		}
+	}
+
+	// The point of the test: at two of these loci AC and n_carriers differ, so
+	// one genuinely cannot stand in for the other.
+	site, _, _ := s.Site(varstore.Locus{Chrom: "chr1", Pos: 100, Ref: "A", Alt: "G"})
+	if site.AC == site.NCarriers {
+		t.Error("fixture no longer distinguishes AC from n_carriers; the test proves nothing")
+	}
+}
+
+// TestSitesACANSurviveNoCallable pins that allele counts are properties of the
+// genotypes, not of coverage, so a DP-less source still gets real AC/AN even
+// though its sample-level coverage counts are necessarily zero.
+func TestSitesACANSurviveNoCallable(t *testing.T) {
+	base := convert(t, "testdata/sample.vcf", "--no-callable")
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	sawAN := false
+	if err := s.Sites(func(site varstore.Site) bool {
+		if site.AN > 0 {
+			sawAN = true
+			return false
+		}
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !sawAN {
+		t.Error("AN is zero everywhere under --no-callable; allele counts must not depend on DP")
+	}
+}
+
 // dataRowsOnly drops the ## provenance lines, which carry a timestamp.
 func dataRowsOnly(s string) string {
 	var out []string

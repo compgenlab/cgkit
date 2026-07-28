@@ -59,17 +59,42 @@ func (c Call) Locus() Locus {
 	return Locus{Chrom: c.Chrom, Pos: c.Pos, Ref: c.Ref, Alt: c.Alt}
 }
 
-// Site is one interrogated variant site, independent of any sample. NCarriers,
-// NLowDP and NCalled are counted across every sample present in the source, so
-// a site with NCarriers == 0 still records that the position was examined.
+// Site is one interrogated variant site, independent of any sample. Counts are
+// taken across every sample present in the source, so a site with AC == 0 still
+// records that the position was examined.
+//
+// Allele counts and sample counts are deliberately both present, because they
+// answer different questions and neither can be derived from the other:
+//
+//   - AC / AN are ALLELE counts, per the VCF convention. A 1/1 genotype
+//     contributes 2 to each. They are computed from GT alone and are not
+//     depth-gated, so AF is exactly AC/AN.
+//   - NCarriers / NCalled / NLowDP are SAMPLE counts. A 1/1 genotype is one
+//     carrier, and NCalled/NLowDP additionally reflect the --min-dp threshold
+//     used at conversion.
+//
+// So AC >= NCarriers whenever any homozygote is present, and AN is unrelated to
+// NCalled both in unit and in gating. Counts are over the samples in this
+// store, not copied from the source's INFO fields, which would be wrong after
+// splitting multiallelics or converting a subset of a cohort.
 type Site struct {
 	Chrom     string `parquet:"chrom,dict"`
 	Pos       int32  `parquet:"pos"`
 	Ref       string `parquet:"ref,dict"`
 	Alt       string `parquet:"alt,dict"`
-	NCarriers int32  `parquet:"n_carriers"`
-	NLowDP    int32  `parquet:"n_lowdp"`
-	NCalled   int32  `parquet:"n_called"`
+	AC        int32  `parquet:"ac"`         // alt alleles observed, this ALT
+	AN        int32  `parquet:"an"`         // called alleles at the site
+	NCarriers int32  `parquet:"n_carriers"` // samples with >=1 copy of this ALT
+	NLowDP    int32  `parquet:"n_lowdp"`    // samples failing --min-dp here
+	NCalled   int32  `parquet:"n_called"`   // samples called and passing --min-dp
+}
+
+// AF returns the alternate allele frequency, or 0 when nothing was called.
+func (s Site) AF() float64 {
+	if s.AN == 0 {
+		return 0
+	}
+	return float64(s.AC) / float64(s.AN)
 }
 
 // Locus returns this site's identity.
