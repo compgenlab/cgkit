@@ -556,6 +556,91 @@ func TestSitesACANSurviveNoCallable(t *testing.T) {
 	}
 }
 
+// TestVerboseGoesToStderrOnly is the constraint that makes verbose safe to use
+// in a pipeline: the tabular stream must stay parseable.
+func TestVerboseGoesToStderrOnly(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	stdout := filepath.Join(t.TempDir(), "out.tsv")
+	runVcf(t, "vcf-varquery", "-v", "--variant", "chr1:100:A:G", "-o", stdout, base)
+
+	b, err := os.ReadFile(stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	for _, marker := range []string{"store ", "variant  ", "gate ", "WARNING", "NOTE"} {
+		if strings.Contains(got, marker) {
+			t.Errorf("verbose text %q leaked into the data stream:\n%s", marker, got)
+		}
+	}
+	if !strings.HasPrefix(strings.SplitN(got, "\n", 2)[0], "##") {
+		t.Errorf("data stream should still start with provenance, got:\n%s", got)
+	}
+}
+
+// TestVerboseReportsAbsentQualityFields pins the diagnostic worth having: a gate
+// over a field the data lacks admits everything, so a --min-gq that looks like a
+// filter can be doing nothing. Only the field census distinguishes that from a
+// real result.
+func TestVerboseReportsAbsentQualityFields(t *testing.T) {
+	// sample.vcf carries neither DP nor GQ.
+	out := runVcf(t, "vcf-varquery", "-v", "--variant", "chr1:100:A:G",
+		"--min-gq", "99", "testdata/sample.vcf")
+	if !strings.Contains(out, "--min-gq 99 had no effect") {
+		t.Errorf("expected a warning that the gate could not act, got:\n%s", out)
+	}
+}
+
+// TestVerboseConversionReportsFieldPresence pins the same idea at conversion
+// time, so a store built from quality-less input says so when it is created.
+func TestVerboseConversionReportsFieldPresence(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "s")
+	out := runVcf(t, "vcf-toparquet", "-v", "--no-callable", "--out", base, "testdata/sample.vcf")
+	for _, want := range []string{"fields present", "GQ  ABSENT", "DP  ABSENT"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("verbose conversion report missing %q, got:\n%s", want, out)
+		}
+	}
+
+	// And with quality present it should report coverage rather than absence.
+	base2 := filepath.Join(t.TempDir(), "s2")
+	out2 := runVcf(t, "vcf-toparquet", "-v", "--out", base2, "testdata/coverage.vcf")
+	if strings.Contains(out2, "DP  ABSENT") {
+		t.Errorf("coverage.vcf has DP; should not be reported absent:\n%s", out2)
+	}
+	if !strings.Contains(out2, "called but below DP") {
+		t.Errorf("expected a coverage breakdown, got:\n%s", out2)
+	}
+}
+
+// TestVerboseNotesMinDPMismatch pins the warning for querying at a threshold the
+// store's runs were not built at, which silently breaks backend agreement.
+func TestVerboseNotesMinDPMismatch(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf") // built at the default --min-dp 10
+	out := runVcf(t, "vcf-varquery", "-v", "--variant", "chr1:100:A:G",
+		"--classify", "--min-dp", "25", base)
+	if !strings.Contains(out, "the runs were built at 10") {
+		t.Errorf("expected a min-dp mismatch note, got:\n%s", out)
+	}
+	// Matching the conversion threshold must not warn.
+	ok := runVcf(t, "vcf-varquery", "-v", "--variant", "chr1:100:A:G",
+		"--classify", "--min-dp", "10", base)
+	if strings.Contains(ok, "the runs were built at") {
+		t.Errorf("matching --min-dp should not warn, got:\n%s", ok)
+	}
+}
+
+// TestQuietByDefault pins that none of this appears without -v.
+func TestQuietByDefault(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	out := runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--min-gq", "99", base)
+	for _, marker := range []string{"store    parquet", "variant  ", "gate     "} {
+		if strings.Contains(out, marker) {
+			t.Errorf("saw verbose output %q without -v:\n%s", marker, out)
+		}
+	}
+}
+
 // dataRowsOnly drops the ## provenance lines, which carry a timestamp.
 func dataRowsOnly(s string) string {
 	var out []string

@@ -22,6 +22,7 @@ var (
 	vcfVarQueryClassify bool
 	vcfVarQueryFormat   string
 	vcfVarQueryStore    string
+	vcfVarQueryVerbose  bool
 )
 
 var vcfVarQueryCmd = &cobra.Command{
@@ -65,6 +66,8 @@ a non-carrier would invent an observation.
   --classify          resolve every sample, not just carriers
   --format F          tsv (default), json, vcf, or list
   --store KIND        force the backend: vcf or parquet
+  -v, --verbose       report the backend, the store's conversion settings, and
+                      whether the quality gate could actually act, on stderr
 
 Tabular output splits the locus into four leading columns (chrom, pos, ref,
 alt) rather than one packed chrom:pos:ref:alt field, so it can be cut and
@@ -111,6 +114,9 @@ whichever naming convention the file itself uses.`,
 			return err
 		}
 		gate := varstore.Gate{MinDP: int32(vcfVarQueryMinDP), MinGQ: int32(vcfVarQueryMinGQ)}
+		if vcfVarQueryVerbose {
+			describeStore(cmd, store, args[0], gate)
+		}
 
 		w, closeFn, err := openOutput(cmd, vcfVarQueryOutput)
 		if err != nil {
@@ -122,7 +128,7 @@ whichever naming convention the file itself uses.`,
 			err = runVarQuerySamples(out, store, span, gate, format, args[0])
 		} else {
 			warnUnknownSites(cmd, store)
-			err = runVarQueryVariants(out, store, gate, format, args[0])
+			err = runVarQueryVariants(cmd, out, store, gate, format, args[0])
 		}
 		if err != nil {
 			return err
@@ -171,6 +177,75 @@ func provenance(out *bufio.Writer, source string) {
 	fmt.Fprintln(out, "## program: "+buildinfo.String())
 	fmt.Fprintln(out, "## cmd: "+buildinfo.CommandLine())
 	fmt.Fprintln(out, "## input: "+source)
+}
+
+// describeStore reports which backend was chosen and, for a Parquet store, the
+// conversion settings baked into it.
+//
+// The --min-dp comparison is the point of this. A store's called-site runs were
+// built at one threshold; a query gating at a different one is not asking a
+// question the store can answer consistently, and the two backends will stop
+// agreeing. That is invisible without being told.
+func describeStore(cmd *cobra.Command, store varstore.Store, path string, g varstore.Gate) {
+	out := cmd.ErrOrStderr()
+	switch s := store.(type) {
+	case *varstore.ParquetStore:
+		p := s.Provenance()
+		fmt.Fprintf(out, "store    parquet %s (%d samples)\n", path, p.NumSamples)
+		if p.Source != "" {
+			fmt.Fprintf(out, "  built from  %s\n", p.Source)
+		}
+		if p.Program != "" {
+			fmt.Fprintf(out, "  by          %s\n", p.Program)
+		}
+		fmt.Fprintf(out, "  spans       %s", p.Spans)
+		if p.Spans == varstore.SpansSites {
+			fmt.Fprintf(out, "  (answers only for variants in the sites catalog)")
+		}
+		fmt.Fprintln(out)
+		if p.NoCallable {
+			fmt.Fprintf(out, "  callable    not tracked (--no-callable): --classify will refuse\n")
+		} else {
+			fmt.Fprintf(out, "  min-dp      %d at conversion\n", p.MinDP)
+			if g.MinDP > 0 && g.MinDP != p.MinDP {
+				fmt.Fprintf(out, "  NOTE: querying at --min-dp %d but the runs were built at %d;\n"+
+					"        non-carrier vs not-assayed will not match a direct VCF query.\n",
+					g.MinDP, p.MinDP)
+			}
+		}
+	case *varstore.VcfStore:
+		names, _ := s.Samples()
+		fmt.Fprintf(out, "store    vcf %s (%d samples)\n", path, len(names))
+	}
+}
+
+// reportGate says whether the quality gate could actually act.
+//
+// A gate over a field the data lacks admits everything rather than rejecting
+// it, so a --min-gq that looks like a filter can be doing nothing at all. This
+// is the one diagnostic most worth surfacing: the numbers look plausible either
+// way, and only the field census distinguishes them.
+func reportGate(cmd *cobra.Command, g varstore.Gate, calls []varstore.Call, excluded int) {
+	if g.IsZero() {
+		return
+	}
+	out := cmd.ErrOrStderr()
+	var haveDP, haveGQ int
+	for _, c := range calls {
+		if c.DP != varstore.Missing {
+			haveDP++
+		}
+		if c.GQ != varstore.Missing {
+			haveGQ++
+		}
+	}
+	fmt.Fprintf(out, "gate     excluded %d call(s)\n", excluded)
+	if g.MinDP > 0 && haveDP == 0 && len(calls) > 0 {
+		fmt.Fprintf(out, "  WARNING: --min-dp %d had no effect; no call here carries DP\n", g.MinDP)
+	}
+	if g.MinGQ > 0 && haveGQ == 0 && len(calls) > 0 {
+		fmt.Fprintf(out, "  WARNING: --min-gq %d had no effect; no call here carries GQ\n", g.MinGQ)
+	}
 }
 
 // warnUnknownSites notes any queried variant the source never reported.
@@ -292,7 +367,7 @@ func writeVarQueryVcf(out *bufio.Writer, results []varQuerySampleResult, source 
 }
 
 // runVarQueryVariants reports which subjects carry each requested variant.
-func runVarQueryVariants(out *bufio.Writer, store varstore.Store,
+func runVarQueryVariants(cmd *cobra.Command, out *bufio.Writer, store varstore.Store,
 	gate varstore.Gate, format, source string) error {
 
 	type variantResult struct {
@@ -309,12 +384,26 @@ func runVarQueryVariants(out *bufio.Writer, store varstore.Store,
 			return err
 		}
 		r := variantResult{Variant: locus.String(), Locus: locus}
+
+		// Compare against the ungated result so the gate's effect is a measured
+		// number rather than an inference from the row count.
+		var ungated []varstore.Call
+		if vcfVarQueryVerbose && !gate.IsZero() {
+			ungated, err = store.Carriers(locus, varstore.Gate{})
+			if err != nil {
+				return err
+			}
+		}
+
 		if vcfVarQueryClassify {
 			states, err := store.Classify(locus, gate)
 			if err != nil {
 				return err
 			}
 			r.States = states
+			if vcfVarQueryVerbose {
+				reportVariant(cmd, store, locus, len(states), tallyStates(states))
+			}
 		} else {
 			calls, err := store.Carriers(locus, gate)
 			if err != nil {
@@ -322,6 +411,16 @@ func runVarQueryVariants(out *bufio.Writer, store varstore.Store,
 			}
 			varstore.SortCalls(calls)
 			r.Calls = calls
+			if vcfVarQueryVerbose {
+				reportVariant(cmd, store, locus, len(calls), nil)
+			}
+		}
+		if vcfVarQueryVerbose && !gate.IsZero() {
+			kept := len(r.Calls)
+			if r.States != nil {
+				kept = tallyStates(r.States)[varstore.StateCarrier]
+			}
+			reportGate(cmd, gate, ungated, len(ungated)-kept)
 		}
 		results = append(results, r)
 	}
@@ -407,4 +506,44 @@ func init() {
 	f.BoolVar(&vcfVarQueryClassify, "classify", false, "Resolve every sample to carrier/uncertain/non-carrier/not-assayed")
 	f.StringVar(&vcfVarQueryFormat, "format", "tsv", "Output format: tsv, json, vcf, or list")
 	f.StringVar(&vcfVarQueryStore, "store", "", "Force the backend: vcf or parquet (default: infer from the path)")
+	f.BoolVarP(&vcfVarQueryVerbose, "verbose", "v", false, "Report the backend, store provenance and gate effect on stderr")
+}
+
+// tallyStates counts how many samples landed in each classification state.
+func tallyStates(states []varstore.SampleState) map[varstore.State]int {
+	out := map[varstore.State]int{}
+	for _, s := range states {
+		out[s.State]++
+	}
+	return out
+}
+
+// reportVariant summarises one queried locus: what the catalog knows about it
+// and, under --classify, how the samples fell out.
+func reportVariant(cmd *cobra.Command, store varstore.Store, l varstore.Locus,
+	n int, tally map[varstore.State]int) {
+
+	out := cmd.ErrOrStderr()
+	fmt.Fprintf(cmd.ErrOrStderr(), "variant  %s\n", l)
+
+	// Allele frequency comes from the catalog, which knows the site even when
+	// nobody carries it -- so this stays meaningful at AC 0.
+	if ps, ok := store.(*varstore.ParquetStore); ok {
+		if site, found, err := ps.Site(l); err == nil && found {
+			fmt.Fprintf(out, "  site        AC=%d AN=%d AF=%.6g  n_carriers=%d n_called=%d n_lowdp=%d\n",
+				site.AC, site.AN, site.AF(), site.NCarriers, site.NCalled, site.NLowDP)
+		}
+	}
+	if tally == nil {
+		fmt.Fprintf(out, "  carriers    %d\n", n)
+		return
+	}
+	fmt.Fprintf(out, "  classified  %d samples:", n)
+	for _, st := range []varstore.State{
+		varstore.StateCarrier, varstore.StateUncertain,
+		varstore.StateNonCarrier, varstore.StateNotAssayed,
+	} {
+		fmt.Fprintf(out, "  %s=%d", st, tally[st])
+	}
+	fmt.Fprintln(out)
 }
