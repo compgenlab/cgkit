@@ -81,7 +81,7 @@ func TestPruningNeverChangesTheAnswer(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			pruned, err := s.Carriers(l, Gate{})
+			pruned, err := CollectCalls(s, Query{Loci: []Locus{l}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -133,7 +133,7 @@ func TestPruningBoundsAreInclusive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := s.Carriers(l, Gate{})
+			got, err := CollectCalls(s, Query{Loci: []Locus{l}})
 			s.Close()
 			if err != nil {
 				t.Fatal(err)
@@ -157,7 +157,7 @@ func TestSpanFilterKeepsOverlap(t *testing.T) {
 
 	// Span covering exactly position 100 (1-based) is [99,100) 0-based.
 	span := &Span{Chrom: "chr17", Start: 99, End: 100}
-	got, err := s.Variants("S1", span, Gate{})
+	got, err := CollectCalls(s, Query{Samples: []string{"S1"}, Spans: []Span{*span}})
 	if err != nil {
 		t.Fatal(err)
 	}

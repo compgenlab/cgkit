@@ -3,6 +3,7 @@ package varstore
 import (
 	"errors"
 	"fmt"
+	"iter"
 	"strconv"
 	"strings"
 
@@ -108,6 +109,143 @@ func (g Gate) Admits(c Call) bool {
 // IsZero reports whether the gate constrains nothing.
 func (g Gate) IsZero() bool { return g.MinDP <= 0 && g.MinGQ <= 0 }
 
+// Query selects sites on one axis and samples on the other.
+//
+// The two axes are independent, and an empty selector imposes no restriction on
+// its axis -- the way a nil Span has always read. So the zero Query asks for every
+// genotype in the store, naming loci narrows the sites, naming samples narrows the
+// columns, and doing both is the variants-by-samples question that used to need
+// two separate calls.
+//
+// It is a struct rather than a set of arguments so that it can grow -- richer site
+// selectors, requested INFO fields -- without changing the interface.
+type Query struct {
+	// Site axis, unioned. All empty means every site the store holds.
+	Loci  []Locus
+	Spans []Span
+
+	// Sample axis. Empty means every sample in the store.
+	//
+	// Note this defaults to *all*, matching the site axis. A caller that must not
+	// accidentally ask for a whole cohort should require its own selection first;
+	// the library will not guess that an unset filter meant "none".
+	Samples []string
+
+	// Gate drops ALT calls below a depth threshold. The zero Gate admits everything.
+	Gate Gate
+
+	// IncludeRef also emits the reference (0/0) calls, turning "which variants does
+	// this subject carry" into "every site interrogated for this subject". It needs
+	// the sites and regions members, so a store built with --no-callable refuses
+	// with ErrNotClassifiable rather than reporting unobserved samples as reference.
+	IncludeRef bool
+}
+
+// plan indexes a Query's selectors for repeated matching during a scan.
+type plan struct {
+	q       Query
+	loci    map[Locus]bool     // canonicalized; nil when no locus was named
+	records map[RecordKey]bool // the records those loci were split out of
+	samples map[string]bool    // nil when every sample is wanted
+	anySite bool               // neither loci nor spans were named
+}
+
+// plan prepares the query for matching. Loci are canonicalized once here so a
+// panel spelled "22" matches a store spelled "chr22" without re-canonicalizing
+// per row.
+func (q Query) plan() *plan {
+	p := &plan{q: q, anySite: len(q.Loci) == 0 && len(q.Spans) == 0}
+	if len(q.Loci) > 0 {
+		p.loci = make(map[Locus]bool, len(q.Loci))
+		p.records = make(map[RecordKey]bool, len(q.Loci))
+		for _, l := range q.Loci {
+			p.loci[canonLocus(l)] = true
+			p.records[l.Record()] = true
+		}
+	}
+	if len(q.Samples) > 0 {
+		p.samples = make(map[string]bool, len(q.Samples))
+		for _, s := range q.Samples {
+			p.samples[s] = true
+		}
+	}
+	return p
+}
+
+// canonLocus normalizes a locus's chromosome so differing conventions compare
+// and hash equal.
+func canonLocus(l Locus) Locus {
+	l.Chrom = CanonKey(l.Chrom)
+	return l
+}
+
+// wantsSample reports whether the sample axis admits a sample.
+func (p *plan) wantsSample(name string) bool {
+	return p.samples == nil || p.samples[name]
+}
+
+// wantsSite reports whether the site axis admits a locus.
+func (p *plan) wantsSite(l Locus) bool {
+	if p.anySite {
+		return true
+	}
+	if p.loci != nil && p.loci[canonLocus(l)] {
+		return true
+	}
+	for i := range p.q.Spans {
+		if p.q.Spans[i].Contains(l.Chrom, l.Pos) {
+			return true
+		}
+	}
+	return false
+}
+
+// wantsRecord reports whether a locus belongs to a source record the query
+// touches, which is broader than wantsSite: naming chr1:200:C:G also reaches
+// chr1:200:C:T, because both were split out of one record and so share one
+// genotype per sample.
+//
+// Reference-call reconstruction needs this. A sample carrying T is not reference
+// at the G locus, and the only evidence of that is its call at the *sibling*
+// locus -- which a site-level test discards, silently turning a 0/2 sample into a
+// fabricated 0/0.
+func (p *plan) wantsRecord(l Locus) bool {
+	if p.anySite {
+		return true
+	}
+	if p.records != nil && p.records[l.Record()] {
+		return true
+	}
+	for i := range p.q.Spans {
+		if p.q.Spans[i].Contains(l.Chrom, l.Pos) {
+			return true
+		}
+	}
+	return false
+}
+
+// wantsCall applies both axes and the gate to one ALT call.
+func (p *plan) wantsCall(c Call) bool {
+	return p.wantsSample(c.SampleID) && p.wantsSite(c.Locus()) && p.q.Gate.Admits(c)
+}
+
+// CollectCalls buffers a query into a slice, for callers that do not need to
+// stream. It is a convenience over Calls, never a different answer.
+func CollectCalls(s Store, q Query) ([]Call, error) {
+	seq, err := s.Calls(q)
+	if err != nil {
+		return nil, err
+	}
+	var out []Call
+	for c, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
 // SampleState pairs a sample with its state at a locus. Call is non-nil only
 // for StateCarrier and StateUncertain.
 type SampleState struct {
@@ -125,29 +263,27 @@ type Store interface {
 	// Samples returns every sample the store knows about, in file order.
 	Samples() ([]string, error)
 
-	// Carriers returns the ALT-carrying calls at a locus that pass the gate.
-	Carriers(l Locus, g Gate) ([]Call, error)
-
-	// Variants returns the ALT-carrying calls for one sample, optionally
-	// restricted to a span. A nil span means the whole store.
-	Variants(sample string, span *Span, g Gate) ([]Call, error)
-
-	// HomRefs returns a reference call for every sample observed to be
-	// all-reference at a locus, and HomRefVariants the same fact from the other
-	// direction: the catalog sites at which one sample was all-reference.
+	// Calls streams the genotypes a query selects.
 	//
-	// "All-reference" is stricter than StateNonCarrier, and deliberately so. At a
-	// multiallelic record a 0/2 sample is a non-carrier of allele 1 while still
-	// carrying an alternate, so the two differ exactly where a sample carries a
-	// different alternate of the same record. A hom-ref row therefore always
-	// means the genotype was all-reference, never merely "not this allele" --
-	// emitting 0/0 for a 0/2 sample would fabricate a genotype.
+	// Rows arrive in the store's own order -- (chrom, pos) as written, then ALT
+	// order, then sample roster order. That is contig order rather than
+	// lexicographic, which is what an indexable VCF requires and what a
+	// lexicographic sort gets wrong the moment a store holds chr10.
 	//
-	// Both refuse with ErrNotClassifiable rather than return an empty result when
-	// the backend cannot separate a reference call from an unassayed position,
-	// for the same reason Classify does.
-	HomRefs(l Locus, g Gate) ([]Call, error)
-	HomRefVariants(sample string, span *Span, g Gate) ([]Call, error)
+	// The returned error reports setup failure, so a caller learns about an
+	// unusable query before iterating; per-row failures arrive through the
+	// iterator. With Query.IncludeRef a store lacking sites or regions fails here
+	// with ErrNotClassifiable rather than silently omitting reference calls.
+	//
+	// Implementations choose their own access strategy from the query's shape --
+	// pruned per-locus lookups for a handful of loci, one ordered pass for many --
+	// so a caller cannot accidentally turn a panel into one lookup per variant.
+	//
+	// A reference call is emitted only where the genotype was ALL-reference. At a
+	// multiallelic record a 0/2 sample is not a carrier of allele 1 but is not
+	// reference either, so it appears as neither: writing 0/0 for it would
+	// fabricate a genotype the source never contained.
+	Calls(q Query) (iter.Seq2[Call, error], error)
 
 	// Classify resolves every sample to a state at the locus, or returns
 	// ErrNotClassifiable if the backend lacks the evidence to do so.
