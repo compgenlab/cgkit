@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
@@ -204,6 +205,7 @@ written where nothing is known would assert a depth the data never had.`,
 		if err != nil {
 			return err
 		}
+		warnEmptySelectors(cmd, q, t)
 		if vcfVarQueryVerbose {
 			reportQuery(cmd, store, q, t)
 		}
@@ -625,6 +627,33 @@ func init() {
 	f.StringVar(&vcfVarQueryFormat, "format", "tsv", "Output format: tsv, json, vcf, or list")
 	f.StringVar(&vcfVarQueryStore, "store", "", "Force the backend: vcf or parquet (default: infer from the path)")
 	f.BoolVarP(&vcfVarQueryVerbose, "verbose", "v", false, "Report the backend, store provenance and gate effect on stderr")
+}
+
+// warnEmptySelectors reports a named selector that matched nothing.
+//
+// This is the safety net for the contig fallback in parseSelector: anything that
+// is not a locus or a region shape is taken as a contig name, so "chr1:100:A" --
+// a locus with a field missing -- becomes a contig nobody has and quietly selects
+// nothing. Saying so turns a typo into feedback, and it costs nothing, since the
+// counts were gathered while streaming.
+//
+// Not gated behind -v. An empty result that looks like a real negative is exactly
+// the case where a user needs telling.
+func warnEmptySelectors(cmd *cobra.Command, q varstore.Query, t *tally) {
+	if t == nil || len(t.byLocus) > 0 {
+		return // something matched; per-selector attribution is not worth a second pass
+	}
+	if len(q.Loci) == 0 && len(q.Spans) == 0 {
+		return
+	}
+	out := cmd.ErrOrStderr()
+	fmt.Fprintf(out, "warning: no rows for any target given.\n")
+	for _, sp := range q.Spans {
+		if sp.Start == 0 && sp.End == math.MaxInt32 {
+			fmt.Fprintf(out, "         %q was read as a contig name; if it was meant as a "+
+				"locus it needs chrom:pos:ref:alt\n", sp.Chrom)
+		}
+	}
 }
 
 // reportQuery summarises what the query returned, from counts gathered while
