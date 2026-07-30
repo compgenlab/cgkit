@@ -816,6 +816,102 @@ func TestStoreDirWithUnrelatedContentIsFine(t *testing.T) {
 	}
 }
 
+// TestMultiVcfCombines pins that several inputs land in one store.
+func TestMultiVcfCombines(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "s") + string(os.PathSeparator)
+	runVcf(t, "vcf-toparquet", "--out", base,
+		"testdata/multi_chr1.vcf", "testdata/multi_chr2.vcf")
+
+	s, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, l := range []varstore.Locus{
+		{Chrom: "chr1", Pos: 100, Ref: "A", Alt: "G"},
+		{Chrom: "chr2", Pos: 200, Ref: "T", Alt: "A"},
+	} {
+		known, err := s.SiteKnown(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !known {
+			t.Errorf("%s missing from the combined store", l)
+		}
+	}
+}
+
+// TestMultiVcfRemapsSampleOrder is the one that matters. Genotype columns are
+// positional, so a second input with reversed columns would, without remapping,
+// attribute every genotype to the wrong person -- silently, with output that
+// looks entirely plausible. The reordered file carries the same genotypes per
+// SAMPLE as the canonical one, so both must produce identical stores.
+func TestMultiVcfRemapsSampleOrder(t *testing.T) {
+	canonical := filepath.Join(t.TempDir(), "a") + string(os.PathSeparator)
+	reordered := filepath.Join(t.TempDir(), "b") + string(os.PathSeparator)
+	runVcf(t, "vcf-toparquet", "--out", canonical,
+		"testdata/multi_chr1.vcf", "testdata/multi_chr2.vcf")
+	runVcf(t, "vcf-toparquet", "--out", reordered,
+		"testdata/multi_chr1.vcf", "testdata/multi_chr2_reordered.vcf")
+
+	for _, l := range []string{"chr2:100:G:C", "chr2:200:T:A"} {
+		a := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", l, "--classify", canonical))
+		b := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", l, "--classify", reordered))
+		if a != b {
+			t.Errorf("reordered input produced different genotypes at %s\n canonical:\n%s\n reordered:\n%s",
+				l, a, b)
+		}
+	}
+}
+
+// TestMultiVcfRejectsDifferentSamples pins that a set mismatch is refused, and
+// that the message names what differs rather than just saying they differ.
+func TestMultiVcfRejectsDifferentSamples(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "s") + string(os.PathSeparator)
+	err := runVcfErr(t, "vcf-toparquet", "--out", base,
+		"testdata/multi_chr1.vcf", "testdata/multi_chr2_othersamples.vcf")
+	if err == nil {
+		t.Fatal("expected a refusal for differing sample sets")
+	}
+	for _, want := range []string{"same samples", "S3"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// TestMultiVcfRejectsOverlap pins that overlapping inputs are refused: they
+// would write the same site twice and split its AC/AN across two rows.
+func TestMultiVcfRejectsOverlap(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "s") + string(os.PathSeparator)
+	err := runVcfErr(t, "vcf-toparquet", "--out", base,
+		"testdata/multi_chr1.vcf", "testdata/multi_chr1.vcf")
+	if err == nil {
+		t.Fatal("expected a refusal for overlapping inputs")
+	}
+	if !strings.Contains(err.Error(), "overlap") && !strings.Contains(err.Error(), "sorted") {
+		t.Errorf("error should explain the ordering rule, got: %v", err)
+	}
+}
+
+// TestFailedConversionLeavesNothing pins that a failure does not leave members
+// on disk: they would look like a store, and would block the retry through the
+// overwrite guard.
+func TestFailedConversionLeavesNothing(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "s") + string(os.PathSeparator)
+	if err := runVcfErr(t, "vcf-toparquet", "--out", base,
+		"testdata/multi_chr1.vcf", "testdata/multi_chr2_othersamples.vcf"); err == nil {
+		t.Fatal("expected the conversion to fail")
+	}
+	if found := varstore.ExistingMembers(base); len(found) > 0 {
+		t.Errorf("failed conversion left %v behind", found)
+	}
+	// The retry must succeed without --force.
+	runVcf(t, "vcf-toparquet", "--out", base,
+		"testdata/multi_chr1.vcf", "testdata/multi_chr2.vcf")
+}
+
 // dataRowsOnly drops the ## provenance lines, which carry a timestamp.
 func dataRowsOnly(s string) string {
 	var out []string
