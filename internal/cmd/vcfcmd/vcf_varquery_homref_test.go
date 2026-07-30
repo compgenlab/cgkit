@@ -375,7 +375,7 @@ func TestMinDPReportsTheVouchedFloor(t *testing.T) {
 func TestHomRefRegionBounds(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
 	got := dataRowsOnly(runVcf(t, "vcf-varquery", "--sample", "S2", "--hom-ref",
-		"--min-dp", "10", "--region", "chr1:250-450", base))
+		"--min-dp", "10", "--variant", "chr1:250-450", base))
 	for _, want := range []string{"\t300\t", "\t400\t"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected a row at %s within the region:\n%s", want, got)
