@@ -205,9 +205,35 @@ Both are computed **over the samples in this store**, not copied from the source
 
 The backend is inferred from the path — VCF or store — and the same question must give the same answer either way. That equivalence is the point of the abstraction, and it is verified on 3,202 1000 Genomes samples including the worst-covered site in BRCA1.
 
+### Selecting sites
+
+`--variant` is the only site selector; there is no `--region`. It takes any of these, repeatably:
+
+```
+chr1                     a whole contig
+chr1:1000-2000           a region
+chr1:1000                any variant at that position
+chr1:1000:A:T            one exact variant
+panel.vcf|.bed|.txt      a file, format detected from its content
+```
+
+A value is a file when one exists by that name and an inline selector otherwise, so a mistyped locus still gets a locus error rather than "no such file". Three file formats are recognised:
+
+| format | shape | coordinates |
+|---|---|---|
+| VCF/BCF | announced by `##fileformat`; one target per ALT allele | 1-based |
+| BED | `chrom start end` | **0-based half-open** |
+| site list | whitespace-separated `chrom pos [ref alt]` | 1-based |
+
+BED and site lists are told apart by their **third column**: a BED end coordinate is numeric, a REF allele never is. Both tolerate extra columns, `#` comments, blank lines and BED `track` lines, and any whitespace separates. A line holding a single token is parsed with the inline grammar above, so a file may simply list those tokens and may mix the two forms. The same file works with `vcf-gtcount --sites`, which shares the parser.
+
+Because a misdetection would shift coordinates by one rather than fail, `-v` reports which format each file was read as and how many targets it produced, and a file yielding no targets is an error rather than an empty result.
+
+An exact locus needs four colon-fields, a numeric position, **and** non-numeric REF/ALT. That last condition is what lets a contig name carry colons: GRCh38's ALT contigs are spelled like `HLA-A*01:01:01:01`, which also splits into four fields — but its last two are numeric. Anything not matching a locus or region shape is taken as a contig name whole, and a target that matched no rows is reported so a malformed locus does not read as a real negative. A locus *on* such a contig cannot be written inline at all; a file's columnar form takes it.
+
 ### Output layout
 
-Both query modes emit one layout, so `--sample` and `--variant` output can be concatenated, sorted and cut the same way:
+Every non-VCF output uses one layout, whichever selectors were named, so results can be concatenated, sorted and cut the same way:
 
 ```
 chrom  pos  ref  alt  sample  gt  dp  min_dp  ad_ref  ad_alt  gq
@@ -266,7 +292,7 @@ chrom	pos	ref	alt	sample	gt	dp	min_dp	ad_ref	ad_alt	gq
 1	500	A	T	S1	0/1	30	30	.	.	99
 ```
 
-Conversion preserves the source's own spelling in the store rather than rewriting it. A contig the file lacks is an absence — no rows plus a warning — but an unresolvable `--region` is an error, since that names a contig the caller asserts exists.
+Conversion preserves the source's own spelling in the store rather than rewriting it. A contig the file lacks is an absence — no rows plus a warning — but an unresolvable *region* is an error, since a region names a contig the caller asserts exists. That distinction survives `--region` being folded into `--variant`, because it keys off the selector's shape rather than a flag name: `chr1:1000:A:T` asks a question, `chr1:1000-2000` and a bare `chr1` make an assertion.
 
 ### Match the query --min-dp to the conversion --min-dp
 
@@ -376,11 +402,11 @@ Inputs must **not overlap**: a chromosome cannot be revisited once left, and pos
 
 | flag | default | description |
 |---|---|---|
-| `--variant LOCUS` | | report subjects carrying `chrom:pos:ref:alt` (repeatable) |
+| `--variant TARGET` | | a locus, region, contig, or a file of them (repeatable) |
 | `--sample NAME` | | report variants carried by this subject (repeatable) |
-| `--region R` | | restrict to a 1-based region (`chrom:start-end`, or `chrom`) |
 | `--min-dp N` | `0` | minimum DP for a call to count |
 | `--hom-ref` | off | report every interrogated site, not only the ALT calls |
+| `--tbi` | off | also write a tabix index (needs `-o` with a `.gz` name) |
 | `--format F` | `tsv` | `tsv`, `json`, `vcf` (sample mode), or `list` (variant mode) |
 | `--store KIND` | infer | force the backend: `vcf` or `parquet` |
 | `-o`, `--output` | `-` | output filename |
