@@ -36,12 +36,24 @@ func vcfTestRoot(args ...string) (*cobra.Command, *bytes.Buffer) {
 	InitCmd(root)
 	for _, c := range root.Commands() {
 		c.Flags().VisitAll(func(f *pflag.Flag) {
+			// Slice flags APPEND on Set, so Set(DefValue) would add the literal
+			// "[]" as an element rather than clearing them. That bug was latent for
+			// a long time: an extra bogus --sample is a harmless no-op selector,
+			// but an extra bogus --region restricts the site axis and silently
+			// filters every row away. Replace empties them properly, and does so
+			// for every slice flag rather than the hand-kept list below, which is
+			// exactly the kind of list a new flag gets forgotten from.
+			if sv, ok := f.Value.(pflag.SliceValue); ok {
+				_ = sv.Replace(nil)
+				f.Changed = false
+				return
+			}
 			_ = f.Value.Set(f.DefValue)
 			f.Changed = false
 		})
 	}
-	// Array-backed flags append on Set, so the default reset above does not
-	// clear them; reset their globals directly.
+	// Custom chain-valued flags do not implement pflag.SliceValue, so they still
+	// need clearing by hand.
 	vcfExportInfo = nil
 	vcfExportFormat = nil
 	vcfReorderSamples = nil
