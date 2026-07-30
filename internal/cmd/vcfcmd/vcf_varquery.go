@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/compgenlab/cghts/varstore"
@@ -17,7 +16,7 @@ var (
 	vcfVarQueryOutput   string
 	vcfVarQuerySamples  []string
 	vcfVarQueryVariants []string
-	vcfVarQueryRegion   string
+	vcfVarQueryRegions  []string
 	vcfVarQueryMinDP    int
 	vcfVarQueryHomRef   bool
 	vcfVarQueryFormat   string
@@ -37,14 +36,22 @@ directory ("cohort/" or "cohort" for cohort/calls.parquet...), or by any one of
 its three member files. The backend is inferred from the path; override with
 --store.
 
-Two modes, one of which must be given:
+Two independent axes, at least one of which must be given. Sites:
 
-  --sample NAME     report the variants that subject carries
-  --variant LOCUS   report the subjects carrying that variant (chrom:pos:ref:alt)
+  --variant LOCUS   a variant, as chrom:pos:ref:alt (repeatable)
+  --region R        a 1-based region, chrom:start-end or chrom (repeatable)
 
-Both are repeatable. --min-dp gates calls by depth; a gate over data lacking DP
-admits everything rather than rejecting it, since an absent depth is not evidence
-of a shallow one.
+and samples:
+
+  --sample NAME     a subject (repeatable)
+
+They compose rather than exclude. --sample alone reports what those subjects
+carry; --variant alone reports who carries those variants; both together ask what
+those subjects' genotypes are at those sites; --region alone takes a window. An
+axis left unnamed is unrestricted, not empty.
+
+--min-dp gates calls by depth; a gate over data lacking DP admits everything
+rather than rejecting it, since an absent depth is not evidence of a shallow one.
 
 There is deliberately no --min-gq. GQ is recorded per ALT call, but conversion
 builds its callable runs from depth alone, so no GQ survives for a reference call
@@ -53,19 +60,19 @@ would silently disagree. The gq column is in the output, so filter on it
 downstream if you need to.
 
 By default only the alternate-allele calls are reported -- "which variants does
-this subject carry". --hom-ref switches to every interrogated site -- "show me
-all the sites for this subject" -- adding the reference calls to the same
-stream: in --variant mode the samples that are 0/0 at the locus, in --sample mode
-the sites that subject was 0/0 at. The gt column tells the two apart.
+this subject carry". --hom-ref switches to every interrogated site -- "show me all
+the sites for this subject" -- adding the reference calls to the same stream. The
+gt column tells the two apart. --format vcf implies it, since a genotype matrix
+that cannot tell 0/0 from ./. asserts far less than the data supports.
 
 A 0/0 row means the whole genotype was reference. At a multiallelic record a 0/2
 sample is not a carrier of allele 1, yet it is not reference either, so it
 appears under neither -- writing 0/0 for it would be a genotype the source never
 contained.
 
-In --sample mode this walks the entire sites catalog, since being reference is a
-statement about every site the callset interrogated -- expect roughly one row per
-variant in the source. Use --region to bound it.
+With no site restriction --hom-ref walks the entire sites catalog, since being
+reference is a statement about every site the callset interrogated -- expect
+roughly one row per variant in the source. --region or --variant bounds it.
 
 A reference call is only as good as the evidence for it: the gate must admit it
 (a 0/0 at DP 3 under --min-dp 10 is not a reference observation), an off-catalog
@@ -81,18 +88,20 @@ at every record. A Parquet store reconstructs the reference calls from its sites
 and callable-regions files, and refuses if either is missing or it was built
 without coverage information.
 
-  --sample NAME       subject to report variants for (repeatable)
-  --variant LOCUS     variant to report carriers of (repeatable)
-  --region R          restrict to a 1-based region (chrom:start-end)
+  --sample NAME       subject to report on (repeatable)
+  --variant LOCUS     variant as chrom:pos:ref:alt (repeatable)
+  --region R          1-based region, chrom:start-end or chrom (repeatable)
   --min-dp N          minimum depth for a call to count
   --hom-ref           report every interrogated site, not only the ALT calls
-  --format F          tsv (default), json, vcf, or list
+  --format F          tsv (default), json, vcf, or list. vcf emits a genotype
+                      matrix, one record per site and one column per sample,
+                      with AC/AN/AF/NS/nhomalt recomputed over those samples
   --store KIND        force the backend: vcf or parquet
   -v, --verbose       report the backend, the store's conversion settings, and
                       whether the quality gate could actually act, on stderr
 
-Both query modes emit one layout, so --sample and --variant output can be
-concatenated, sorted and cut the same way:
+Every non-VCF output uses one layout, whichever axes were named, so results can
+be concatenated, sorted and cut the same way:
 
   chrom pos ref alt sample gt dp min_dp ad_ref ad_alt gq
 
@@ -113,24 +122,17 @@ written where nothing is known would assert a depth the data never had.`,
 			cmd.Help()
 			return nil
 		}
-		nSample, nVariant := len(vcfVarQuerySamples), len(vcfVarQueryVariants)
-		if nSample == 0 && nVariant == 0 {
-			return fmt.Errorf("give at least one --sample or --variant")
-		}
-		if nSample > 0 && nVariant > 0 {
-			return fmt.Errorf("--sample and --variant are separate modes; use one at a time")
+		// At least one selector. An empty Query is legal in the library -- it means
+		// the whole store -- but making it the accidental result of a typo at the
+		// command line is not worth the convenience.
+		if len(vcfVarQuerySamples) == 0 && len(vcfVarQueryVariants) == 0 &&
+			len(vcfVarQueryRegions) == 0 {
+			return fmt.Errorf("give at least one --sample, --variant or --region")
 		}
 		format := strings.ToLower(vcfVarQueryFormat)
 		switch format {
-		case "tsv", "json":
-		case "vcf":
-			if nVariant > 0 {
-				return fmt.Errorf("--format vcf applies to --sample mode, which emits variants")
-			}
+		case "tsv", "json", "vcf":
 		case "list":
-			if nSample > 0 {
-				return fmt.Errorf("--format list applies to --variant mode, which emits sample ids")
-			}
 			// A bare list of ids cannot say which of them are carriers and which
 			// are reference calls, and a mixed list read as carriers is exactly the
 			// conflation the two categories exist to prevent.
@@ -142,20 +144,28 @@ written where nothing is known would assert a depth the data never had.`,
 			return fmt.Errorf("unknown format %q (use tsv, json, vcf, or list)", format)
 		}
 
+		q, err := buildQuery()
+		if err != nil {
+			return err
+		}
+		// A genotype matrix has to distinguish an observed reference call from an
+		// unobserved sample, or every non-carrier becomes ./. and the file asserts
+		// far less than the data supports. So --format vcf implies --hom-ref, and
+		// inherits its refusal on a store that cannot reconstruct reference calls.
+		if format == "vcf" {
+			q.IncludeRef = true
+		}
+
 		store, err := openVarStore(args[0], vcfVarQueryStore)
 		if err != nil {
 			return err
 		}
 		defer store.Close()
 
-		span, err := varstore.ParseSpan(vcfVarQueryRegion)
-		if err != nil {
-			return err
-		}
-		gate := varstore.Gate{MinDP: int32(vcfVarQueryMinDP)}
 		if vcfVarQueryVerbose {
-			describeStore(cmd, store, args[0], gate)
+			describeStore(cmd, store, args[0], q.Gate)
 		}
+		warnUnknownSites(cmd, store, q)
 
 		w, closeFn, err := openOutput(cmd, vcfVarQueryOutput)
 		if err != nil {
@@ -163,14 +173,22 @@ written where nothing is known would assert a depth the data never had.`,
 		}
 		out := bufio.NewWriter(w)
 
-		if nSample > 0 {
-			err = runVarQuerySamples(out, store, span, gate, format, args[0])
-		} else {
-			warnUnknownSites(cmd, store)
-			err = runVarQueryVariants(cmd, out, store, gate, format, args[0])
+		var t *tally
+		switch format {
+		case "json":
+			t, err = writeCallsJSON(out, store, q)
+		case "vcf":
+			t, err = writeCallsVCF(out, store, q, args[0])
+		case "list":
+			t, err = writeCallsList(out, store, q)
+		default:
+			t, err = writeCallsTSV(out, store, q, args[0])
 		}
 		if err != nil {
 			return err
+		}
+		if vcfVarQueryVerbose {
+			reportQuery(cmd, store, q, t)
 		}
 
 		if err := out.Flush(); err != nil {
@@ -273,40 +291,13 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 	}
 }
 
-// reportGate says whether the quality gate could actually act.
-//
-// A gate over a field the data lacks admits everything rather than rejecting it,
-// so a --min-dp that looks like a filter can be doing nothing at all. This is the
-// one diagnostic most worth surfacing: the numbers look plausible either way, and
-// only the field census distinguishes them.
-func reportGate(cmd *cobra.Command, g varstore.Gate, calls []varstore.Call, excluded int) {
-	if g.IsZero() {
-		return
-	}
-	out := cmd.ErrOrStderr()
-	var haveDP int
-	for _, c := range calls {
-		if c.DP != varstore.Missing {
-			haveDP++
-		}
-	}
-	fmt.Fprintf(out, "gate     excluded %d call(s)\n", excluded)
-	if g.MinDP > 0 && haveDP == 0 && len(calls) > 0 {
-		fmt.Fprintf(out, "  WARNING: --min-dp %d had no effect; no call here carries DP\n", g.MinDP)
-	}
-}
-
 // warnUnknownSites notes any queried variant the source never reported.
 //
 // Without this, such a variant returns zero carriers -- or all not-assayed
 // under --hom-ref -- which reads exactly like a real negative result. The
 // source simply never looked there, and only a gVCF could say otherwise.
-func warnUnknownSites(cmd *cobra.Command, store varstore.Store) {
-	for _, v := range vcfVarQueryVariants {
-		locus, err := varstore.ParseLocus(v)
-		if err != nil {
-			continue // reported properly by the query itself
-		}
+func warnUnknownSites(cmd *cobra.Command, store varstore.Store, q varstore.Query) {
+	for _, locus := range q.Loci {
 		known, err := store.SiteKnown(locus)
 		if err != nil || known {
 			continue
@@ -317,231 +308,257 @@ func warnUnknownSites(cmd *cobra.Command, store varstore.Store) {
 	}
 }
 
-// varQuerySampleResult is one subject's carried variants.
-type varQuerySampleResult struct {
-	Sample string          `json:"sample"`
-	Calls  []varstore.Call `json:"calls"`
+// buildQuery turns the flags into one Query.
+//
+// Site selection and sample selection are independent axes, so any combination is
+// legal: naming both is the variants-by-samples question that used to be a hard
+// error, naming only --region asks for a window, and naming only --sample asks
+// what that subject carries.
+func buildQuery() (varstore.Query, error) {
+	q := varstore.Query{
+		Samples:    vcfVarQuerySamples,
+		Gate:       varstore.Gate{MinDP: int32(vcfVarQueryMinDP)},
+		IncludeRef: vcfVarQueryHomRef,
+	}
+	for _, v := range vcfVarQueryVariants {
+		l, err := varstore.ParseLocus(v)
+		if err != nil {
+			return q, err
+		}
+		q.Loci = append(q.Loci, l)
+	}
+	for _, r := range vcfVarQueryRegions {
+		sp, err := varstore.ParseSpan(r)
+		if err != nil {
+			return q, err
+		}
+		q.Spans = append(q.Spans, *sp)
+	}
+	return q, nil
 }
 
-// runVarQuerySamples reports the variants carried by each requested subject.
-func runVarQuerySamples(out *bufio.Writer, store varstore.Store, span *varstore.Span,
-	gate varstore.Gate, format, source string) error {
+// tally counts what a query emitted, for the verbose report. Gathered while
+// streaming, since a streaming query cannot be counted afterwards.
+type tally struct {
+	alt, ref int
+	withDP   int                       // rows carrying a real DP
+	byLocus  map[varstore.Locus][2]int // [alt, ref] per locus
+}
 
-	var results []varQuerySampleResult
+func newTally() *tally { return &tally{byLocus: map[varstore.Locus][2]int{}} }
 
-	for _, s := range vcfVarQuerySamples {
-		q := varstore.Query{
-			Samples:    []string{s},
-			Gate:       gate,
-			IncludeRef: vcfVarQueryHomRef,
-		}
-		if span != nil {
-			q.Spans = []varstore.Span{*span}
-		}
-		// No sort: the store emits in its own (chrom, pos, alt, sample) order,
-		// which is contig order rather than lexicographic.
-		calls, err := varstore.CollectCalls(store, q)
+func (t *tally) add(c varstore.Call) {
+	if c.DP != varstore.Missing {
+		t.withDP++
+	}
+	n := t.byLocus[c.Locus()]
+	if varstore.IsAltCarrier(c.GT) {
+		t.alt++
+		n[0]++
+	} else {
+		t.ref++
+		n[1]++
+	}
+	t.byLocus[c.Locus()] = n
+}
+
+// streamCalls runs the query and hands each row to fn, tallying as it goes.
+func streamCalls(store varstore.Store, q varstore.Query, fn func(varstore.Call) error) (*tally, error) {
+	seq, err := store.Calls(q)
+	if err != nil {
+		return nil, err
+	}
+	t := newTally()
+	for c, err := range seq {
 		if err != nil {
-			return err
+			return t, err
 		}
-		results = append(results, varQuerySampleResult{Sample: s, Calls: calls})
+		t.add(c)
+		if err := fn(c); err != nil {
+			return t, err
+		}
 	}
+	return t, nil
+}
 
-	switch format {
-	case "json":
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(results)
-	case "vcf":
-		return writeVarQueryVcf(out, results, source)
-	}
-
+// writeCallsTSV streams the shared tabular layout.
+func writeCallsTSV(out *bufio.Writer, store varstore.Store, q varstore.Query, source string) (*tally, error) {
 	provenance(out, source)
 	fmt.Fprintln(out, strings.Join(tsvColumns, "\t"))
 	minDP := vouchedMinDP(store)
-	for _, r := range results {
-		for _, c := range r.Calls {
-			fmt.Fprintf(out, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				c.Chrom, c.Pos, c.Ref, c.Alt, c.SampleID, c.GT,
-				intOrDot(c.DP), minDPOf(c, minDP),
-				intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ))
-		}
-	}
-	return nil
+	return streamCalls(store, q, func(c varstore.Call) error {
+		_, err := fmt.Fprintf(out, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			c.Chrom, c.Pos, c.Ref, c.Alt, c.SampleID, c.GT,
+			intOrDot(c.DP), minDPOf(c, minDP),
+			intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ))
+		return err
+	})
 }
 
-// writeVarQueryVcf emits a minimal VCF of the calls reported for each sample.
-//
-// It is deliberately spare. Without --hom-ref only carried variants are present,
-// because a reference genotype was not asked for and must not be invented: a
-// locus the requested samples do not carry is simply absent, never written as
-// 0/0. With --hom-ref the reference calls are in the result set, and appear as
-// the genotypes they are. A sample with no call at a locus another sample brought
-// into the output stays "./.", which is the honest reading either way.
-func writeVarQueryVcf(out *bufio.Writer, results []varQuerySampleResult, source string) error {
-	names := make([]string, 0, len(results))
-	for _, r := range results {
-		names = append(names, r.Sample)
+// writeCallsJSON streams a JSON array rather than buffering one, so the shape is
+// the same at any scale.
+func writeCallsJSON(out *bufio.Writer, store varstore.Store, q varstore.Query) (*tally, error) {
+	fmt.Fprintln(out, "[")
+	first := true
+	t, err := streamCalls(store, q, func(c varstore.Call) error {
+		if !first {
+			fmt.Fprintln(out, ",")
+		}
+		first = false
+		b, err := json.Marshal(c)
+		if err != nil {
+			return err
+		}
+		_, err = out.Write(append([]byte("  "), b...))
+		return err
+	})
+	if err != nil {
+		return t, err
 	}
+	if !first {
+		fmt.Fprintln(out)
+	}
+	fmt.Fprintln(out, "]")
+	return t, nil
+}
+
+// writeCallsVCF streams a genotype matrix: one record per locus, one column per
+// sample.
+//
+// It buffers only ONE locus at a time. Rows arrive in the store's order, so every
+// row for a locus is contiguous -- the buffer is bounded by the sample count, not
+// by the query, and the records come out in contig order without a comparator.
+// The previous implementation collected every locus into a map and sorted at the
+// end, which both bounded the output by memory and sorted chromosomes
+// lexicographically (chr10 before chr2), producing a file tabix cannot index.
+func writeCallsVCF(out *bufio.Writer, store varstore.Store, q varstore.Query, source string) (*tally, error) {
+	names := q.Samples
+	if len(names) == 0 {
+		roster, err := store.Samples()
+		if err != nil {
+			return nil, err
+		}
+		names = roster
+	}
+	col := make(map[string]int, len(names))
+	for i, n := range names {
+		col[n] = i
+	}
+
 	fmt.Fprintln(out, "##fileformat=VCFv4.2")
 	fmt.Fprintln(out, "##source="+buildinfo.String())
 	fmt.Fprintln(out, "##cgkit_vcf-varqueryCommand="+buildinfo.CommandLine())
 	fmt.Fprintln(out, "##cgkit_vcf-varquerySource="+source)
+	fmt.Fprintln(out, `##INFO=<ID=AC,Number=A,Type=Integer,Description="Alt alleles among the samples in this file">`)
+	fmt.Fprintln(out, `##INFO=<ID=AN,Number=1,Type=Integer,Description="Called alleles among the samples in this file (depth-gated)">`)
+	fmt.Fprintln(out, `##INFO=<ID=AF,Number=A,Type=Float,Description="AC/AN">`)
+	fmt.Fprintln(out, `##INFO=<ID=NS,Number=1,Type=Integer,Description="Samples with a call">`)
+	fmt.Fprintln(out, `##INFO=<ID=nhomalt,Number=A,Type=Integer,Description="Samples homozygous for the alt allele">`)
 	fmt.Fprintln(out, `##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">`)
 	fmt.Fprintln(out, `##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">`)
 	fmt.Fprintln(out, `##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">`)
+	// AC/AN are recomputed over the samples in THIS file, not copied from the
+	// store, so they stay correct over a sample subset. AN is depth-gated, because
+	// what a store can vouch for is the samples inside its callable runs -- so it
+	// can differ from the store's own ungated AN wherever a sample was called
+	// below the threshold.
+	fmt.Fprintln(out, "##cgkit_vcf-varqueryNote=AC/AN/AF/NS/nhomalt are recomputed over the samples in "+
+		"this file; AN counts only samples the source can vouch for as called at the depth threshold")
 	fmt.Fprintln(out, "#"+strings.Join(append([]string{
 		"CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO", "FORMAT",
 	}, names...), "\t"))
 
-	// index calls by locus so one row can carry every requested sample
-	type key struct {
-		chrom string
-		pos   int32
-		ref   string
-		alt   string
-	}
-	order := []key{}
-	byLocus := map[key]map[string]varstore.Call{}
-	for _, r := range results {
-		for _, c := range r.Calls {
-			k := key{c.Chrom, c.Pos, c.Ref, c.Alt}
-			if _, ok := byLocus[k]; !ok {
-				byLocus[k] = map[string]varstore.Call{}
-				order = append(order, k)
+	var cur varstore.Locus
+	row := make([]varstore.Call, len(names))
+	held := false
+
+	flush := func() error {
+		if !held {
+			return nil
+		}
+		var ac, an, ns, nhom int
+		for i := range row {
+			c := row[i]
+			if c.GT == "" {
+				continue // this sample had no row here: unobserved
 			}
-			byLocus[k][c.SampleID] = c
+			ns++
+			alleles, alt := countAlleles(c.GT)
+			an += alleles
+			ac += alt
+			if alt >= 2 {
+				nhom++
+			}
 		}
-	}
-	// Sort rather than emit in first-seen order. Loci are gathered per sample, so
-	// the second sample's private loci would otherwise all land after the first
-	// sample's -- an unsorted VCF, which cannot be indexed.
-	//
-	// NOTE: this compares chromosomes LEXICOGRAPHICALLY, so chr10 sorts before
-	// chr2. Harmless while a store holds few contigs, wrong for a real one, since
-	// an indexable VCF needs the header's contig order. The fix is to emit in the
-	// store's own order -- which Calls already streams in -- rather than to patch
-	// this comparator, which cannot know the contig order.
-	sort.Slice(order, func(i, j int) bool {
-		a, b := order[i], order[j]
-		if a.chrom != b.chrom {
-			return a.chrom < b.chrom
+		af := "."
+		if an > 0 {
+			af = fmt.Sprintf("%.6g", float64(ac)/float64(an))
 		}
-		if a.pos != b.pos {
-			return a.pos < b.pos
-		}
-		if a.ref != b.ref {
-			return a.ref < b.ref
-		}
-		return a.alt < b.alt
-	})
-	for _, k := range order {
-		cols := []string{k.chrom, fmt.Sprint(k.pos), ".", k.ref, k.alt, ".", ".", ".", "GT:DP:GQ"}
-		for _, n := range names {
-			if c, ok := byLocus[k][n]; ok {
-				cols = append(cols, fmt.Sprintf("%s:%s:%s", c.GT, intOrDot(c.DP), intOrDot(c.GQ)))
-			} else {
+		info := fmt.Sprintf("AC=%d;AN=%d;AF=%s;NS=%d;nhomalt=%d", ac, an, af, ns, nhom)
+
+		cols := []string{cur.Chrom, fmt.Sprint(cur.Pos), ".", cur.Ref, cur.Alt, ".", ".", info, "GT:DP:GQ"}
+		for i := range row {
+			if row[i].GT == "" {
 				cols = append(cols, "./.:.:.")
+				continue
 			}
+			cols = append(cols, fmt.Sprintf("%s:%s:%s",
+				row[i].GT, intOrDot(row[i].DP), intOrDot(row[i].GQ)))
 		}
-		fmt.Fprintln(out, strings.Join(cols, "\t"))
-	}
-	return nil
-}
-
-// runVarQueryVariants reports which subjects carry each requested variant.
-func runVarQueryVariants(cmd *cobra.Command, out *bufio.Writer, store varstore.Store,
-	gate varstore.Gate, format, source string) error {
-
-	type variantResult struct {
-		Variant string          `json:"variant"`
-		Locus   varstore.Locus  `json:"locus"`
-		Calls   []varstore.Call `json:"calls,omitempty"`
-	}
-	var results []variantResult
-
-	for _, v := range vcfVarQueryVariants {
-		locus, err := varstore.ParseLocus(v)
-		if err != nil {
-			return err
+		_, err := fmt.Fprintln(out, strings.Join(cols, "\t"))
+		for i := range row {
+			row[i] = varstore.Call{}
 		}
-		r := variantResult{Variant: locus.String(), Locus: locus}
-		at := varstore.Query{Loci: []varstore.Locus{locus}, Gate: gate}
+		held = false
+		return err
+	}
 
-		// Compare against the ungated result so the gate's effect is a measured
-		// number rather than an inference from the row count.
-		var ungated []varstore.Call
-		if vcfVarQueryVerbose && !gate.IsZero() {
-			ungated, err = varstore.CollectCalls(store, varstore.Query{Loci: at.Loci})
-			if err != nil {
+	t, err := streamCalls(store, q, func(c varstore.Call) error {
+		if held && !varstore.SameLocus(c.Locus(), cur) {
+			if err := flush(); err != nil {
 				return err
 			}
 		}
-
-		at.IncludeRef = vcfVarQueryHomRef
-		calls, err := varstore.CollectCalls(store, at)
-		if err != nil {
-			return err
-		}
-		r.Calls = calls
-
-		// Counted apart from the row total: the gate's effect is measured against
-		// the ALT calls alone, and reference rows are not gated calls that
-		// survived, they are a different question's answer.
-		nCarriers, nHomRef := 0, -1
-		if vcfVarQueryHomRef {
-			nHomRef = 0
-		}
-		for _, c := range calls {
-			if varstore.IsAltCarrier(c.GT) {
-				nCarriers++
-			} else if nHomRef >= 0 {
-				nHomRef++
-			}
-		}
-		if vcfVarQueryVerbose {
-			reportVariant(cmd, store, locus, nCarriers, nHomRef)
-			if !gate.IsZero() {
-				reportGate(cmd, gate, ungated, len(ungated)-nCarriers)
-			}
-		}
-		results = append(results, r)
-	}
-
-	switch format {
-	case "json":
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(results)
-	case "list":
-		seen := map[string]bool{}
-		for _, r := range results {
-			for _, c := range r.Calls {
-				if !seen[c.SampleID] {
-					seen[c.SampleID] = true
-					fmt.Fprintln(out, c.SampleID)
-				}
-			}
+		cur, held = c.Locus(), true
+		if i, ok := col[c.SampleID]; ok {
+			row[i] = c
 		}
 		return nil
+	})
+	if err != nil {
+		return t, err
 	}
+	return t, flush()
+}
 
-	provenance(out, source)
-	minDP := vouchedMinDP(store)
-	fmt.Fprintln(out, strings.Join(tsvColumns, "\t"))
-	for _, r := range results {
-		for _, c := range r.Calls {
-			// The queried locus, not the call's stored spelling: every row of a
-			// --variant query then reads back the way it was asked for, and both
-			// sub-modes agree even though only this one has calls to draw on.
-			fmt.Fprintf(out, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				r.Locus.Chrom, r.Locus.Pos, r.Locus.Ref, r.Locus.Alt,
-				c.SampleID, c.GT,
-				intOrDot(c.DP), minDPOf(c, minDP),
-				intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ))
+// countAlleles returns how many alleles of a genotype were called, and how many
+// of those are the alternate. Missing alleles ('.') count as neither, which is
+// what makes AN a count of what was actually observed.
+func countAlleles(gt string) (called, alt int) {
+	for _, a := range strings.Split(strings.ReplaceAll(gt, "|", "/"), "/") {
+		switch a {
+		case "", ".":
+		case "0":
+			called++
+		default:
+			called++
+			alt++
 		}
 	}
-	return nil
+	return called, alt
+}
+
+// writeCallsList streams the distinct sample ids that had any row.
+func writeCallsList(out *bufio.Writer, store varstore.Store, q varstore.Query) (*tally, error) {
+	seen := map[string]bool{}
+	return streamCalls(store, q, func(c varstore.Call) error {
+		if seen[c.SampleID] {
+			return nil
+		}
+		seen[c.SampleID] = true
+		_, err := fmt.Fprintln(out, c.SampleID)
+		return err
+	})
 }
 
 // intOrDot renders a possibly-missing integer field.
@@ -595,7 +612,7 @@ func init() {
 	f.StringVarP(&vcfVarQueryOutput, "output", "o", "-", "Output filename (- for stdout)")
 	f.StringArrayVar(&vcfVarQuerySamples, "sample", nil, "Report variants carried by this subject (repeatable)")
 	f.StringArrayVar(&vcfVarQueryVariants, "variant", nil, "Report subjects carrying this variant, as chrom:pos:ref:alt (repeatable)")
-	f.StringVar(&vcfVarQueryRegion, "region", "", "Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
+	f.StringArrayVar(&vcfVarQueryRegions, "region", nil, "Restrict to this 1-based region (chrom:start-end, or chrom); repeatable; a VCF backend needs a tabix index")
 	f.IntVar(&vcfVarQueryMinDP, "min-dp", 0, "Minimum DP for a call to count")
 	f.BoolVar(&vcfVarQueryHomRef, "hom-ref", false, "Also report reference (0/0) calls, not only alternate carriers")
 	f.StringVar(&vcfVarQueryFormat, "format", "tsv", "Output format: tsv, json, vcf, or list")
@@ -603,25 +620,85 @@ func init() {
 	f.BoolVarP(&vcfVarQueryVerbose, "verbose", "v", false, "Report the backend, store provenance and gate effect on stderr")
 }
 
-// reportVariant summarises one queried locus: what the catalog knows about it,
-// how many ALT calls were reported, and how many reference rows --hom-ref
-// contributed (homRef is -1 when it was not asked for).
-func reportVariant(cmd *cobra.Command, store varstore.Store, l varstore.Locus,
-	nCarriers, homRef int) {
-
+// reportQuery summarises what the query returned, from counts gathered while
+// streaming -- a streaming query cannot be counted after the fact.
+//
+// Named loci get a line each, since that is the interactive case. Anything else
+// gets totals: at panel scale a paragraph per locus would BE the output.
+func reportQuery(cmd *cobra.Command, store varstore.Store, q varstore.Query, t *tally) {
 	out := cmd.ErrOrStderr()
-	fmt.Fprintf(out, "variant  %s\n", l)
+	if t == nil {
+		return
+	}
 
-	// Allele frequency comes from the catalog, which knows the site even when
-	// nobody carries it -- so this stays meaningful at AC 0.
-	if ps, ok := store.(*varstore.ParquetStore); ok {
-		if site, found, err := ps.Site(l); err == nil && found {
-			fmt.Fprintf(out, "  site        AC=%d AN=%d AF=%.6g  n_carriers=%d n_called=%d n_lowdp=%d\n",
-				site.AC, site.AN, site.AF(), site.NCarriers, site.NCalled, site.NLowDP)
+	const perLocusLimit = 32
+	if len(q.Loci) > 0 && len(q.Loci) <= perLocusLimit {
+		for _, l := range q.Loci {
+			fmt.Fprintf(out, "variant  %s\n", l)
+			// Allele frequency from the catalog, which knows the site even when
+			// nobody carries it -- so this stays meaningful at AC 0. Note these are
+			// the store's counts over ALL its samples, not the query's subset.
+			if ps, ok := store.(*varstore.ParquetStore); ok {
+				if site, found, err := ps.Site(l); err == nil && found {
+					fmt.Fprintf(out, "  site        AC=%d AN=%d AF=%.6g  n_carriers=%d n_called=%d n_lowdp=%d\n",
+						site.AC, site.AN, site.AF(), site.NCarriers, site.NCalled, site.NLowDP)
+				}
+			}
+			n := t.byLocus[varstore.Locus{Chrom: l.Chrom, Pos: l.Pos, Ref: l.Ref, Alt: l.Alt}]
+			if n == [2]int{} {
+				// The store echoes its own contig spelling, which may differ from
+				// the one asked for, so fall back to matching canonically.
+				for k, v := range t.byLocus {
+					if varstore.SameLocus(k, l) {
+						n = v
+						break
+					}
+				}
+			}
+			fmt.Fprintf(out, "  alt calls   %d\n", n[0])
+			if q.IncludeRef {
+				fmt.Fprintf(out, "  hom-ref     %d\n", n[1])
+			}
 		}
 	}
-	fmt.Fprintf(out, "  alt calls   %d\n", nCarriers)
-	if homRef >= 0 {
-		fmt.Fprintf(out, "  hom-ref     %d\n", homRef)
+
+	fmt.Fprintf(out, "total    %d alt call(s)", t.alt)
+	if q.IncludeRef {
+		fmt.Fprintf(out, ", %d reference call(s)", t.ref)
+	}
+	fmt.Fprintf(out, " over %d site(s)\n", len(t.byLocus))
+	reportGate(cmd, store, q, t)
+}
+
+// reportGate says whether the quality gate could actually act.
+//
+// This is the diagnostic most worth surfacing. A gate over a field the data lacks
+// admits everything rather than rejecting it, so a --min-dp that looks like a
+// filter can be doing nothing at all -- and the numbers look equally plausible
+// either way. Only the field census distinguishes them.
+//
+// The count of what the gate excluded needs the same query run ungated, so it is
+// only offered when the query named loci: that is the interactive case, and at
+// panel scale a second full pass for a verbose line is not worth it.
+func reportGate(cmd *cobra.Command, store varstore.Store, q varstore.Query, t *tally) {
+	if q.Gate.IsZero() {
+		return
+	}
+	out := cmd.ErrOrStderr()
+	rows := t.alt + t.ref
+
+	if len(q.Loci) > 0 && len(q.Loci) <= 32 {
+		ungated := q
+		ungated.Gate = varstore.Gate{}
+		if all, err := varstore.CollectCalls(store, ungated); err == nil {
+			if n := len(all) - rows; n > 0 {
+				fmt.Fprintf(out, "gate     excluded %d call(s)\n", n)
+			} else {
+				fmt.Fprintf(out, "gate     excluded 0 call(s)\n")
+			}
+		}
+	}
+	if q.Gate.MinDP > 0 && t.withDP == 0 && rows > 0 {
+		fmt.Fprintf(out, "  WARNING: --min-dp %d had no effect; no call here carries DP\n", q.Gate.MinDP)
 	}
 }
