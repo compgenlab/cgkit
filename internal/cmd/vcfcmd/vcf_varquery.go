@@ -22,6 +22,7 @@ var (
 	vcfVarQueryVariants []string
 	vcfVarQueryMinDP    int
 	vcfVarQueryHomRef   bool
+	vcfVarQueryDosage   bool
 	vcfVarQueryFormat   string
 	vcfVarQueryStore    string
 	vcfVarQueryVerbose  bool
@@ -108,9 +109,10 @@ at every record. A Parquet store reconstructs the reference calls from its sites
 and callable-regions files, and refuses if either is missing or it was built
 without coverage information.
 
-  --sample NAME       subject to report on (repeatable)
+  --sample SUBJECT    a subject, or a file of subject names (repeatable)
   --variant TARGET    a locus, region, contig, or a file of them (repeatable)
   --min-dp N          minimum depth for a call to count
+  --dosage            also report alt-allele dosage (0/1/2/.)
   --hom-ref           report every interrogated site, not only the ALT calls
   --format F          tsv (default), json, vcf, or list. vcf emits a genotype
                       matrix, one record per site and one column per sample,
@@ -129,6 +131,13 @@ so rows cut and sort on position directly. The chromosome is echoed the way it
 was asked for, whichever naming convention the file itself uses. By default only
 valid ALT calls are reported: genotypes carrying the alternate and passing the
 gate.
+
+--dosage appends an alt-allele dosage column, which is what PGS and GReX tools
+consume, and adds a DS FORMAT field to --format vcf. It counts alternate alleles
+among the CALLED ones, so a genotype with none called is "." rather than 0 --
+reporting an unobserved sample as dosage 0 would enter it into a score's
+denominator as a confident homozygous reference. A split multiallelic like "1/." is
+1: one copy of this alternate was seen, and the other allele is a separate question.
 
 min_dp is the tightest lower bound on depth the backend can vouch for. Where a
 call records its own depth that is the bound. A reference call recovered from a
@@ -162,12 +171,13 @@ written where nothing is known would assert a depth the data never had.`,
 			return fmt.Errorf("unknown format %q (use tsv, json, vcf, or list)", format)
 		}
 
-		q, targets, err := buildQuery()
+		q, targets, samples, err := buildQuery()
 		if err != nil {
 			return err
 		}
 		if vcfVarQueryVerbose {
 			targets.report(cmd.ErrOrStderr())
+			samples.report(cmd.ErrOrStderr())
 		}
 		// A genotype matrix has to distinguish an observed reference call from an
 		// unobserved sample, or every non-carrier becomes ./. and the file asserts
@@ -185,6 +195,9 @@ written where nothing is known would assert a depth the data never had.`,
 
 		if vcfVarQueryVerbose {
 			describeStore(cmd, store, args[0], q.Gate)
+		}
+		if err := checkSamples(store, q.Samples); err != nil {
+			return err
 		}
 		warnUnknownSites(cmd, store, q)
 
@@ -352,38 +365,43 @@ func warnUnknownSites(cmd *cobra.Command, store varstore.Store, q varstore.Query
 // legal: naming both is the variants-by-samples question that used to be a hard
 // error, naming only --region asks for a window, and naming only --sample asks
 // what that subject carries.
-func buildQuery() (varstore.Query, *targetSet, error) {
+func buildQuery() (varstore.Query, *targetSet, *sampleSet, error) {
 	q := varstore.Query{
-		Samples:    vcfVarQuerySamples,
 		Gate:       varstore.Gate{MinDP: int32(vcfVarQueryMinDP)},
 		IncludeRef: vcfVarQueryHomRef,
 	}
 	t, err := parseTargets(vcfVarQueryVariants)
 	if err != nil {
-		return q, nil, err
+		return q, nil, nil, err
 	}
 	q.Loci, q.Spans = t.Loci, t.Spans
-	return q, t, nil
+
+	ss, err := parseSampleArgs(vcfVarQuerySamples)
+	if err != nil {
+		return q, t, nil, err
+	}
+	q.Samples = ss.Names
+	return q, t, ss, nil
 }
 
 // tally counts what a query emitted, for the verbose report. Gathered while
 // streaming, since a streaming query cannot be counted afterwards.
 type tally struct {
-	alt, ref int
-	withDP   int                       // rows carrying a real DP
-	byLocus  map[varstore.Locus][2]int // [alt, ref] per locus
+	alt, ref  int
+	altWithDP int                       // ALT rows carrying a real DP
+	byLocus   map[varstore.Locus][2]int // [alt, ref] per locus
 }
 
 func newTally() *tally { return &tally{byLocus: map[varstore.Locus][2]int{}} }
 
 func (t *tally) add(c varstore.Call) {
-	if c.DP != varstore.Missing {
-		t.withDP++
-	}
 	n := t.byLocus[c.Locus()]
 	if varstore.IsAltCarrier(c.GT) {
 		t.alt++
 		n[0]++
+		if c.DP != varstore.Missing {
+			t.altWithDP++
+		}
 	} else {
 		t.ref++
 		n[1]++
@@ -413,13 +431,17 @@ func streamCalls(store varstore.Store, q varstore.Query, fn func(varstore.Call) 
 // writeCallsTSV streams the shared tabular layout.
 func writeCallsTSV(out *bufio.Writer, store varstore.Store, q varstore.Query, source string) (*tally, error) {
 	provenance(out, source)
-	fmt.Fprintln(out, strings.Join(tsvColumns, "\t"))
+	fmt.Fprintln(out, strings.Join(tsvHeader(), "\t"))
 	minDP := vouchedMinDP(store)
 	return streamCalls(store, q, func(c varstore.Call) error {
-		_, err := fmt.Fprintf(out, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		row := fmt.Sprintf("%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
 			c.Chrom, c.Pos, c.Ref, c.Alt, c.SampleID, c.GT,
 			intOrDot(c.DP), minDPOf(c, minDP),
 			intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ))
+		if vcfVarQueryDosage {
+			row += "\t" + dosageOf(c.GT)
+		}
+		_, err := fmt.Fprintln(out, row)
 		return err
 	})
 }
@@ -504,7 +526,11 @@ func writeCallsVCF(w *vcf.VcfWriter, store varstore.Store, q varstore.Query, sou
 		// Fixed rather than derived from sample 0, which in a genotype matrix is
 		// routinely the no-call one -- its short key list would truncate every other
 		// sample's fields.
-		rec.SetFormatKeys([]string{"GT", "DP", "GQ"})
+		keys := []string{"GT", "DP", "GQ"}
+		if vcfVarQueryDosage {
+			keys = append(keys, "DS")
+		}
+		rec.SetFormatKeys(keys)
 		rec.AddInfo("AC", strconv.Itoa(ac))
 		rec.AddInfo("AN", strconv.Itoa(an))
 		if an > 0 {
@@ -525,6 +551,11 @@ func writeCallsVCF(w *vcf.VcfWriter, store varstore.Store, q varstore.Query, sou
 			}
 			if err := rec.AddFormat(i, "GQ", gq); err != nil {
 				return err
+			}
+			if vcfVarQueryDosage {
+				if err := rec.AddFormat(i, "DS", dosageOf(gt)); err != nil {
+					return err
+				}
 			}
 		}
 		for i := range row {
@@ -582,6 +613,10 @@ func gtMatrixHeader(names []string, source string, store varstore.Store, q varst
 		{ID: "GQ", Number: "1", Type: "Integer", Description: "Genotype quality"},
 	} {
 		h.AddFormat(d)
+	}
+	if vcfVarQueryDosage {
+		h.AddFormat(&vcf.AnnotationDef{ID: "DS", Number: "A", Type: "Float",
+			Description: "Alt-allele dosage derived from GT"})
 	}
 	// Contigs the query named, so the header declares the sequences the records use.
 	// A store keeps no contig list of its own -- no length either -- so this covers
@@ -670,6 +705,33 @@ var tsvColumns = []string{
 	"chrom", "pos", "ref", "alt", "sample", "gt", "dp", "min_dp", "ad_ref", "ad_alt", "gq",
 }
 
+// dosageOf renders the alt-allele dosage of a genotype: how many of its called
+// alleles are the alternate.
+//
+// Missing alleles contribute nothing, so a genotype with none called is "." rather
+// than 0 -- reporting an unobserved sample as dosage 0 would put it in the
+// denominator of a score as a confident homozygous reference, which is the same
+// class of error as writing 0/0 for it. A split multiallelic like "1/." is 1: one
+// copy of this alternate was seen, and what the other allele was is a separate
+// question.
+func dosageOf(gt string) string {
+	called, alt := countAlleles(gt)
+	if called == 0 {
+		return "."
+	}
+	return strconv.Itoa(alt)
+}
+
+// tsvHeader is the column header, with the dosage column appended when asked for.
+// Appended rather than replacing gt, so the base layout is unchanged and a
+// consumer can read either.
+func tsvHeader() []string {
+	if vcfVarQueryDosage {
+		return append(append([]string{}, tsvColumns...), "dosage")
+	}
+	return tsvColumns
+}
+
 // vouchedMinDP is the depth threshold a store's callable runs were built at, or 0
 // for a backend with no such threshold -- a VCF, where a call either carries its
 // own depth or none is knowable.
@@ -705,9 +767,10 @@ func init() {
 	// -o and --tbi: bgzip and tabix apply to --format vcf, the only VCF output.
 	addVcfOutputFlags(vcfVarQueryCmd, &vcfVarQueryOutput)
 	f := vcfVarQueryCmd.Flags()
-	f.StringArrayVar(&vcfVarQuerySamples, "sample", nil, "Report variants carried by this subject (repeatable)")
-	f.StringArrayVar(&vcfVarQueryVariants, "variant", nil, "Report subjects carrying this variant, as chrom:pos:ref:alt (repeatable)")
+	f.StringArrayVar(&vcfVarQuerySamples, "sample", nil, "A subject, or a file of subject names (a VCF works too); repeatable")
+	f.StringArrayVar(&vcfVarQueryVariants, "variant", nil, "A locus, region, contig, or a file of them; repeatable")
 	f.IntVar(&vcfVarQueryMinDP, "min-dp", 0, "Minimum DP for a call to count")
+	f.BoolVar(&vcfVarQueryDosage, "dosage", false, "Also report alt-allele dosage: 0, 1, 2, or . -- what PGS and GReX tools consume")
 	f.BoolVar(&vcfVarQueryHomRef, "hom-ref", false, "Also report reference (0/0) calls, not only alternate carriers")
 	f.StringVar(&vcfVarQueryFormat, "format", "tsv", "Output format: tsv, json, vcf, or list")
 	f.StringVar(&vcfVarQueryStore, "store", "", "Force the backend: vcf or parquet (default: infer from the path)")
@@ -819,7 +882,11 @@ func reportGate(cmd *cobra.Command, store varstore.Store, q varstore.Query, t *t
 			}
 		}
 	}
-	if q.Gate.MinDP > 0 && t.withDP == 0 && rows > 0 {
-		fmt.Fprintf(out, "  WARNING: --min-dp %d had no effect; no call here carries DP\n", q.Gate.MinDP)
+	// Only ALT rows count. A reference call reconstructed from a store never carries
+	// DP -- that is by construction, not a missing field -- so counting those would
+	// fire this warning on exactly the queries where the gate worked correctly.
+	if q.Gate.MinDP > 0 && t.alt > 0 && t.altWithDP == 0 {
+		fmt.Fprintf(out, "  WARNING: --min-dp %d had no effect; no ALT call here carries DP\n", q.Gate.MinDP)
 	}
+	_ = rows
 }
