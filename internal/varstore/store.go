@@ -84,6 +84,13 @@ func (s Span) Contains(chrom string, pos int32) bool {
 // is not evidence of poor quality -- but it means a gate can silently do nothing.
 type Gate struct {
 	MinDP int32
+
+	// MinGQ gates ALT calls only, and is NOT exposed by vcf-varquery for that
+	// reason. Conversion builds its callable runs from depth alone, so a Parquet
+	// store retains no GQ for a genotype it never recorded -- HomRefs cannot honor
+	// this field, while a VCF-backed HomRefs does, and the two backends then
+	// disagree about which samples are reference. Set it only where every row
+	// carries a recorded GQ.
 	MinGQ int32
 }
 

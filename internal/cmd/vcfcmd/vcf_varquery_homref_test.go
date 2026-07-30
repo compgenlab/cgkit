@@ -52,6 +52,20 @@ func identityRows(s string) string {
 	return strings.Join(out, "\n")
 }
 
+// tsvDataRows returns only the genuine data rows of a query: not the ## provenance
+// lines, not the column header, and not any warning, since the test harness
+// captures stderr into the same buffer as stdout.
+func tsvDataRows(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		f := strings.Split(l, "\t")
+		if len(f) == numCols && f[colChrom] != "chrom" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 // TestHomRefBackendsAgree extends the core equivalence claim to reference calls:
 // a VCF and a store converted from it must name the same samples as 0/0.
 func TestHomRefBackendsAgree(t *testing.T) {
@@ -82,12 +96,14 @@ func TestHomRefSampleModeBackendsAgree(t *testing.T) {
 
 // TestHomRefIsStricterThanNonCarrier is the central semantic test.
 //
-// At the multiallelic record chr1:200 C>T,G sample S2 is 0/1: not a carrier of
-// G, so --classify calls it non_carrier there -- but its genotype is not
-// reference either, and reporting 0/0 for it would be a genotype the source
-// never contained. S3 is the only genuinely all-reference sample.
+// At the multiallelic record chr1:200 C>T,G sample S2 is 0/1: not a carrier of G,
+// so the library's Classify calls it non_carrier there -- but its genotype is not
+// reference either, and reporting 0/0 for it would be a genotype the source never
+// contained. S3 is the only genuinely all-reference sample.
 func TestHomRefIsStricterThanNonCarrier(t *testing.T) {
 	base := convert(t, "testdata/multiallelic.vcf")
+	locus := varstore.Locus{Chrom: "chr1", Pos: 200, Ref: "C", Alt: "G"}
+
 	for _, in := range []string{"testdata/multiallelic.vcf", base} {
 		homRef := homRefSamples(t, runVcf(t, "vcf-varquery",
 			"--variant", "chr1:200:C:G", "--hom-ref", in))
@@ -97,13 +113,22 @@ func TestHomRefIsStricterThanNonCarrier(t *testing.T) {
 				in, homRef)
 		}
 
-		// The same query under --classify must still call S2 a non-carrier, so
-		// this is a real distinction between the two flags rather than a change
-		// to what non_carrier means.
-		classify := runVcf(t, "vcf-varquery", "--variant", "chr1:200:C:G", "--classify", in)
-		if !strings.Contains(dataRowsOnly(classify), "S2\tnon_carrier") {
-			t.Errorf("%s: --classify should still report S2 as non_carrier at chr1:200 C>G:\n%s",
-				in, dataRowsOnly(classify))
+		// Classify still calls S2 a non-carrier, so hom-ref really is the stricter
+		// question rather than a redefinition of non_carrier.
+		store, err := openVarStore(in, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		states, err := store.Classify(locus, varstore.Gate{})
+		store.Close()
+		if err != nil {
+			t.Fatalf("%s: Classify: %v", in, err)
+		}
+		for _, st := range states {
+			if st.SampleID == "S2" && st.State != varstore.StateNonCarrier {
+				t.Errorf("%s: Classify says S2 is %s at chr1:200 C>G, want non_carrier",
+					in, st.State)
+			}
 		}
 	}
 }
@@ -178,9 +203,27 @@ func TestHomRefGateAppliesToVcfBackend(t *testing.T) {
 		t.Errorf("ungated, S2's 0/0 at DP 3 should be reported, got %v", ungated)
 	}
 	gated := homRefSamples(t, runVcf(t, "vcf-varquery",
-		"--variant", "1:200:C:T", "--hom-ref", "--min-gq", "50", "testdata/coverage.vcf"))
+		"--variant", "1:200:C:T", "--hom-ref", "--min-dp", "10", "testdata/coverage.vcf"))
 	if contains(gated, "S2") {
-		t.Errorf("--min-gq 50 should exclude S2's GQ 20 reference call, got %v", gated)
+		t.Errorf("--min-dp 10 should exclude S2's DP 3 reference call, got %v", gated)
+	}
+}
+
+// TestNoMinGQFlag pins that --min-gq stays gone. GQ is recorded per ALT call, so
+// the flag looked reasonable, but callable runs are built from depth alone -- a
+// store retains no GQ for a genotype it never wrote down, so it could not gate a
+// reference call where a VCF would, and the backends disagreed about which samples
+// were reference.
+func TestNoMinGQFlag(t *testing.T) {
+	base := convert(t, "testdata/gq.vcf", "--min-dp", "10")
+	if err := runVcfErr(t, "vcf-varquery", "--variant", "chr1:100:A:G",
+		"--min-gq", "50", base); err == nil {
+		t.Error("--min-gq should no longer be accepted")
+	}
+	// The gq column is still emitted, so the filter is available downstream.
+	out := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", base))
+	if !strings.HasSuffix(strings.Split(out, "\n")[0], "\tgq") {
+		t.Errorf("gq should still be the last column:\n%s", out)
 	}
 }
 
@@ -225,10 +268,6 @@ func TestHomRefRefusesIncompleteStore(t *testing.T) {
 // produce output nobody can interpret.
 func TestHomRefRejectedWhereItCannotBeRead(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
-	if err := runVcfErr(t, "vcf-varquery", "--variant", "1:100:A:G",
-		"--hom-ref", "--classify", base); err == nil {
-		t.Error("--hom-ref with --classify should be rejected; --classify already resolves every sample")
-	}
 	if err := runVcfErr(t, "vcf-varquery", "--variant", "1:100:A:G",
 		"--hom-ref", "--format", "list", base); err == nil {
 		t.Error("--hom-ref with --format list should be rejected; bare ids cannot say which are carriers")
