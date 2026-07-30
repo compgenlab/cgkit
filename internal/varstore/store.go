@@ -42,6 +42,22 @@ func (l Locus) String() string {
 	return fmt.Sprintf("%s:%d:%s:%s", l.Chrom, l.Pos, l.Ref, l.Alt)
 }
 
+// RecordKey identifies the source record a locus was split out of. One VCF
+// record holds one genotype per sample, so every alternate allele split out of
+// it shares a key -- which is how a sample carrying a *different* alternate of
+// the same record is told apart from one that is genuinely all-reference.
+// Chromosome naming is canonicalized so spellings compare equal.
+type RecordKey struct {
+	Chrom string
+	Pos   int32
+	Ref   string
+}
+
+// Record returns the key of the record this locus came from.
+func (l Locus) Record() RecordKey {
+	return RecordKey{Chrom: CanonKey(l.Chrom), Pos: l.Pos, Ref: l.Ref}
+}
+
 // Span is a genomic interval in **0-based half-open** coordinates, matching
 // htsio.ParseRegion and the tabix query API it feeds. VCF record positions are
 // 1-based, so use Contains rather than comparing against Start/End directly.
@@ -108,6 +124,23 @@ type Store interface {
 	// Variants returns the ALT-carrying calls for one sample, optionally
 	// restricted to a span. A nil span means the whole store.
 	Variants(sample string, span *Span, g Gate) ([]Call, error)
+
+	// HomRefs returns a reference call for every sample observed to be
+	// all-reference at a locus, and HomRefVariants the same fact from the other
+	// direction: the catalog sites at which one sample was all-reference.
+	//
+	// "All-reference" is stricter than StateNonCarrier, and deliberately so. At a
+	// multiallelic record a 0/2 sample is a non-carrier of allele 1 while still
+	// carrying an alternate, so the two differ exactly where a sample carries a
+	// different alternate of the same record. A hom-ref row therefore always
+	// means the genotype was all-reference, never merely "not this allele" --
+	// emitting 0/0 for a 0/2 sample would fabricate a genotype.
+	//
+	// Both refuse with ErrNotClassifiable rather than return an empty result when
+	// the backend cannot separate a reference call from an unassayed position,
+	// for the same reason Classify does.
+	HomRefs(l Locus, g Gate) ([]Call, error)
+	HomRefVariants(sample string, span *Span, g Gate) ([]Call, error)
 
 	// Classify resolves every sample to a state at the locus, or returns
 	// ErrNotClassifiable if the backend lacks the evidence to do so.
