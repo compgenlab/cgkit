@@ -168,12 +168,12 @@ Given `chr1 200 . C T,G` with `S1=1/2`, `S2=0/1`, `S3=0/0`, `S4=2/2`:
 
 ```
 $ cgkit vcf-varquery --variant chr1:200:C:T cohort/
-chr1	200	C	T	S1	1/.	26	5	12	99
-chr1	200	C	T	S2	0/1	29	18	11	45
+chr1	200	C	T	S1	1/.	26	26	5	12	99
+chr1	200	C	T	S2	0/1	29	29	18	11	45
 
 $ cgkit vcf-varquery --variant chr1:200:C:G cohort/
-chr1	200	C	G	S1	./1	26	5	9	99
-chr1	200	C	G	S4	1/1	27	0	27	99
+chr1	200	C	G	S1	./1	26	26	5	9	99
+chr1	200	C	G	S4	1/1	27	27	0	27	99
 ```
 
 `AD` is taken **per allele** (`ad_ref` is `AD[0]`, `ad_alt` is that allele's own depth), never summed: the depth supporting allele 1 says nothing about allele 2.
@@ -193,9 +193,9 @@ So `AC ≥ n_carriers` wherever a homozygote occurs, and `AN` is unrelated to `n
 $ cgkit vcf-varquery --variant chr1:100:A:G -v cohort/
   site        AC=3 AN=8 AF=0.375  n_carriers=2 n_called=4 n_lowdp=0
   carriers    2
-chrom	pos	ref	alt	sample	gt	dp	ad_ref	ad_alt	gq
-chr1	100	A	G	S1	0/1	30	20	10	99
-chr1	100	A	G	S3	1/1	28	0	28	99
+chrom	pos	ref	alt	sample	gt	dp	min_dp	ad_ref	ad_alt	gq
+chr1	100	A	G	S1	0/1	30	30	20	10	99
+chr1	100	A	G	S3	1/1	28	28	0	28	99
 ```
 
 Two carriers, three alt alleles — S3 contributes two.
@@ -206,31 +206,53 @@ Both are computed **over the samples in this store**, not copied from the source
 
 The backend is inferred from the path — VCF or store — and the same question must give the same answer either way. That equivalence is the point of the abstraction, and it is verified on 3,202 1000 Genomes samples including the worst-covered site in BRCA1.
 
+### Output layout
+
+Both query modes emit one layout, so `--sample` and `--variant` output can be concatenated, sorted and cut the same way:
+
+```
+chrom  pos  ref  alt  sample  gt  dp  min_dp  ad_ref  ad_alt  gq
+```
+
+The locus leads as four columns rather than one packed `chrom:pos:ref:alt` field, so rows sort and cut on position without re-splitting a composite key. By default only **valid ALT calls** are reported — genotypes carrying the alternate allele and passing the quality gate.
+
+`min_dp` is the tightest lower bound on depth the backend can vouch for, and it exists so that a reference call still carries the evidence that the site was covered:
+
+| row | `dp` | `min_dp` |
+|---|---|---|
+| a call that records its own depth | the depth | the same depth — an exact value is its own bound |
+| a reference call recovered from a store | `.` | the conversion `--min-dp`, vouched for by the run it came from |
+| no depth recorded anywhere | `.` | `.` — nothing is known |
+
+The second row is the point. A store never wrote the reference genotype down, so there is no depth to report — but the sample was inside a callable run built at a known threshold, so `DP ≥ 10` is a fact the store can still assert. Writing that threshold into `dp` instead would claim a depth the data never had.
+
+`--classify` keeps its own `state` column and omits `min_dp`, so that its output stays byte-identical across the two backends.
+
 ### Who carries a variant
 
 ```
 $ cgkit vcf-varquery --variant chr1:500:A:T cohort/
-chrom	pos	ref	alt	sample	gt	dp	ad_ref	ad_alt	gq
-chr1	500	A	T	S1	0/1	30	.	.	99
+chrom	pos	ref	alt	sample	gt	dp	min_dp	ad_ref	ad_alt	gq
+chr1	500	A	T	S1	0/1	30	30	.	.	99
 ```
 
 ### What does a subject carry
 
 ```
 $ cgkit vcf-varquery --sample S2 cohort/
-sample	chrom	pos	ref	alt	gt	dp	ad_ref	ad_alt	gq
-S2	chr1	100	A	G	0/1	30	.	.	99
+chrom	pos	ref	alt	sample	gt	dp	min_dp	ad_ref	ad_alt	gq
+chr1	100	A	G	S2	0/1	30	30	.	.	99
 ```
 
 ### Reference calls
 
-`--hom-ref` adds reference calls to either mode's output; the `gt` column separates them from carriers.
+By default a query reports only the ALT calls — "which variants does this person carry". `--hom-ref` switches it to every interrogated site — "show me all the sites for this person", reference calls included. The `gt` column separates them.
 
 ```
 $ cgkit vcf-varquery --variant chr1:300:G:A --hom-ref cohort/
-chrom	pos	ref	alt	sample	gt	dp	ad_ref	ad_alt	gq
-chr1	300	G	A	S1	0/0	.	.	.	.
-chr1	300	G	A	S2	0/0	.	.	.	.
+chrom	pos	ref	alt	sample	gt	dp	min_dp	ad_ref	ad_alt	gq
+chr1	300	G	A	S1	0/0	.	10	.	.	.
+chr1	300	G	A	S2	0/0	.	10	.	.	.
 ```
 
 `0/0` here means the **whole genotype** was reference, which is stricter than `non_carrier`. At the multiallelic record above, `S2` is `0/1`: not a carrier of `G`, but not reference either, so it appears under neither. Only `S3` is genuinely reference at both split loci. Emitting `0/0` for a `0/2` sample would be a genotype the source never contained.
@@ -243,8 +265,8 @@ UCSC (`chr22`), Ensembl (`22`) and NCBI RefSeq (`NC_000022.11`) spellings all re
 
 ```
 $ cgkit vcf-varquery --variant 1:500:A:T cohort/
-chrom	pos	ref	alt	sample	gt	dp	ad_ref	ad_alt	gq
-1	500	A	T	S1	0/1	30	.	.	99
+chrom	pos	ref	alt	sample	gt	dp	min_dp	ad_ref	ad_alt	gq
+1	500	A	T	S1	0/1	30	30	.	.	99
 ```
 
 Conversion preserves the source's own spelling in the store rather than rewriting it. A contig the file lacks is an absence — no rows plus a warning — but an unresolvable `--region` is an error, since that names a contig the caller asserts exists.
@@ -360,7 +382,7 @@ Inputs must **not overlap**: a chromosome cannot be revisited once left, and pos
 | `--region R` | | restrict to a 1-based region (`chrom:start-end`, or `chrom`) |
 | `--min-dp N` | `0` | minimum DP for a call to count |
 | `--min-gq N` | `0` | minimum GQ for a call to count |
-| `--hom-ref` | off | also report reference (`0/0`) calls |
+| `--hom-ref` | off | report every interrogated site, not only the ALT calls |
 | `--classify` | off | resolve every sample to one of the four states |
 | `--format F` | `tsv` | `tsv`, `json`, `vcf` (sample mode), or `list` (variant mode) |
 | `--store KIND` | infer | force the backend: `vcf` or `parquet` |
