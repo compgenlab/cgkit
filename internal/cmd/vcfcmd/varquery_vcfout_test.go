@@ -206,3 +206,60 @@ func TestVcfOutTbiNeedsBgzipName(t *testing.T) {
 		t.Errorf("the error should name the requirement, got %v", err)
 	}
 }
+
+// TestVcfOutHeaderDeclaresWhatItUses pins that the header declares INFO fields as
+// INFO and FORMAT fields as FORMAT.
+//
+// This shipped wrong: AnnotationDef.IsInfo is what makes String() write "##INFO",
+// while AddInfo only decides where the line is ordered. Unset, all five INFO fields
+// declared as FORMAT -- so the file declared FORMAT fields nothing used and carried
+// INFO fields nothing declared. Nothing caught it because every other test read the
+// records and ignored the header.
+func TestVcfOutHeaderDeclaresWhatItUses(t *testing.T) {
+	base := convert(t, "testdata/contigs.vcf")
+	out := runVcf(t, "vcf-varquery", "--variant", "chr2", "--variant", "chr10",
+		"--min-dp", "10", "--format", "vcf", base)
+
+	var info, format, contigs []string
+	for _, l := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(l, "##INFO=<ID="):
+			info = append(info, idOf(l))
+		case strings.HasPrefix(l, "##FORMAT=<ID="):
+			format = append(format, idOf(l))
+		case strings.HasPrefix(l, "##contig=<ID="):
+			contigs = append(contigs, idOf(l))
+		}
+	}
+	if got := strings.Join(info, ","); got != "AC,AN,AF,NS,nhomalt" {
+		t.Errorf("##INFO declarations = %q, want AC,AN,AF,NS,nhomalt", got)
+	}
+	if got := strings.Join(format, ","); got != "GT,DP,GQ" {
+		t.Errorf("##FORMAT declarations = %q, want GT,DP,GQ", got)
+	}
+	// Contigs the records actually use must be declared.
+	if got := strings.Join(contigs, ","); got != "chr2,chr10" {
+		t.Errorf("##contig declarations = %q, want chr2,chr10", got)
+	}
+
+	// And every INFO key a record carries must be among the declarations.
+	declared := map[string]bool{}
+	for _, k := range info {
+		declared[k] = true
+	}
+	for _, rec := range vcfRecords(out) {
+		for _, kv := range strings.Split(strings.Split(rec, "\t")[7], ";") {
+			k, _, _ := strings.Cut(kv, "=")
+			if !declared[k] {
+				t.Errorf("record carries INFO %q with no ##INFO declaration", k)
+			}
+		}
+	}
+}
+
+// idOf pulls the ID out of a "##KIND=<ID=x,...>" header line.
+func idOf(line string) string {
+	_, rest, _ := strings.Cut(line, "<ID=")
+	id, _, _ := strings.Cut(rest, ",")
+	return strings.TrimSuffix(id, ">")
+}

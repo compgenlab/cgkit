@@ -471,7 +471,7 @@ func writeCallsVCF(w *vcf.VcfWriter, store varstore.Store, q varstore.Query, sou
 		col[n] = i
 	}
 
-	h, err := gtMatrixHeader(names, source, store)
+	h, err := gtMatrixHeader(names, source, store, q)
 	if err != nil {
 		return nil, err
 	}
@@ -560,15 +560,19 @@ func writeCallsVCF(w *vcf.VcfWriter, store varstore.Store, q varstore.Query, sou
 // callable runs -- so it can differ from the store's own ungated AN wherever a
 // sample was called below the threshold. The note records that in the file, which
 // outlives the terminal the -v output went to.
-func gtMatrixHeader(names []string, source string, store varstore.Store) (*vcf.VcfHeader, error) {
+func gtMatrixHeader(names []string, source string, store varstore.Store, q varstore.Query) (*vcf.VcfHeader, error) {
 	h := vcf.NewVcfHeader()
 	h.SetSamples(names)
+	// IsInfo is what makes AnnotationDef.String() write "##INFO" rather than
+	// "##FORMAT"; AddInfo only controls where the line is ordered. Without it these
+	// declared as FORMAT fields that nothing uses, while the INFO fields the records
+	// actually carry went undeclared -- an invalid header either way.
 	for _, d := range []*vcf.AnnotationDef{
-		{ID: "AC", Number: "A", Type: "Integer", Description: "Alt alleles among the samples in this file"},
-		{ID: "AN", Number: "1", Type: "Integer", Description: "Called alleles among the samples in this file (depth-gated)"},
-		{ID: "AF", Number: "A", Type: "Float", Description: "AC/AN"},
-		{ID: "NS", Number: "1", Type: "Integer", Description: "Samples with a call"},
-		{ID: "nhomalt", Number: "A", Type: "Integer", Description: "Samples homozygous for the alt allele"},
+		{IsInfo: true, ID: "AC", Number: "A", Type: "Integer", Description: "Alt alleles among the samples in this file"},
+		{IsInfo: true, ID: "AN", Number: "1", Type: "Integer", Description: "Called alleles among the samples in this file (depth-gated)"},
+		{IsInfo: true, ID: "AF", Number: "A", Type: "Float", Description: "AC/AN"},
+		{IsInfo: true, ID: "NS", Number: "1", Type: "Integer", Description: "Samples with a call"},
+		{IsInfo: true, ID: "nhomalt", Number: "A", Type: "Integer", Description: "Samples homozygous for the alt allele"},
 	} {
 		h.AddInfo(d)
 	}
@@ -578,6 +582,13 @@ func gtMatrixHeader(names []string, source string, store varstore.Store) (*vcf.V
 		{ID: "GQ", Number: "1", Type: "Integer", Description: "Genotype quality"},
 	} {
 		h.AddFormat(d)
+	}
+	// Contigs the query named, so the header declares the sequences the records use.
+	// A store keeps no contig list of its own -- no length either -- so this covers
+	// only a query that named its sites, and the lines are lengthless. Recording the
+	// source's ##contig lines at conversion is the real fix; see the MetaContigs note.
+	for _, name := range queryContigs(q) {
+		h.AddContig(&vcf.ContigDef{ID: name})
 	}
 	stampVcfProvenance(h, "vcf-varquery")
 	h.AddLine("##cgkit_vcf-varquerySource=" + source)
@@ -592,6 +603,26 @@ func gtMatrixHeader(names []string, source string, store varstore.Store) (*vcf.V
 			"DP/AD/GQ; only the fact that the call was made survives conversion")
 	}
 	return h, nil
+}
+
+// queryContigs lists the distinct contigs a query's selectors name, in the order
+// first seen, or nothing when the query named no sites.
+func queryContigs(q varstore.Query) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(c string) {
+		if c != "" && !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	for _, l := range q.Loci {
+		add(l.Chrom)
+	}
+	for _, sp := range q.Spans {
+		add(sp.Chrom)
+	}
+	return out
 }
 
 // countAlleles returns how many alleles of a genotype were called, and how many of
