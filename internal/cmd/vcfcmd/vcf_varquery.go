@@ -16,7 +16,6 @@ var (
 	vcfVarQueryOutput   string
 	vcfVarQuerySamples  []string
 	vcfVarQueryVariants []string
-	vcfVarQueryRegions  []string
 	vcfVarQueryMinDP    int
 	vcfVarQueryHomRef   bool
 	vcfVarQueryFormat   string
@@ -36,19 +35,36 @@ directory ("cohort/" or "cohort" for cohort/calls.parquet...), or by any one of
 its three member files. The backend is inferred from the path; override with
 --store.
 
-Two independent axes, at least one of which must be given. Sites:
+Two independent axes, at least one of which must be given. --variant selects
+sites and --sample selects subjects; they compose rather than exclude.
 
-  --variant LOCUS   a variant, as chrom:pos:ref:alt (repeatable)
-  --region R        a 1-based region, chrom:start-end or chrom (repeatable)
+--variant takes any of these, repeatably, and there is no separate --region:
 
-and samples:
+  chr1                     a whole contig
+  chr1:1000-2000           a region
+  chr1:1000                any variant at that position
+  chr1:1000:A:T            one exact variant
+  panel.vcf                a file -- its format is detected from the content
 
-  --sample NAME     a subject (repeatable)
+A value is a file when one exists by that name, and an inline selector otherwise,
+so a mistyped locus still gets a locus error rather than "no such file". Three
+file formats are recognised:
 
-They compose rather than exclude. --sample alone reports what those subjects
-carry; --variant alone reports who carries those variants; both together ask what
-those subjects' genotypes are at those sites; --region alone takes a window. An
-axis left unnamed is unrestricted, not empty.
+  VCF/BCF        announced by its ##fileformat line; one target per ALT allele
+  BED            chrom start end, 0-BASED half-open, as BED always is
+  site list      whitespace-separated "chrom pos [ref alt]", 1-based; a line
+                 holding a single token is an inline selector, so a file may just
+                 list the tokens above
+
+BED and site lists are told apart by their third column: a BED end coordinate is
+numeric, a REF allele never is. Both may carry extra columns, '#' comments and
+blank lines. Since a misread would shift coordinates by one rather than fail, -v
+reports which format each file was read as and how many targets it produced, and
+a file with no targets is an error rather than an empty result.
+
+--sample alone reports what those subjects carry; --variant alone reports who
+carries those variants; both together ask what those subjects' genotypes are at
+those sites. An axis left unnamed is unrestricted, not empty.
 
 --min-dp gates calls by depth; a gate over data lacking DP admits everything
 rather than rejecting it, since an absent depth is not evidence of a shallow one.
@@ -72,7 +88,7 @@ contained.
 
 With no site restriction --hom-ref walks the entire sites catalog, since being
 reference is a statement about every site the callset interrogated -- expect
-roughly one row per variant in the source. --region or --variant bounds it.
+roughly one row per variant in the source. --variant bounds it.
 
 A reference call is only as good as the evidence for it: the gate must admit it
 (a 0/0 at DP 3 under --min-dp 10 is not a reference observation), an off-catalog
@@ -89,8 +105,7 @@ and callable-regions files, and refuses if either is missing or it was built
 without coverage information.
 
   --sample NAME       subject to report on (repeatable)
-  --variant LOCUS     variant as chrom:pos:ref:alt (repeatable)
-  --region R          1-based region, chrom:start-end or chrom (repeatable)
+  --variant TARGET    a locus, region, contig, or a file of them (repeatable)
   --min-dp N          minimum depth for a call to count
   --hom-ref           report every interrogated site, not only the ALT calls
   --format F          tsv (default), json, vcf, or list. vcf emits a genotype
@@ -125,9 +140,8 @@ written where nothing is known would assert a depth the data never had.`,
 		// At least one selector. An empty Query is legal in the library -- it means
 		// the whole store -- but making it the accidental result of a typo at the
 		// command line is not worth the convenience.
-		if len(vcfVarQuerySamples) == 0 && len(vcfVarQueryVariants) == 0 &&
-			len(vcfVarQueryRegions) == 0 {
-			return fmt.Errorf("give at least one --sample, --variant or --region")
+		if len(vcfVarQuerySamples) == 0 && len(vcfVarQueryVariants) == 0 {
+			return fmt.Errorf("give at least one --sample or --variant")
 		}
 		format := strings.ToLower(vcfVarQueryFormat)
 		switch format {
@@ -144,9 +158,12 @@ written where nothing is known would assert a depth the data never had.`,
 			return fmt.Errorf("unknown format %q (use tsv, json, vcf, or list)", format)
 		}
 
-		q, err := buildQuery()
+		q, targets, err := buildQuery()
 		if err != nil {
 			return err
+		}
+		if vcfVarQueryVerbose {
+			targets.report(cmd.ErrOrStderr())
 		}
 		// A genotype matrix has to distinguish an observed reference call from an
 		// unobserved sample, or every non-carrier becomes ./. and the file asserts
@@ -314,27 +331,18 @@ func warnUnknownSites(cmd *cobra.Command, store varstore.Store, q varstore.Query
 // legal: naming both is the variants-by-samples question that used to be a hard
 // error, naming only --region asks for a window, and naming only --sample asks
 // what that subject carries.
-func buildQuery() (varstore.Query, error) {
+func buildQuery() (varstore.Query, *targetSet, error) {
 	q := varstore.Query{
 		Samples:    vcfVarQuerySamples,
 		Gate:       varstore.Gate{MinDP: int32(vcfVarQueryMinDP)},
 		IncludeRef: vcfVarQueryHomRef,
 	}
-	for _, v := range vcfVarQueryVariants {
-		l, err := varstore.ParseLocus(v)
-		if err != nil {
-			return q, err
-		}
-		q.Loci = append(q.Loci, l)
+	t, err := parseTargets(vcfVarQueryVariants)
+	if err != nil {
+		return q, nil, err
 	}
-	for _, r := range vcfVarQueryRegions {
-		sp, err := varstore.ParseSpan(r)
-		if err != nil {
-			return q, err
-		}
-		q.Spans = append(q.Spans, *sp)
-	}
-	return q, nil
+	q.Loci, q.Spans = t.Loci, t.Spans
+	return q, t, nil
 }
 
 // tally counts what a query emitted, for the verbose report. Gathered while
@@ -612,7 +620,6 @@ func init() {
 	f.StringVarP(&vcfVarQueryOutput, "output", "o", "-", "Output filename (- for stdout)")
 	f.StringArrayVar(&vcfVarQuerySamples, "sample", nil, "Report variants carried by this subject (repeatable)")
 	f.StringArrayVar(&vcfVarQueryVariants, "variant", nil, "Report subjects carrying this variant, as chrom:pos:ref:alt (repeatable)")
-	f.StringArrayVar(&vcfVarQueryRegions, "region", nil, "Restrict to this 1-based region (chrom:start-end, or chrom); repeatable; a VCF backend needs a tabix index")
 	f.IntVar(&vcfVarQueryMinDP, "min-dp", 0, "Minimum DP for a call to count")
 	f.BoolVar(&vcfVarQueryHomRef, "hom-ref", false, "Also report reference (0/0) calls, not only alternate carriers")
 	f.StringVar(&vcfVarQueryFormat, "format", "tsv", "Output format: tsv, json, vcf, or list")

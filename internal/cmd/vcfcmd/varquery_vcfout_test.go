@@ -45,7 +45,7 @@ func info(t *testing.T, record, key string) string {
 func TestVcfOutRecordsAreInContigOrder(t *testing.T) {
 	base := convert(t, "testdata/contigs.vcf")
 	for _, in := range []string{"testdata/contigs.vcf", base} {
-		rows := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2", "--region", "chr10",
+		rows := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2", "--variant", "chr10",
 			"--format", "vcf", "--min-dp", "10", in))
 		if len(rows) != 4 {
 			t.Fatalf("%s: want 4 records, got %d: %v", in, len(rows), rows)
@@ -89,7 +89,7 @@ func TestVcfOutImpliesHomRef(t *testing.T) {
 // threshold, the recomputed values must equal the store's own catalog.
 func TestVcfOutInfoMatchesStoreWhenComplete(t *testing.T) {
 	base := convert(t, "testdata/contigs.vcf")
-	rows := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2",
+	rows := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2",
 		"--format", "vcf", "--min-dp", "10", base))
 	if len(rows) != 2 {
 		t.Fatalf("want 2 records, got %v", rows)
@@ -109,11 +109,11 @@ func TestVcfOutInfoMatchesStoreWhenComplete(t *testing.T) {
 func TestVcfOutInfoIsRecomputedOverTheSubset(t *testing.T) {
 	base := convert(t, "testdata/contigs.vcf")
 
-	all := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2",
+	all := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2",
 		"--format", "vcf", "--min-dp", "10", base))
 	// S2 alone at chr2:200, where it is 1/1: AC 2 of AN 2, so AF is 1.0 -- not the
 	// 0.5 the whole-cohort catalog reports.
-	sub := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2", "--sample", "S2",
+	sub := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2", "--sample", "S2",
 		"--format", "vcf", "--min-dp", "10", base))
 	if len(all) != 2 || len(sub) != 2 {
 		t.Fatalf("want 2 records each, got %d and %d", len(all), len(sub))
@@ -135,9 +135,9 @@ func TestVcfOutInfoIsRecomputedOverTheSubset(t *testing.T) {
 // store converted from it, INFO included.
 func TestVcfOutBackendsAgree(t *testing.T) {
 	base := convert(t, "testdata/contigs.vcf")
-	a := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2", "--region", "chr10",
+	a := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2", "--variant", "chr10",
 		"--format", "vcf", "--min-dp", "10", "testdata/contigs.vcf"))
-	b := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2", "--region", "chr10",
+	b := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2", "--variant", "chr10",
 		"--format", "vcf", "--min-dp", "10", base))
 	// The GT columns carry real DP/GQ from a VCF and none from a store, so compare
 	// the locus and INFO columns -- which is where the recomputation lives.
