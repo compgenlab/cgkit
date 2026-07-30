@@ -86,14 +86,16 @@ Drop the other two files and the store can no longer distinguish these two situa
 - a sample was sequenced, called at good depth, and is **reference** at this position
 - a sample was **never assayed** here at all
 
-Both look identical: no row in `calls.parquet`. Collapsing them into "not a carrier" silently inflates the denominator of every cohort query, every allele frequency, and every association test. So `vcf-varquery --classify` resolves four states rather than two, and the two sidecar files are what make that possible:
+Both look identical: no row in `calls.parquet`. Collapsing them into "not a carrier" silently inflates the denominator of every cohort query, every allele frequency, and every association test. So the store has to be able to tell four situations apart internally, and the two sidecar files are what make that possible:
 
-| state | meaning | evidence needed |
+| situation | genotype reported | evidence needed |
 |---|---|---|
-| `carrier` | an ALT call passing the quality gate | `calls` |
-| `uncertain` | an ALT call below the gate | `calls` |
-| `non_carrier` | observed, and observed to be reference | `sites` + `regions` |
-| `not_assayed` | no observation to draw on | `sites` + `regions` |
+| an ALT call passing the quality gate | the recorded GT | `calls` |
+| an ALT call below the gate | not reported | `calls` |
+| observed, and observed to be reference | `0/0` | `sites` + `regions` |
+| no observation to draw on | nothing, or `./.` | `sites` + `regions` |
+
+This is machinery, not a user-facing vocabulary: the genotype in the output already says which of these happened, so there is no state column to interpret.
 
 ### The sites file cannot be rebuilt from the calls
 
@@ -106,7 +108,7 @@ Measured on 1000 Genomes, the fraction of the true site catalog recoverable from
 | 1,000 | 46.7% |
 | 50 | 12.8% |
 
-So at 50 samples, seven out of eight interrogated sites would silently become `not_assayed`. The catalog is not redundant; it is the boundary of what the store can answer.
+So at 50 samples, seven out of eight interrogated sites would silently look never-interrogated. The catalog is not redundant; it is the boundary of what the store can answer.
 
 ### Runs are not coverage
 
@@ -114,7 +116,7 @@ So at 50 samples, seven out of eight interrogated sites would silently become `n
 
 This follows from what the source asserted. A plain VCF reports variants and makes no claim about any other position: an unreported base was not observed to be reference, it simply was not reported. The caller may never have looked.
 
-Consequently a run is only meaningful at positions that appear in the site catalog, and `Classify` checks the catalog *first and returns early* for exactly that reason. Reading a run as territory would manufacture reference observations for positions never interrogated, which is the precise error the four states exist to prevent.
+Consequently a run is only meaningful at positions that appear in the site catalog, and the reconstruction checks the catalog *first and returns early* for exactly that reason. Reading a run as territory would manufacture reference observations for positions never interrogated.
 
 Every store records `cgkit.span_semantics`:
 
@@ -129,15 +131,13 @@ Only a `blocks` store could answer for a position absent from the catalog. Store
 
 **Can:** any question about a variant that appears in the site catalog — carriers, non-carriers, allele counts, per-sample variant lists, four-state classification.
 
-**Cannot:** anything about a position the source VCF did not report. Such a locus is `not_assayed` for **every** sample, even where run intervals bracket it on both sides, and `vcf-varquery` prints a warning so that "0 carriers" is never mistaken for a real negative:
+**Cannot:** anything about a position the source VCF did not report. Such a locus yields nothing for **any** sample — not an ALT call and not a reference one — even where run intervals bracket it on both sides, and `vcf-varquery` prints a warning so that "0 carriers" is never mistaken for a real negative:
 
 ```
-$ cgkit vcf-varquery --variant chr1:250:A:G --classify cohort/
+$ cgkit vcf-varquery --variant chr1:250:A:G --hom-ref cohort/
 warning: chr1:250:A:G is not in the source; reporting not-assayed for every sample.
          A VCF only supports queries for the variants it contains.
-chrom	pos	ref	alt	sample	state	gt	dp	gq
-chr1	250	A	G	S1	not_assayed	.	.	.
-chr1	250	A	G	S2	not_assayed	.	.	.
+chrom	pos	ref	alt	sample	gt	dp	min_dp	ad_ref	ad_alt	gq
 ```
 
 This is a property of the *input*, not a limitation of Parquet. A gVCF, whose reference blocks carry `END` and `MIN_DP`, makes positive statements about spans and is what would license answering off-catalog positions.
@@ -154,10 +154,9 @@ chr1  400  .  T  C  .  PASS  .  GT:DP:GQ  ./.:40:0    0/0:30:99
 ```
 
 ```
-$ cgkit vcf-varquery --variant chr1:400:T:C --classify --min-dp 10 cohort/
-chrom	pos	ref	alt	sample	state	gt	dp	gq
-chr1	400	T	C	S1	not_assayed	.	.	.
-chr1	400	T	C	S2	non_carrier	.	.	.
+$ cgkit vcf-varquery --variant chr1:400:T:C --hom-ref --min-dp 10 cohort/
+chrom	pos	ref	alt	sample	gt	dp	min_dp	ad_ref	ad_alt	gq
+chr1	400	T	C	S2	0/0	.	10	.	.	.
 ```
 
 ### Normalization
@@ -226,8 +225,6 @@ The locus leads as four columns rather than one packed `chrom:pos:ref:alt` field
 
 The second row is the point. A store never wrote the reference genotype down, so there is no depth to report — but the sample was inside a callable run built at a known threshold, so `DP ≥ 10` is a fact the store can still assert. Writing that threshold into `dp` instead would claim a depth the data never had.
 
-`--classify` keeps its own `state` column and omits `min_dp`, so that its output stays byte-identical across the two backends.
-
 ### Who carries a variant
 
 ```
@@ -255,7 +252,7 @@ chr1	300	G	A	S1	0/0	.	10	.	.	.
 chr1	300	G	A	S2	0/0	.	10	.	.	.
 ```
 
-`0/0` here means the **whole genotype** was reference, which is stricter than `non_carrier`. At the multiallelic record above, `S2` is `0/1`: not a carrier of `G`, but not reference either, so it appears under neither. Only `S3` is genuinely reference at both split loci. Emitting `0/0` for a `0/2` sample would be a genotype the source never contained.
+`0/0` here means the **whole genotype** was reference. At the multiallelic record above, `S2` is `0/1`: not a carrier of `G`, but not reference either, so it appears under neither. Only `S3` is genuinely reference at both split loci. Emitting `0/0` for a `0/2` sample would be a genotype the source never contained.
 
 The dots are honest, not missing data: a store keeps only ALT genotypes, so the reference *call* was never written down — only the fact that it was made. The same query against a VCF reports the recorded genotype and its real DP/AD/GQ.
 
@@ -273,7 +270,7 @@ Conversion preserves the source's own spelling in the store rather than rewritin
 
 ### Match the query --min-dp to the conversion --min-dp
 
-A store baked its conversion `--min-dp` into the callable runs. Querying at a different threshold is not asking a question the store can answer consistently, and the two backends will stop agreeing on `non_carrier` versus `not_assayed`. `-v` says so rather than leaving it invisible:
+A store baked its conversion `--min-dp` into the callable runs. Querying at a different threshold is not asking a question the store can answer consistently, and the two backends will stop agreeing on which samples are reference versus unassayed. `-v` says so rather than leaving it invisible:
 
 ```
   min-dp      10 at conversion
@@ -283,7 +280,7 @@ A store baked its conversion `--min-dp` into the callable runs. Querying at a di
 
 ### A gate can only act on a field the data has
 
-`--min-dp`/`--min-gq` **fail open**: a gate over a field the input lacks admits everything rather than rejecting it, because an absent quality score is not evidence of a bad one. That is deliberate, and it means a filter can silently do nothing — so both commands report field presence. At conversion:
+`--min-dp` **fails open**: a gate over data lacking DP admits everything rather than rejecting it, because an absent depth is not evidence of a shallow one. That is deliberate, and it means a filter can silently do nothing — so both commands report field presence. At conversion:
 
 ```
 fields present (a gate can only act on a field the data has)
@@ -292,17 +289,19 @@ fields present (a gate can only act on a field the data has)
   AD  ABSENT -- per-allele depths will have no effect
 ```
 
-and at query time, `--min-gq 50` over GQ-less data warns rather than quietly returning everything.
+and at query time, `--min-dp` over DP-less data warns rather than quietly returning everything.
+
+There is deliberately **no `--min-gq`**. GQ is recorded per ALT call, but callable runs are built from depth alone, so no GQ survives for a reference call — a store could not honor the gate there while a VCF would, and the two backends would silently disagree about which samples are reference. The `gq` column is in the output, so filter on it downstream.
 
 ### Incomplete stores refuse rather than degrade
 
-If `sites.parquet` or `regions.parquet` is missing, or the store was built with `--no-callable`, then `--classify` and `--hom-ref` return `ErrNotClassifiable` instead of an answer:
+If `sites.parquet` or `regions.parquet` is missing, or the store was built with `--no-callable`, then `--hom-ref` returns `ErrNotClassifiable` instead of an answer:
 
 ```
 Error: store cannot distinguish non-carrier from not-assayed: cohort/regions.parquet is missing
 ```
 
-Reporting an unobserved sample as a non-carrier is exactly the error the four states exist to prevent, so the failure is loud.
+Reporting an unobserved sample as reference would invent an observation, so the failure is loud.
 
 ## Performance
 
@@ -381,9 +380,7 @@ Inputs must **not overlap**: a chromosome cannot be revisited once left, and pos
 | `--sample NAME` | | report variants carried by this subject (repeatable) |
 | `--region R` | | restrict to a 1-based region (`chrom:start-end`, or `chrom`) |
 | `--min-dp N` | `0` | minimum DP for a call to count |
-| `--min-gq N` | `0` | minimum GQ for a call to count |
 | `--hom-ref` | off | report every interrogated site, not only the ALT calls |
-| `--classify` | off | resolve every sample to one of the four states |
 | `--format F` | `tsv` | `tsv`, `json`, `vcf` (sample mode), or `list` (variant mode) |
 | `--store KIND` | infer | force the backend: `vcf` or `parquet` |
 | `-o`, `--output` | `-` | output filename |
@@ -404,7 +401,7 @@ Conversion records these keys in the calls file, reported by `vcf-varquery -v`:
 | `cgkit.source` | input filename(s) |
 | `cgkit.program`, `cgkit.command` | cgkit version and full command line |
 
-The roster lives in metadata rather than a fourth file because `Classify` needs every sample, while the calls file only ever mentions carriers — a sample carrying nothing anywhere would otherwise be invisible and reported as `not_assayed` everywhere.
+The roster lives in metadata rather than a fourth file because reconstructing reference calls needs every sample, while the calls file only ever mentions carriers — a sample carrying nothing anywhere would otherwise be invisible and never reported at all.
 
 ## See also
 

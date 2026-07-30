@@ -194,14 +194,14 @@ func TestVcfToParquetNoCallableRefuses(t *testing.T) {
 	}
 }
 
-// TestVarQueryClassifyRefusesWithoutRegions pins the loud-failure contract:
-// an incomplete store must error, never report everyone as a non-carrier.
-func TestVarQueryClassifyRefusesWithoutRegions(t *testing.T) {
+// TestVarQueryHomRefRefusesWithoutRegions pins the loud-failure contract: an
+// incomplete store must error, never report everyone as reference.
+func TestVarQueryHomRefRefusesWithoutRegions(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
 	if err := os.Remove(varstore.RegionsPath(base)); err != nil {
 		t.Fatal(err)
 	}
-	err := runVcfErr(t, "vcf-varquery", "--variant", "1:100:A:G", "--classify", base)
+	err := runVcfErr(t, "vcf-varquery", "--variant", "1:100:A:G", "--hom-ref", base)
 	if err == nil {
 		t.Fatal("expected an error when the regions file is missing")
 	}
@@ -212,14 +212,62 @@ func TestVarQueryClassifyRefusesWithoutRegions(t *testing.T) {
 
 // TestVarQueryBackendsAgree is the core equivalence claim: the same question
 // against a VCF and against a store converted from it must give one answer.
+//
+// Asked of the library rather than the CLI. Classify resolves every sample, so it
+// exercises reference and unassayed samples that a carriers-only query never
+// mentions -- and it is no longer reachable from the command line.
 func TestVarQueryBackendsAgree(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
+	fromVcf, err := varstore.OpenVcf("testdata/coverage.vcf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fromVcf.Close()
+	fromPq, err := varstore.OpenParquet(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fromPq.Close()
+
+	gate := varstore.Gate{MinDP: 10}
 	for _, v := range []string{"1:100:A:G", "1:200:C:T", "1:400:T:C", "1:500:A:T"} {
-		fromVcf := runVcf(t, "vcf-varquery", "--variant", v, "--classify", "--min-dp", "10", "testdata/coverage.vcf")
-		fromPq := runVcf(t, "vcf-varquery", "--variant", v, "--classify", "--min-dp", "10", base)
-		if dataRowsOnly(fromVcf) != dataRowsOnly(fromPq) {
-			t.Errorf("backends disagree at %s\n vcf:\n%s\n parquet:\n%s", v,
-				dataRowsOnly(fromVcf), dataRowsOnly(fromPq))
+		locus, err := varstore.ParseLocus(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := fromVcf.Classify(locus, gate)
+		if err != nil {
+			t.Fatalf("vcf Classify(%s): %v", v, err)
+		}
+		b, err := fromPq.Classify(locus, gate)
+		if err != nil {
+			t.Fatalf("parquet Classify(%s): %v", v, err)
+		}
+		if len(a) != len(b) {
+			t.Fatalf("%s: %d states from vcf, %d from parquet", v, len(a), len(b))
+		}
+		for i := range a {
+			if a[i].SampleID != b[i].SampleID || a[i].State != b[i].State {
+				t.Errorf("backends disagree at %s: vcf %s=%s, parquet %s=%s", v,
+					a[i].SampleID, a[i].State, b[i].SampleID, b[i].State)
+			}
+		}
+	}
+}
+
+// TestHomRefBackendsAgreeUnderTheGate is the regression test for a bug this
+// found: with a GQ threshold the two backends disagreed about which samples were
+// reference, because callable runs are built from depth alone so no GQ survives
+// conversion. --min-gq was removed for exactly that reason; a depth gate, which
+// the runs do encode, must still agree.
+func TestHomRefBackendsAgreeUnderTheGate(t *testing.T) {
+	base := convert(t, "testdata/gq.vcf", "--min-dp", "10")
+	for _, s := range []string{"S1", "S2"} {
+		fromVcf := runVcf(t, "vcf-varquery", "--sample", s, "--hom-ref", "--min-dp", "10", "testdata/gq.vcf")
+		fromPq := runVcf(t, "vcf-varquery", "--sample", s, "--hom-ref", "--min-dp", "10", base)
+		if identityRows(fromVcf) != identityRows(fromPq) {
+			t.Errorf("backends disagree for %s\n vcf:\n%s\n parquet:\n%s", s,
+				identityRows(fromVcf), identityRows(fromPq))
 		}
 	}
 }
@@ -281,16 +329,46 @@ func TestOffCatalogLocusIsNotAssayed(t *testing.T) {
 
 // TestOffCatalogAgreesAcrossBackends pins that the VCF backend draws the same
 // boundary as the Parquet one.
+//
+// Two claims, at two levels. Through the CLI both backends must report no rows --
+// an off-catalog locus yields neither an ALT call nor a reference one, even with
+// --hom-ref. And in the library both must call every sample not_assayed rather
+// than non_carrier, which is the claim "no rows" is standing in for.
 func TestOffCatalogAgreesAcrossBackends(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
-	fromVcf := runVcf(t, "vcf-varquery", "--variant", "1:250:A:G", "--classify", "testdata/coverage.vcf")
-	fromPq := runVcf(t, "vcf-varquery", "--variant", "1:250:A:G", "--classify", base)
-	if dataRowsOnly(fromVcf) != dataRowsOnly(fromPq) {
-		t.Errorf("backends disagree off-catalog\n vcf:\n%s\n parquet:\n%s",
-			dataRowsOnly(fromVcf), dataRowsOnly(fromPq))
+	locus := varstore.Locus{Chrom: "1", Pos: 250, Ref: "A", Alt: "G"}
+
+	fromVcf := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "1:250:A:G",
+		"--hom-ref", "testdata/coverage.vcf"))
+	fromPq := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "1:250:A:G", "--hom-ref", base))
+	if fromVcf != fromPq {
+		t.Errorf("backends disagree off-catalog\n vcf:\n%s\n parquet:\n%s", fromVcf, fromPq)
 	}
-	if !strings.Contains(dataRowsOnly(fromPq), string(varstore.StateNotAssayed)) {
-		t.Errorf("expected not_assayed rows, got:\n%s", dataRowsOnly(fromPq))
+	// No ALT call and no reference call anywhere.
+	if rows := tsvDataRows(fromPq); len(rows) != 0 {
+		t.Errorf("expected no data rows off-catalog, got %d:\n%s", len(rows),
+			strings.Join(rows, "\n"))
+	}
+
+	for _, in := range []string{"testdata/coverage.vcf", base} {
+		store, err := openVarStore(in, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		states, err := store.Classify(locus, varstore.Gate{})
+		store.Close()
+		if err != nil {
+			t.Fatalf("%s: Classify: %v", in, err)
+		}
+		if len(states) == 0 {
+			t.Fatalf("%s: expected a state per sample", in)
+		}
+		for _, st := range states {
+			if st.State != varstore.StateNotAssayed {
+				t.Errorf("%s: %s at an off-catalog locus = %s, want not_assayed "+
+					"(a plain VCF claims nothing between its records)", in, st.SampleID, st.State)
+			}
+		}
 	}
 }
 
@@ -447,8 +525,6 @@ func TestVarQueryLocusColumnsAreSplit(t *testing.T) {
 		// other cases assert -- which is what makes the shared layout checkable.
 		{"samples", []string{"vcf-varquery", "--sample", "S2", base},
 			"chrom\tpos\tref\talt\tsample\tgt\tdp\tmin_dp\tad_ref\tad_alt\tgq"},
-		{"classify", []string{"vcf-varquery", "--variant", "chr1:100:A:G", "--classify", base},
-			"chrom\tpos\tref\talt\tsample\tstate\tgt\tdp\tgq"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -589,8 +665,8 @@ func TestVerboseGoesToStderrOnly(t *testing.T) {
 func TestVerboseReportsAbsentQualityFields(t *testing.T) {
 	// sample.vcf carries neither DP nor GQ.
 	out := runVcf(t, "vcf-varquery", "-v", "--variant", "chr1:100:A:G",
-		"--min-gq", "99", "testdata/sample.vcf")
-	if !strings.Contains(out, "--min-gq 99 had no effect") {
+		"--min-dp", "99", "testdata/sample.vcf")
+	if !strings.Contains(out, "--min-dp 99 had no effect") {
 		t.Errorf("expected a warning that the gate could not act, got:\n%s", out)
 	}
 }
@@ -622,13 +698,13 @@ func TestVerboseConversionReportsFieldPresence(t *testing.T) {
 func TestVerboseNotesMinDPMismatch(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf") // built at the default --min-dp 10
 	out := runVcf(t, "vcf-varquery", "-v", "--variant", "chr1:100:A:G",
-		"--classify", "--min-dp", "25", base)
+		"--hom-ref", "--min-dp", "25", base)
 	if !strings.Contains(out, "the runs were built at 10") {
 		t.Errorf("expected a min-dp mismatch note, got:\n%s", out)
 	}
 	// Matching the conversion threshold must not warn.
 	ok := runVcf(t, "vcf-varquery", "-v", "--variant", "chr1:100:A:G",
-		"--classify", "--min-dp", "10", base)
+		"--hom-ref", "--min-dp", "10", base)
 	if strings.Contains(ok, "the runs were built at") {
 		t.Errorf("matching --min-dp should not warn, got:\n%s", ok)
 	}
@@ -637,7 +713,7 @@ func TestVerboseNotesMinDPMismatch(t *testing.T) {
 // TestQuietByDefault pins that none of this appears without -v.
 func TestQuietByDefault(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
-	out := runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--min-gq", "99", base)
+	out := runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--min-dp", "99", base)
 	for _, marker := range []string{"store    parquet", "variant  ", "gate     "} {
 		if strings.Contains(out, marker) {
 			t.Errorf("saw verbose output %q without -v:\n%s", marker, out)
@@ -678,8 +754,8 @@ func TestStoreDirAndPrefixAgree(t *testing.T) {
 	runVcf(t, "vcf-toparquet", "--out", dir, "testdata/coverage.vcf")
 	runVcf(t, "vcf-toparquet", "--out", pfx, "testdata/coverage.vcf")
 
-	a := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--classify", dir))
-	b := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--classify", pfx))
+	a := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--hom-ref", dir))
+	b := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--hom-ref", pfx))
 	if a != b {
 		t.Errorf("directory and prefix layouts disagree\n dir:\n%s\n prefix:\n%s", a, b)
 	}
@@ -859,8 +935,8 @@ func TestMultiVcfRemapsSampleOrder(t *testing.T) {
 		"testdata/multi_chr1.vcf", "testdata/multi_chr2_reordered.vcf")
 
 	for _, l := range []string{"chr2:100:G:C", "chr2:200:T:A"} {
-		a := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", l, "--classify", canonical))
-		b := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", l, "--classify", reordered))
+		a := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", l, "--hom-ref", canonical))
+		b := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", l, "--hom-ref", reordered))
 		if a != b {
 			t.Errorf("reordered input produced different genotypes at %s\n canonical:\n%s\n reordered:\n%s",
 				l, a, b)
