@@ -103,19 +103,53 @@ func TestTargetInlineForms(t *testing.T) {
 	}
 }
 
-// TestTargetInlineErrorsAreAboutLoci pins the reason os.Stat is consulted first: a
-// mistyped locus is not a file, so it must not be reported as a missing file.
-func TestTargetInlineErrorsAreAboutLoci(t *testing.T) {
+// TestTargetColonContigsAreNotLoci pins the disambiguation that lets a contig
+// name carry colons.
+//
+// GRCh38's ALT contigs are named like HLA-A*01:01:01:01, which splits into four
+// colon-fields exactly as a locus does. What separates them is that a locus's last
+// two fields are REF and ALT alleles and never numeric, where the contig's are.
+// Without that test the contig parses as chrom=HLA-A*01, pos=1, ref=01, alt=01:
+// accepted, wrong, and silent.
+func TestTargetColonContigsAreNotLoci(t *testing.T) {
+	for _, name := range []string{
+		"HLA-A*01:01:01:01", // four fields, all-numeric tail
+		"HLA-B*07:02:01",    // three fields
+		"chr1:100:A",        // a locus missing a field lands here too
+	} {
+		set, err := parseTargets([]string{name})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(set.Loci) != 0 {
+			t.Errorf("%s parsed as a locus %v; it is a contig name", name, set.Loci)
+		}
+		if len(set.Spans) != 1 || set.Spans[0].Chrom != name {
+			t.Errorf("%s should be one whole-contig span, got %+v", name, set.Spans)
+		}
+	}
+
+	// A real locus is still a locus, including an indel whose alleles are long.
+	set, err := parseTargets([]string{"chr1:300:G:GATTACA"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Loci) != 1 || set.Loci[0].Alt != "GATTACA" {
+		t.Errorf("want one locus with alt GATTACA, got %+v / %+v", set.Loci, set.Spans)
+	}
+}
+
+// TestTargetUnmatchedIsReported pins the safety net for that fallback: because a
+// malformed locus becomes a contig nobody has, selecting nothing has to be said
+// out loud rather than read as a real negative result.
+func TestTargetUnmatchedIsReported(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
-	err := runVcfErr(t, "vcf-varquery", "--variant", "chr1:100:A", base)
-	if err == nil {
-		t.Fatal("expected an error for a three-field locus")
+	out := runVcf(t, "vcf-varquery", "--variant", "chr1:100:A", base)
+	if !strings.Contains(out, "no rows for any target") {
+		t.Errorf("a target that matched nothing should be reported:\n%s", out)
 	}
-	if strings.Contains(err.Error(), "no such file") {
-		t.Errorf("a mistyped locus should not be reported as a missing file: %v", err)
-	}
-	if !strings.Contains(err.Error(), "chr1:100:A") {
-		t.Errorf("the error should name the bad value, got %v", err)
+	if !strings.Contains(out, "read as a contig name") {
+		t.Errorf("the warning should say how the value was interpreted:\n%s", out)
 	}
 }
 
@@ -144,34 +178,35 @@ func TestTargetEmptyFileIsRefused(t *testing.T) {
 	}
 }
 
-// TestSiteListWorksForBothCommands is the protection against format drift. The
-// target parser here and vcf-gtcount's readSitesFile are separate code; what must
-// not diverge is the file FORMAT, so one file has to parse the same through both.
+// TestSiteListWorksForBothCommands pins that one file serves both commands.
 //
-// Compared at the parser level rather than by running both commands, because
-// vcf-gtcount needs a tabix index for random access and that is irrelevant to the
-// claim being made.
+// They now share a single parser rather than two that had to agree, so this checks
+// the remaining seam: vcf-gtcount's conversion of the shared target set into its
+// own site type.
 func TestSiteListWorksForBothCommands(t *testing.T) {
 	list := writeFile(t, "shared.txt",
-		"# shared site list\nchr1 100 A G\nchr1 500 A T\nchr2\t300\tG\tC\n")
+		"# shared site list\nchr1 100 A G\nchr1 500 A T\nchr2:300:G:C\n")
 
-	mine, err := parseTargets([]string{list})
+	targets, err := parseTargets([]string{list})
 	if err != nil {
-		t.Fatalf("varquery parser: %v", err)
+		t.Fatalf("target parser: %v", err)
 	}
-	theirs, err := readSitesFile(list)
+	if len(targets.Loci) != 3 {
+		t.Fatalf("want 3 loci from the shared list, got %d", len(targets.Loci))
+	}
+
+	sites, err := collectGtSites(nil, []string{list})
 	if err != nil {
-		t.Fatalf("vcf-gtcount parser: %v", err)
+		t.Fatalf("vcf-gtcount rejected the shared list: %v", err)
 	}
-	if len(mine.Loci) != len(theirs) {
-		t.Fatalf("varquery read %d loci, vcf-gtcount %d, from the same file",
-			len(mine.Loci), len(theirs))
+	if len(sites) != len(targets.Loci) {
+		t.Fatalf("varquery read %d targets, vcf-gtcount %d", len(targets.Loci), len(sites))
 	}
-	for i, l := range mine.Loci {
-		g := theirs[i]
+	for i, l := range targets.Loci {
+		g := sites[i]
 		if l.Chrom != g.chrom || int(l.Pos) != g.pos || l.Ref != g.ref || l.Alt != g.alt {
-			t.Errorf("row %d differs: varquery %s:%d:%s:%s, gtcount %s:%d:%s:%s",
-				i, l.Chrom, l.Pos, l.Ref, l.Alt, g.chrom, g.pos, g.ref, g.alt)
+			t.Errorf("row %d differs: varquery %s, gtcount %s:%d:%s:%s",
+				i, l, g.chrom, g.pos, g.ref, g.alt)
 		}
 	}
 }

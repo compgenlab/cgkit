@@ -39,20 +39,36 @@ func TestGtColumnOrder(t *testing.T) {
 	}
 }
 
-func TestParseLocus(t *testing.T) {
-	s, err := parseLocus("chr1:100")
-	if err != nil || s.chrom != "chr1" || s.pos != 100 || s.hasRA {
-		t.Fatalf("parseLocus(chr1:100) = %+v, %v", s, err)
+// TestGtCountSiteGrammar pins that this command reads targets through the same
+// grammar as vcf-varquery --variant, and that it refuses the shapes it cannot
+// answer rather than silently taking the first base of a range.
+func TestGtCountSiteGrammar(t *testing.T) {
+	got, err := collectGtSites([]string{"chr1:100", "chr1:300:G:GA"}, nil)
+	if err != nil {
+		t.Fatalf("collectGtSites: %v", err)
 	}
-	s, err = parseLocus("chr1:300:G:GA")
-	if err != nil || s.ref != "G" || s.alt != "GA" || !s.hasRA {
-		t.Fatalf("parseLocus(chr1:300:G:GA) = %+v, %v", s, err)
+	if len(got) != 2 {
+		t.Fatalf("want 2 sites, got %+v", got)
 	}
-	if _, err := parseLocus("chr1"); err == nil {
-		t.Error("parseLocus(chr1) expected error")
+	// chrom:pos is a position with no ref/alt; chrom:pos:ref:alt is an exact site.
+	if got[1].chrom != "chr1" || got[1].pos != 300 || got[1].ref != "G" ||
+		got[1].alt != "GA" || !got[1].hasRA {
+		t.Errorf("chr1:300:G:GA parsed as %+v", got[1])
 	}
-	if _, err := parseLocus("chr1:abc"); err == nil {
-		t.Error("parseLocus(chr1:abc) expected error")
+	if got[0].pos != 100 || got[0].hasRA {
+		t.Errorf("chr1:100 should be a position with no ref/alt, got %+v", got[0])
+	}
+
+	// A range has no single position, so it is refused rather than approximated.
+	for _, bad := range []string{"chr1:100-200", "chr1"} {
+		if _, err := collectGtSites([]string{bad}, nil); err == nil {
+			t.Errorf("%q names a range; vcf-gtcount should refuse it", bad)
+		}
+	}
+	// A malformed locus is not silently a contig here either, since a contig is a
+	// range and ranges are refused.
+	if _, err := collectGtSites([]string{"chr1:abc"}, nil); err == nil {
+		t.Error("chr1:abc should be refused")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -43,12 +44,33 @@ const (
 	targetList   targetFormat = "site list"
 )
 
+// targetRef points at one entry of Loci or Spans. It records the order targets
+// were given in, which matters to a consumer that looks each one up in turn and
+// reports results in that order -- vcf-gtcount does.
+type targetRef struct {
+	locus bool
+	i     int
+}
+
 // targetSet is what --variant resolved to.
 type targetSet struct {
 	Loci   []varstore.Locus
 	Spans  []varstore.Span
+	Order  []targetRef          // Loci and Spans interleaved, as given
 	Counts map[targetFormat]int // targets contributed by each source kind
 	Files  map[string]targetFormat
+}
+
+// addLocus and addSpan are the only ways to add a target, so Order cannot drift
+// out of step with Loci and Spans.
+func (t *targetSet) addLocus(l varstore.Locus) {
+	t.Order = append(t.Order, targetRef{locus: true, i: len(t.Loci)})
+	t.Loci = append(t.Loci, l)
+}
+
+func (t *targetSet) addSpan(sp varstore.Span) {
+	t.Order = append(t.Order, targetRef{i: len(t.Spans)})
+	t.Spans = append(t.Spans, sp)
 }
 
 // parseTargets resolves every --variant value into query selectors.
@@ -75,10 +97,10 @@ func (t *targetSet) addInline(s string) error {
 		return err
 	}
 	if l != nil {
-		t.Loci = append(t.Loci, *l)
+		t.addLocus(*l)
 	}
 	if sp != nil {
-		t.Spans = append(t.Spans, *sp)
+		t.addSpan(*sp)
 	}
 	t.Counts[targetInline]++
 	return nil
@@ -89,15 +111,23 @@ func (t *targetSet) addInline(s string) error {
 // a list of the tokens you would otherwise type.
 func parseSelector(s string) (*varstore.Locus, *varstore.Span, error) {
 	parts := strings.Split(s, ":")
-	switch len(parts) {
-	case 1:
-		// A bare contig.
-		sp, err := varstore.ParseSpan(s)
+
+	// An exact locus: four colon-fields, a numeric position, and REF/ALT that are
+	// not numbers. That last test is what lets a contig name carry colons. GRCh38's
+	// ALT contigs are named like HLA-A*01:01:01:01, which also splits into four
+	// fields -- but its last two are numeric, where a REF or ALT allele never is.
+	// Without the test that contig parses as chrom=HLA-A*01, pos=1, ref=01, alt=01:
+	// accepted, wrong, and silent.
+	if len(parts) == 4 && isNum(parts[1]) && !isNum(parts[2]) && !isNum(parts[3]) {
+		l, err := varstore.ParseLocus(s)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid target %q: %w", s, err)
+			return nil, nil, err
 		}
-		return nil, sp, nil
-	case 2:
+		return &l, nil, nil
+	}
+
+	// A region, or a single position.
+	if len(parts) == 2 {
 		if strings.Contains(parts[1], "-") {
 			sp, err := varstore.ParseSpan(s)
 			if err != nil {
@@ -105,25 +135,34 @@ func parseSelector(s string) (*varstore.Locus, *varstore.Span, error) {
 			}
 			return nil, sp, nil
 		}
-		// chrom:pos means any variant at that position, which is a one-base span --
-		// a Locus cannot express it, since it requires ref and alt.
-		pos, err := strconv.Atoi(parts[1])
-		if err != nil || pos < 1 {
-			return nil, nil, fmt.Errorf("invalid target %q: bad position", s)
+		if isNum(parts[1]) {
+			// chrom:pos means any variant at that position, which is a one-base span
+			// -- a Locus cannot express it, since it requires ref and alt.
+			pos, err := strconv.Atoi(parts[1])
+			if err != nil || pos < 1 {
+				return nil, nil, fmt.Errorf("invalid target %q: bad position", s)
+			}
+			return nil, &varstore.Span{
+				Chrom: parts[0], Start: int32(pos - 1), End: int32(pos),
+			}, nil
 		}
-		return nil, &varstore.Span{Chrom: parts[0], Start: int32(pos - 1), End: int32(pos)}, nil
-	case 4:
-		l, err := varstore.ParseLocus(s)
-		if err != nil {
-			return nil, nil, err
-		}
-		return &l, nil, nil
-	default:
-		return nil, nil, fmt.Errorf("invalid target %q: expected a file, chrom, chrom:pos, "+
-			"chrom:start-end or chrom:pos:ref:alt\n"+
-			"       (contigs whose names contain ':' -- HLA and ALT contigs -- can only "+
-			"be named in a file's columnar form)", s)
 	}
+
+	// Anything else is a contig name, taken whole -- colons included. That covers
+	// the shorter ALT spellings too (HLA-B*07:02:01 is three fields, so it is
+	// neither a locus nor a region). A typo like "chr1:100:A" also lands here and
+	// selects nothing, which is why a selector that matched no rows is reported.
+	//
+	// A locus ON such a contig cannot be written inline at all, since the grammar
+	// counts colons; a target file's columnar form takes it as separate fields.
+	return nil, &varstore.Span{Chrom: s, Start: 0, End: math.MaxInt32}, nil
+}
+
+// isNum reports whether a field is an integer, which is how a REF/ALT allele is
+// told from a numeric component of a contig name or a coordinate.
+func isNum(s string) bool {
+	_, err := strconv.Atoi(s)
+	return err == nil
 }
 
 // addFile detects a target file's format and reads it.
@@ -220,7 +259,9 @@ func (t *targetSet) addVcfFile(path string) error {
 			t.Counts["skipped (no ALT)"]++
 			continue
 		}
-		t.Loci = append(t.Loci, loci...)
+		for _, l := range loci {
+			t.addLocus(l)
+		}
 	}
 }
 
@@ -238,9 +279,7 @@ func (t *targetSet) addBedFile(path string) error {
 		if end < start {
 			return fmt.Errorf("%s: end %d is before start %d", where, end, start)
 		}
-		t.Spans = append(t.Spans, varstore.Span{
-			Chrom: fields[0], Start: int32(start), End: int32(end),
-		})
+		t.addSpan(varstore.Span{Chrom: fields[0], Start: int32(start), End: int32(end)})
 		return nil
 	})
 }
@@ -258,10 +297,10 @@ func (t *targetSet) addSiteList(path string) error {
 				return fmt.Errorf("%s: %w", where, err)
 			}
 			if l != nil {
-				t.Loci = append(t.Loci, *l)
+				t.addLocus(*l)
 			}
 			if sp != nil {
-				t.Spans = append(t.Spans, *sp)
+				t.addSpan(*sp)
 			}
 			return nil
 		}
@@ -273,14 +312,12 @@ func (t *targetSet) addSiteList(path string) error {
 			return fmt.Errorf("%s: expected a 1-based position", where)
 		}
 		if len(fields) >= 4 {
-			t.Loci = append(t.Loci, varstore.Locus{
+			t.addLocus(varstore.Locus{
 				Chrom: fields[0], Pos: int32(pos), Ref: fields[2], Alt: fields[3],
 			})
 			return nil
 		}
-		t.Spans = append(t.Spans, varstore.Span{
-			Chrom: fields[0], Start: int32(pos - 1), End: int32(pos),
-		})
+		t.addSpan(varstore.Span{Chrom: fields[0], Start: int32(pos - 1), End: int32(pos)})
 		return nil
 	})
 }
