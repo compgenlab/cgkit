@@ -3,8 +3,7 @@ module github.com/compgenlab/cgkit
 go 1.24.9
 
 require (
-	github.com/compgenlab/cghts v0.6.4
-	github.com/parquet-go/parquet-go v0.30.1
+	github.com/compgenlab/cghts v0.7.0
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/pflag v1.0.5
 )
@@ -16,6 +15,7 @@ require (
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/parquet-go/bitpack v1.0.0 // indirect
 	github.com/parquet-go/jsonlite v1.0.0 // indirect
+	github.com/parquet-go/parquet-go v0.30.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
