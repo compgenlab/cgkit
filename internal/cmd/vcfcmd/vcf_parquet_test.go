@@ -272,16 +272,58 @@ func TestHomRefBackendsAgreeUnderTheGate(t *testing.T) {
 	}
 }
 
-func TestVarQueryRejectsBadFormatForMode(t *testing.T) {
+// TestVarQueryAxesAreIndependent pins the replacement for the old mode rules.
+//
+// --sample and --variant used to be mutually exclusive "modes", which made every
+// format legal in one and an error in the other. They are now independent
+// selectors, so all four combinations work and the site/sample restrictions
+// compose. Naming both is the variants-by-samples question.
+func TestVarQueryAxesAreIndependent(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
-	if err := runVcfErr(t, "vcf-varquery", "--variant", "1:100:A:G", "--format", "vcf", base); err == nil {
-		t.Error("--format vcf should be rejected in --variant mode")
+	for _, args := range [][]string{
+		{"vcf-varquery", "--variant", "1:100:A:G", "--format", "vcf", base},
+		{"vcf-varquery", "--sample", "S1", "--format", "vcf", base},
+		{"vcf-varquery", "--sample", "S2", "--variant", "1:100:A:G", base},
+		{"vcf-varquery", "--region", "chr1:1-1000", base},
+	} {
+		if err := runVcfErr(t, args...); err != nil {
+			t.Errorf("%v should be accepted now: %v", args[1:], err)
+		}
 	}
-	if err := runVcfErr(t, "vcf-varquery", "--sample", "S1", "--format", "list", base); err == nil {
-		t.Error("--format list should be rejected in --sample mode")
+
+	// Naming both axes narrows to their intersection.
+	both := dataRowsOnly(runVcf(t, "vcf-varquery", "--sample", "S2", "--variant", "1:100:A:G", base))
+	rows := tsvDataRows(both)
+	if len(rows) != 1 || !strings.Contains(rows[0], "\tS2\t") {
+		t.Errorf("want exactly S2's row at chr1:100, got %v", rows)
 	}
-	if err := runVcfErr(t, "vcf-varquery", "--sample", "S1", "--variant", "1:100:A:G", base); err == nil {
-		t.Error("--sample and --variant together should be rejected")
+
+	// Still refused: a selector is required, and a bare id list cannot say which
+	// ids are carriers and which are reference calls.
+	if err := runVcfErr(t, "vcf-varquery", base); err == nil {
+		t.Error("a query with no --sample/--variant/--region should be rejected")
+	}
+	if err := runVcfErr(t, "vcf-varquery", "--variant", "1:100:A:G", "--hom-ref",
+		"--format", "list", base); err == nil {
+		t.Error("--format list with --hom-ref should still be rejected")
+	}
+}
+
+// TestVarQueryRegionIsRepeatable pins that --region accumulates rather than
+// overwriting, and works with no other selector.
+func TestVarQueryRegionIsRepeatable(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	one := tsvDataRows(dataRowsOnly(runVcf(t, "vcf-varquery", "--region", "chr1:1-150", base)))
+	two := tsvDataRows(dataRowsOnly(runVcf(t, "vcf-varquery",
+		"--region", "chr1:1-150", "--region", "chr1:450-600", base)))
+	if len(two) <= len(one) {
+		t.Errorf("a second --region should add rows: %d then %d\none: %v\ntwo: %v",
+			len(one), len(two), one, two)
+	}
+	for _, r := range two {
+		if strings.Contains(r, "\t200\t") || strings.Contains(r, "\t300\t") {
+			t.Errorf("row outside both regions: %s", r)
+		}
 	}
 }
 
