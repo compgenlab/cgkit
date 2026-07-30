@@ -183,6 +183,109 @@ func (s *VcfStore) Variants(sample string, span *Span, g Gate) ([]Call, error) {
 	return out, err
 }
 
+// HomRefs returns the samples observed to be all-reference at a locus.
+//
+// A VCF needs no reconstruction here: the genotype is written down, so the row
+// carries the recorded GT -- preserving ploidy and phasing -- along with its real
+// DP/AD/GQ. A Parquet store cannot, and synthesizes a bare 0/0; see HomRefCall.
+func (s *VcfStore) HomRefs(l Locus, g Gate) ([]Call, error) {
+	var out []Call
+	err := s.scan(s.spanFor(l), false, func(rec *vcf.VcfRecord) (bool, error) {
+		if !SameChrom(rec.Chrom, l.Chrom) || int32(rec.Pos) != l.Pos || rec.Ref != l.Ref {
+			return true, nil
+		}
+		altIdx := altIndex(rec, l.Alt)
+		if altIdx < 0 {
+			return true, nil
+		}
+		for i, name := range s.samples {
+			if i >= rec.NumSamples() {
+				break
+			}
+			sf, err := ReadSample(rec, i)
+			if err != nil {
+				return false, err
+			}
+			if c, ok := homRefCallFor(rec, name, sf, altIdx, l.Alt, g); ok {
+				out = append(out, c)
+			}
+		}
+		return false, nil
+	})
+	return out, err
+}
+
+// HomRefVariants returns the records at which one sample was all-reference.
+//
+// A multiallelic record yields one row per ALT allele, matching how the sites
+// catalog splits it: a 0/0 sample really is reference for each alternate the
+// record proposed.
+func (s *VcfStore) HomRefVariants(sample string, span *Span, g Gate) ([]Call, error) {
+	idx := -1
+	for i, n := range s.samples {
+		if n == sample {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, fmt.Errorf("sample not found: %s", sample)
+	}
+	var out []Call
+	err := s.scan(span, true, func(rec *vcf.VcfRecord) (bool, error) {
+		if idx >= rec.NumSamples() {
+			return true, nil
+		}
+		sf, err := ReadSample(rec, idx)
+		if err != nil {
+			return false, err
+		}
+		for j, alt := range rec.Alt() {
+			if c, ok := homRefCallFor(rec, sample, sf, j+1, alt, g); ok {
+				out = append(out, c)
+			}
+		}
+		return true, nil
+	})
+	return out, err
+}
+
+// homRefCallFor builds the reference-call row for one sample at one ALT allele,
+// or reports false when the genotype is not an all-reference call that clears
+// the gate.
+//
+// The gate is applied to the reference call itself, exactly as Classify does: a
+// 0/0 at DP 3 under --min-dp 10 is not a reference observation we are willing to
+// make, and admitting it would let a poorly covered sample quietly enlarge the
+// reference denominator.
+func homRefCallFor(rec *vcf.VcfRecord, sample string, sf SampleFields,
+	altIdx int, alt string, g Gate) (Call, bool) {
+
+	if !IsHomRef(sf.GT) {
+		return Call{}, false
+	}
+	if !g.Admits(Call{DP: sf.DP, GQ: sf.GQ}) {
+		return Call{}, false
+	}
+	// SplitGT on an all-reference genotype returns it unchanged apart from
+	// normalizing missing alleles, so a haploid "0" stays haploid and a phased
+	// "0|0" stays phased.
+	gt, _ := SplitGT(sf.GT, altIdx)
+	adRef, adAlt := SplitAD(sf.AD, altIdx)
+	return Call{
+		SampleID: sample,
+		Chrom:    rec.Chrom,
+		Pos:      int32(rec.Pos),
+		Ref:      rec.Ref,
+		Alt:      alt,
+		GT:       gt,
+		DP:       sf.DP,
+		ADRef:    adRef,
+		ADAlt:    adAlt,
+		GQ:       sf.GQ,
+	}, true
+}
+
 // Classify resolves every sample at a locus directly from the genotypes.
 func (s *VcfStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 	states := make(map[string]SampleState, len(s.samples))

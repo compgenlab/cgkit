@@ -498,15 +498,8 @@ func (s *ParquetStore) Variants(sample string, span *Span, g Gate) ([]Call, erro
 // were never reported, and treating a run as coverage would invent reference
 // observations. Only a gVCF-derived store (SpansBlocks) could answer here.
 func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
-	if !s.hasSites {
-		return nil, fmt.Errorf("%w: %s is missing", ErrNotClassifiable, SitesPath(s.base))
-	}
-	if !s.hasRegions {
-		return nil, fmt.Errorf("%w: %s is missing", ErrNotClassifiable, RegionsPath(s.base))
-	}
-	if s.noCallable {
-		return nil, fmt.Errorf("%w: %s was built with --no-callable (the source had no DP field)",
-			ErrNotClassifiable, s.base)
+	if err := s.classifiable(); err != nil {
+		return nil, err
 	}
 	samples, err := s.Samples()
 	if err != nil {
@@ -567,6 +560,158 @@ func (s *ParquetStore) Classify(l Locus, g Gate) ([]SampleState, error) {
 			st.State = StateNotAssayed
 		}
 		out = append(out, st)
+	}
+	return out, nil
+}
+
+// classifiable reports whether the store carries the evidence needed to tell a
+// reference call apart from a position that was never assayed. Every query that
+// would otherwise have to guess goes through this first.
+func (s *ParquetStore) classifiable() error {
+	if !s.hasSites {
+		return fmt.Errorf("%w: %s is missing", ErrNotClassifiable, SitesPath(s.base))
+	}
+	if !s.hasRegions {
+		return fmt.Errorf("%w: %s is missing", ErrNotClassifiable, RegionsPath(s.base))
+	}
+	if s.noCallable {
+		return fmt.Errorf("%w: %s was built with --no-callable (the source had no DP field)",
+			ErrNotClassifiable, s.base)
+	}
+	return nil
+}
+
+// HomRefs returns a reference call for each sample observed to be all-reference
+// at a locus.
+//
+// The gate is not applied to these rows, because there is nothing to apply it
+// to: the store holds no DP or GQ for a genotype it never recorded. What stands
+// in for it is the --min-dp baked into the runs at conversion, which is why
+// querying at a different threshold is worth a warning.
+func (s *ParquetStore) HomRefs(l Locus, g Gate) ([]Call, error) {
+	states, err := s.Classify(l, g)
+	if err != nil {
+		return nil, err
+	}
+
+	// A sample carrying a different alternate of the same record is a
+	// non-carrier of *this* allele but is not all-reference: its genotype is
+	// 0/2, and a 0/0 row for it would be a genotype the data never contained.
+	// The record's other split rows are what distinguish the two.
+	carriesOther := map[string]bool{}
+	want := l.Record()
+	if err := scanParquetPruned(CallsPath(s.base), locusFilter(l), func(c Call) bool {
+		if c.Locus().Record() == want {
+			carriesOther[c.SampleID] = true
+		}
+		return true
+	}); err != nil {
+		return nil, err
+	}
+
+	// Report the store's own spelling of the chromosome, as Carriers does, rather
+	// than however the query happened to spell it.
+	loc := l
+	if site, found, err := s.Site(l); err == nil && found {
+		loc = site.Locus()
+	}
+
+	var out []Call
+	for _, st := range states {
+		if st.State == StateNonCarrier && !carriesOther[st.SampleID] {
+			out = append(out, HomRefCall(st.SampleID, loc))
+		}
+	}
+	return out, nil
+}
+
+// HomRefVariants returns the catalog sites at which one sample was observed to
+// be all-reference: interrogated, called at adequate depth, and carrying no
+// alternate allele at that record.
+//
+// Note that this walks the whole sites catalog, so over a whole-genome store it
+// enumerates nearly every site the callset contains. A span keeps it bounded.
+func (s *ParquetStore) HomRefVariants(sample string, span *Span, g Gate) ([]Call, error) {
+	if err := s.classifiable(); err != nil {
+		return nil, err
+	}
+
+	// Deliberately ungated: an ALT call below the gate makes the sample an
+	// uncertain carrier, never a reference observation. Keyed by record rather
+	// than by locus so any alternate of a multiallelic record disqualifies all of
+	// its split sites, matching HomRefs.
+	carries := map[RecordKey]bool{}
+	if err := scanParquetPruned(CallsPath(s.base),
+		bothFilters(sampleFilter(sample), spanFilter(span)), func(c Call) bool {
+			if c.SampleID == sample {
+				carries[c.Locus().Record()] = true
+			}
+			return true
+		}); err != nil {
+		return nil, err
+	}
+
+	runs, err := s.runsFor(sample, span)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []Call
+	err = scanParquetPruned(SitesPath(s.base), spanFilter(span), func(site Site) bool {
+		if span != nil && !span.Contains(site.Chrom, site.Pos) {
+			return true
+		}
+		l := site.Locus()
+		if carries[l.Record()] || !runs.covers(site.Chrom, site.Pos) {
+			return true
+		}
+		out = append(out, HomRefCall(sample, l))
+		return true
+	})
+	return out, err
+}
+
+// sampleRuns is one sample's called-site runs, grouped by canonical chromosome
+// and sorted by start.
+//
+// It is held in memory because a --sample query tests every catalog site against
+// it, and re-scanning the regions file per site would be quadratic. Only one
+// sample's runs are loaded, and a run spans as many sites as the sample was
+// called at consecutively, so this is far smaller than the regions file.
+type sampleRuns map[string][]CalledSiteRun
+
+// covers reports whether a run brackets a 1-based position. Runs for one sample
+// on one chromosome are disjoint and increasing -- the converter closes a run
+// before opening the next -- so the last run starting at or before pos is the
+// only one that can contain it.
+func (r sampleRuns) covers(chrom string, pos int32) bool {
+	runs := r[CanonKey(chrom)]
+	i := sort.Search(len(runs), func(i int) bool { return runs[i].Start > pos })
+	if i == 0 {
+		return false
+	}
+	return pos <= runs[i-1].End
+}
+
+// runsFor loads one sample's called-site runs.
+//
+// A span only prunes row groups here; runs surviving that are kept whatever
+// their extent, since a run beginning before the span may still reach into it.
+func (s *ParquetStore) runsFor(sample string, span *Span) (sampleRuns, error) {
+	out := sampleRuns{}
+	err := scanParquetPruned(RegionsPath(s.base),
+		bothFilters(sampleFilter(sample), spanRunFilter(span)), func(r CalledSiteRun) bool {
+			if r.SampleID == sample {
+				k := CanonKey(r.Chrom)
+				out[k] = append(out[k], r)
+			}
+			return true
+		})
+	if err != nil {
+		return nil, err
+	}
+	for _, runs := range out {
+		sort.Slice(runs, func(i, j int) bool { return runs[i].Start < runs[j].Start })
 	}
 	return out, nil
 }
