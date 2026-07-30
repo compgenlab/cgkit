@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/compgenlab/cgkit/internal/buildinfo"
@@ -20,6 +21,7 @@ var (
 	vcfVarQueryMinDP    int
 	vcfVarQueryMinGQ    int
 	vcfVarQueryClassify bool
+	vcfVarQueryHomRef   bool
 	vcfVarQueryFormat   string
 	vcfVarQueryStore    string
 	vcfVarQueryVerbose  bool
@@ -46,6 +48,26 @@ Both are repeatable. --min-dp and --min-gq gate calls by quality; a gate over
 data lacking that field admits everything rather than rejecting it, since an
 absent quality score is not evidence of a bad one.
 
+Either mode reports only alternate-allele calls unless --hom-ref is given, which
+adds the reference calls to the same stream: in --variant mode the samples that
+are 0/0 at the locus, in --sample mode the sites that subject was 0/0 at. The gt
+column tells the two apart. "0/0" here means the whole genotype was reference,
+which is stricter than --classify's non_carrier: at a multiallelic record a 0/2
+sample is not a carrier of allele 1, yet it is not reference either, so it
+appears under neither.
+
+In --sample mode this walks the entire sites catalog, since being reference is a
+statement about every site the callset interrogated -- expect roughly one row per
+variant in the source. Use --region to bound it.
+
+A reference call is only as good as the evidence for it, so the same rules apply
+as to --classify: the gate must admit it (a 0/0 at DP 3 under --min-dp 10 is not
+a reference observation), an off-catalog locus yields nothing at all, and an
+incomplete Parquet store refuses rather than guesses. One asymmetry is
+unavoidable: a store keeps only alternate genotypes, so a reference call
+recovered from one carries a synthesized 0/0 with no DP/AD/GQ, where the same
+query against a VCF reports the recorded genotype and its quality fields.
+
 With --classify, every sample is resolved to one of four states rather than
 only the carriers being listed:
 
@@ -65,6 +87,7 @@ a non-carrier would invent an observation.
   --region R          restrict to a 1-based region (chrom:start-end)
   --min-dp N          minimum depth for a call to count
   --min-gq N          minimum genotype quality for a call to count
+  --hom-ref           also report reference (0/0) calls, not only carriers
   --classify          resolve every sample, not just carriers
   --format F          tsv (default), json, vcf, or list
   --store KIND        force the backend: vcf or parquet
@@ -98,11 +121,22 @@ whichever naming convention the file itself uses.`,
 			if nSample > 0 {
 				return fmt.Errorf("--format list applies to --variant mode, which emits sample ids")
 			}
+			// A bare list of ids cannot say which of them are carriers and which
+			// are reference calls, and a mixed list read as carriers is exactly the
+			// conflation the two categories exist to prevent.
+			if vcfVarQueryHomRef {
+				return fmt.Errorf("--format list emits bare sample ids, which cannot distinguish " +
+					"a carrier from a reference call; use --format tsv or json with --hom-ref")
+			}
 		default:
 			return fmt.Errorf("unknown format %q (use tsv, json, vcf, or list)", format)
 		}
 		if vcfVarQueryClassify && nVariant == 0 {
 			return fmt.Errorf("--classify applies to --variant mode, which resolves samples at a locus")
+		}
+		if vcfVarQueryClassify && vcfVarQueryHomRef {
+			return fmt.Errorf("--classify already resolves every sample, reporting reference calls " +
+				"as non_carrier; use it or --hom-ref, not both")
 		}
 
 		store, err := openVarStore(args[0], vcfVarQueryStore)
@@ -223,6 +257,13 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 					g.MinDP, p.MinDP)
 			}
 		}
+		// The one place the backends cannot agree, so it is worth saying rather
+		// than leaving a column of dots to be puzzled over.
+		if vcfVarQueryHomRef {
+			fmt.Fprintf(out, "  NOTE: --hom-ref rows report a synthesized 0/0 with no DP/AD/GQ;\n"+
+				"        a store keeps only alternate genotypes, so the reference call\n"+
+				"        itself was never recorded -- only the fact that it was made.\n")
+		}
 	case *varstore.VcfStore:
 		names, _ := s.Samples()
 		fmt.Fprintf(out, "store    vcf %s (%d samples)\n", path, len(names))
@@ -296,6 +337,13 @@ func runVarQuerySamples(out *bufio.Writer, store varstore.Store, span *varstore.
 		if err != nil {
 			return err
 		}
+		if vcfVarQueryHomRef {
+			ref, err := store.HomRefVariants(s, span, gate)
+			if err != nil {
+				return err
+			}
+			calls = append(calls, ref...)
+		}
 		varstore.SortCalls(calls)
 		results = append(results, varQuerySampleResult{Sample: s, Calls: calls})
 	}
@@ -323,10 +371,14 @@ func runVarQuerySamples(out *bufio.Writer, store varstore.Store, span *varstore.
 	return nil
 }
 
-// writeVarQueryVcf emits a minimal VCF of the carried variants. It is
-// deliberately spare: the store keeps only alternate calls, so anything not
-// carried by the requested samples cannot be reconstructed and is absent
-// rather than written as reference.
+// writeVarQueryVcf emits a minimal VCF of the calls reported for each sample.
+//
+// It is deliberately spare. Without --hom-ref only carried variants are present,
+// because a reference genotype was not asked for and must not be invented: a
+// locus the requested samples do not carry is simply absent, never written as
+// 0/0. With --hom-ref the reference calls are in the result set, and appear as
+// the genotypes they are. A sample with no call at a locus another sample brought
+// into the output stays "./.", which is the honest reading either way.
 func writeVarQueryVcf(out *bufio.Writer, results []varQuerySampleResult, source string) error {
 	names := make([]string, 0, len(results))
 	for _, r := range results {
@@ -362,6 +414,23 @@ func writeVarQueryVcf(out *bufio.Writer, results []varQuerySampleResult, source 
 			byLocus[k][c.SampleID] = c
 		}
 	}
+	// Sort rather than emit in first-seen order. Loci are gathered per sample, so
+	// the second sample's private loci would otherwise all land after the first
+	// sample's -- an unsorted VCF, which cannot be indexed. The ordering matches
+	// SortCalls so the tabular and VCF outputs agree on row order.
+	sort.Slice(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		if a.chrom != b.chrom {
+			return a.chrom < b.chrom
+		}
+		if a.pos != b.pos {
+			return a.pos < b.pos
+		}
+		if a.ref != b.ref {
+			return a.ref < b.ref
+		}
+		return a.alt < b.alt
+	})
 	for _, k := range order {
 		cols := []string{k.chrom, fmt.Sprint(k.pos), ".", k.ref, k.alt, ".", ".", ".", "GT:DP:GQ"}
 		for _, n := range names {
@@ -394,6 +463,7 @@ func runVarQueryVariants(cmd *cobra.Command, out *bufio.Writer, store varstore.S
 			return err
 		}
 		r := variantResult{Variant: locus.String(), Locus: locus}
+		nCarriers, nHomRef := 0, -1
 
 		// Compare against the ungated result so the gate's effect is a measured
 		// number rather than an inference from the row count.
@@ -412,21 +482,33 @@ func runVarQueryVariants(cmd *cobra.Command, out *bufio.Writer, store varstore.S
 			}
 			r.States = states
 			if vcfVarQueryVerbose {
-				reportVariant(cmd, store, locus, len(states), tallyStates(states))
+				reportVariant(cmd, store, locus, len(states), tallyStates(states), -1)
 			}
 		} else {
 			calls, err := store.Carriers(locus, gate)
 			if err != nil {
 				return err
 			}
+			// Kept separate from the row count: the gate's effect is measured
+			// against the carriers alone, and reference rows are not gated calls
+			// that survived, they are a different question's answer.
+			nCarriers = len(calls)
+			if vcfVarQueryHomRef {
+				ref, err := store.HomRefs(locus, gate)
+				if err != nil {
+					return err
+				}
+				nHomRef = len(ref)
+				calls = append(calls, ref...)
+			}
 			varstore.SortCalls(calls)
 			r.Calls = calls
 			if vcfVarQueryVerbose {
-				reportVariant(cmd, store, locus, len(calls), nil)
+				reportVariant(cmd, store, locus, nCarriers, nil, nHomRef)
 			}
 		}
 		if vcfVarQueryVerbose && !gate.IsZero() {
-			kept := len(r.Calls)
+			kept := nCarriers
 			if r.States != nil {
 				kept = tallyStates(r.States)[varstore.StateCarrier]
 			}
@@ -513,6 +595,7 @@ func init() {
 	f.StringVar(&vcfVarQueryRegion, "region", "", "Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
 	f.IntVar(&vcfVarQueryMinDP, "min-dp", 0, "Minimum DP for a call to count")
 	f.IntVar(&vcfVarQueryMinGQ, "min-gq", 0, "Minimum GQ for a call to count")
+	f.BoolVar(&vcfVarQueryHomRef, "hom-ref", false, "Also report reference (0/0) calls, not only alternate carriers")
 	f.BoolVar(&vcfVarQueryClassify, "classify", false, "Resolve every sample to carrier/uncertain/non-carrier/not-assayed")
 	f.StringVar(&vcfVarQueryFormat, "format", "tsv", "Output format: tsv, json, vcf, or list")
 	f.StringVar(&vcfVarQueryStore, "store", "", "Force the backend: vcf or parquet (default: infer from the path)")
@@ -529,9 +612,10 @@ func tallyStates(states []varstore.SampleState) map[varstore.State]int {
 }
 
 // reportVariant summarises one queried locus: what the catalog knows about it
-// and, under --classify, how the samples fell out.
+// and, under --classify, how the samples fell out. homRef is the number of
+// reference-call rows --hom-ref contributed, or -1 when it was not asked for.
 func reportVariant(cmd *cobra.Command, store varstore.Store, l varstore.Locus,
-	n int, tally map[varstore.State]int) {
+	n int, tally map[varstore.State]int, homRef int) {
 
 	out := cmd.ErrOrStderr()
 	fmt.Fprintf(cmd.ErrOrStderr(), "variant  %s\n", l)
@@ -546,6 +630,9 @@ func reportVariant(cmd *cobra.Command, store varstore.Store, l varstore.Locus,
 	}
 	if tally == nil {
 		fmt.Fprintf(out, "  carriers    %d\n", n)
+		if homRef >= 0 {
+			fmt.Fprintf(out, "  hom-ref     %d\n", homRef)
+		}
 		return
 	}
 	fmt.Fprintf(out, "  classified  %d samples:", n)

@@ -66,6 +66,36 @@ func (c Call) Locus() Locus {
 	return Locus{Chrom: c.Chrom, Pos: c.Pos, Ref: c.Ref, Alt: c.Alt}
 }
 
+// HomRefGT is the genotype a reconstructed reference call reports.
+const HomRefGT = "0/0"
+
+// HomRefCall synthesizes the row for a reference genotype recovered from a
+// Parquet store.
+//
+// A store keeps only ALT-carrying genotypes, so the reference call itself was
+// never written down; what survives conversion is the *fact* that the sample was
+// called at this catalog site, held in the regions file. So the genotype string
+// is synthesized and every quality field is Missing. The row asserts exactly
+// "observed here, and observed to be reference" and nothing more -- notably not
+// the ploidy or phasing of the original genotype, which are unrecoverable.
+//
+// A VCF-backed store does not go through this: it still has the real genotype
+// and its DP/AD/GQ, and reports them.
+func HomRefCall(sample string, l Locus) Call {
+	return Call{
+		SampleID: sample,
+		Chrom:    l.Chrom,
+		Pos:      l.Pos,
+		Ref:      l.Ref,
+		Alt:      l.Alt,
+		GT:       HomRefGT,
+		DP:       Missing,
+		ADRef:    Missing,
+		ADAlt:    Missing,
+		GQ:       Missing,
+	}
+}
+
 // Site is one interrogated variant site, independent of any sample. Counts are
 // taken across every sample present in the source, so a site with AC == 0 still
 // records that the position was examined.
