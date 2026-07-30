@@ -187,3 +187,25 @@ func TestQueryStopsEarly(t *testing.T) {
 		t.Errorf("breaking out of the iterator should stop after one row, got %d", n)
 	}
 }
+
+// TestQueryRowsAreSampleOrderedWithinALocus pins the ordering contract, which the
+// first streaming implementation broke.
+//
+// Rows arrive ordered by (chrom, pos, ref, alt, sample). Emitting all the ALT
+// calls for a locus and then all its reference calls satisfies the first four but
+// not the fifth: at contigs.vcf chr10:200 S1 is 0/0 and S2 is 0/1, so the ALT
+// block put S2 ahead of S1.
+func TestQueryRowsAreSampleOrderedWithinALocus(t *testing.T) {
+	got := bothBackends(t, "testdata/contigs.vcf", varstore.Query{
+		Loci:       []varstore.Locus{{Chrom: "chr10", Pos: 200, Ref: "T", Alt: "C"}},
+		Gate:       varstore.Gate{MinDP: 10},
+		IncludeRef: true,
+	})
+	if len(got) != 2 {
+		t.Fatalf("want a row per sample, got %v", got)
+	}
+	if !strings.HasPrefix(got[0], "S1 ") || !strings.HasPrefix(got[1], "S2 ") {
+		t.Errorf("rows not in sample order: %v\nS1 is the reference call and S2 the ALT "+
+			"call, so a type-major order would put S2 first", got)
+	}
+}
