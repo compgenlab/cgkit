@@ -231,3 +231,100 @@ func uniq(in []string) []string {
 	}
 	return out
 }
+
+// TestSampleFileForms pins that --sample takes a file as well as a name, the way
+// --variant does.
+func TestSampleFileForms(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+
+	// A whitespace/newline list with comments.
+	list := writeFile(t, "subjects.txt", "# subjects\nS1\nS2\n")
+	got := parseNames(t, list)
+	if strings.Join(got, ",") != "S1,S2" {
+		t.Errorf("sample list read as %v", got)
+	}
+
+	// A VCF: its header roster, not its data lines. Read as a name list, a VCF would
+	// silently yield thousands of bogus samples.
+	got = parseNames(t, "testdata/coverage.vcf")
+	if strings.Join(got, ",") != "S1,S2" {
+		t.Errorf("VCF header roster read as %v", got)
+	}
+
+	// Names dedupe, first occurrence winning, so a repeat cannot become two columns.
+	set, err := parseSampleArgs([]string{"S2", list, "S2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(set.Names, ",") != "S2,S1" {
+		t.Errorf("want S2,S1 (first-seen order, deduped), got %v", set.Names)
+	}
+
+	// End to end, the file selects the same rows the name does.
+	viaFile := dataRowsOnly(runVcf(t, "vcf-varquery", "--sample",
+		writeFile(t, "one.txt", "S1\n"), "--variant", "chr1:500:A:T", base))
+	viaName := dataRowsOnly(runVcf(t, "vcf-varquery", "--sample", "S1",
+		"--variant", "chr1:500:A:T", base))
+	if viaFile != viaName {
+		t.Errorf("a sample file and a sample name disagree:\n%s\n%s", viaFile, viaName)
+	}
+}
+
+// TestUnknownSampleIsAnError pins that a sample the source lacks fails loudly.
+//
+// A store answers an unknown sample with silence, so without this a typo -- in a
+// name, or in the path of a sample file, which is then taken as a name -- looks
+// exactly like a subject that genuinely carries nothing.
+func TestUnknownSampleIsAnError(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	for _, bad := range []string{"S99", "/nonexistent/subjects.txt"} {
+		err := runVcfErr(t, "vcf-varquery", "--sample", bad, "--variant", "chr1:100:A:G", base)
+		if err == nil {
+			t.Errorf("%q should be rejected", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not in this source") {
+			t.Errorf("%q: unhelpful error %v", bad, err)
+		}
+	}
+}
+
+// TestDosageColumn pins --dosage, which is what PGS and GReX tooling consumes.
+func TestDosageColumn(t *testing.T) {
+	base := convert(t, "testdata/multiallelic.vcf")
+	out := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:200:C:T",
+		"--variant", "chr1:100:A:G", "--hom-ref", "--dosage", base))
+
+	header := strings.Split(out, "\n")[0]
+	if !strings.HasSuffix(header, "\tdosage") {
+		t.Fatalf("dosage should be appended, leaving the base layout alone: %q", header)
+	}
+	got := map[string]string{}
+	for _, r := range strings.Split(out, "\n") {
+		f := strings.Split(r, "\t")
+		if len(f) != numCols+1 || f[colChrom] == "chrom" {
+			continue
+		}
+		got[f[colSample]+"@"+f[colPos]+":"+f[colGT]] = f[numCols]
+	}
+	for key, want := range map[string]string{
+		"S1@200:1/.": "1", // a split multiallelic: one copy of THIS alt
+		"S2@200:0/1": "1",
+		"S3@100:1/1": "2", // homozygous alt
+		"S2@100:0/0": "0", // observed reference
+	} {
+		if got[key] != want {
+			t.Errorf("dosage for %s = %q, want %q (all: %v)", key, got[key], want, got)
+		}
+	}
+}
+
+// parseNames is parseSampleArgs reduced to the names it resolved.
+func parseNames(t *testing.T, arg string) []string {
+	t.Helper()
+	set, err := parseSampleArgs([]string{arg})
+	if err != nil {
+		t.Fatalf("parseSampleArgs(%s): %v", arg, err)
+	}
+	return set.Names
+}
