@@ -2,6 +2,7 @@ package varstore
 
 import (
 	"io"
+	"math"
 	"os"
 
 	"github.com/parquet-go/parquet-go"
@@ -164,37 +165,81 @@ func spanRunFilter(s *Span) rowGroupFilter {
 	}
 }
 
-// sampleFilter keeps row groups that may contain a sample, consulting the
-// bloom filter on sample_id when the writer produced one. Sample ids are
-// high-cardinality and unsorted, so statistics are useless here but a bloom
-// filter is exact about absence.
-func sampleFilter(sample string) rowGroupFilter {
+// callsFilter turns a query's site axis into a row-group predicate for the calls
+// and sites files, which share a (chrom, pos) layout.
+//
+// Sample selection deliberately does not participate, and should not be added:
+// every sample appears in nearly every row group, so the sample_id bloom filter
+// measured 429ms against 426ms, and a union over several samples is weaker still.
+func callsFilter(q Query) rowGroupFilter {
+	switch {
+	case len(q.Loci) == 0 && len(q.Spans) == 0:
+		return keepAll
+	case len(q.Loci) == 1 && len(q.Spans) == 0:
+		return locusFilter(q.Loci[0])
+	case len(q.Loci) == 0 && len(q.Spans) == 1:
+		return spanFilter(&q.Spans[0])
+	}
+	return unionFilter(q)
+}
+
+// siteScanFilter prunes the sites file for a query.
+func siteScanFilter(q Query) rowGroupFilter { return callsFilter(q) }
+
+// runScanFilter prunes the regions file, whose position column is "start" rather
+// than "pos" and whose "end" is unsorted -- so only a lower bound on start is
+// usable, and with several selectors there is little left to prune on.
+func runScanFilter(q Query) rowGroupFilter {
+	switch {
+	case len(q.Loci) == 1 && len(q.Spans) == 0:
+		return coveringFilter(q.Loci[0].Chrom, q.Loci[0].Pos)
+	case len(q.Loci) == 0 && len(q.Spans) == 1:
+		return spanRunFilter(&q.Spans[0])
+	}
+	return keepAll
+}
+
+// unionFilter keeps a row group that any of the query's site selectors admits.
+//
+// It must stay a union: skipping a group because one selector rejects it would
+// drop matches for another. Bounds are collapsed across all selectors up front
+// rather than evaluated per selector per group, so a million-locus panel costs one
+// pass over the panel instead of a million predicate calls for every row group.
+// That makes it conservative -- a group between two distant selectors is kept --
+// which is the safe direction.
+func unionFilter(q Query) rowGroupFilter {
+	lo, hi := int32(math.MaxInt32), int32(0)
+	chroms := map[string]bool{}
+	note := func(chrom string, first, last int32) {
+		if first < lo {
+			lo = first
+		}
+		if last > hi {
+			hi = last
+		}
+		chroms[CanonKey(chrom)] = true
+	}
+	for _, l := range q.Loci {
+		note(l.Chrom, l.Pos, l.Pos)
+	}
+	for _, sp := range q.Spans {
+		// Spans are 0-based half-open; stored positions are 1-based.
+		note(sp.Chrom, sp.Start+1, sp.End)
+	}
 	return func(rg parquet.RowGroup) bool {
-		for i, path := range rg.Schema().Columns() {
-			if len(path) != 1 || path[0] != "sample_id" {
-				continue
+		if a, b, ok := colBounds(rg, "pos"); ok {
+			if int64(hi) < a.Int64() || int64(lo) > b.Int64() {
+				return false
 			}
-			chunks := rg.ColumnChunks()
-			if i >= len(chunks) {
-				return true
+		}
+		if a, b, ok := colBounds(rg, "chrom"); ok {
+			x, y := a.String(), b.String()
+			if x == y && !chroms[CanonKey(x)] {
+				return false
 			}
-			bf := chunks[i].BloomFilter()
-			if bf == nil {
-				return true
-			}
-			ok, err := bf.Check(parquet.ByteArrayValue([]byte(sample)))
-			if err != nil {
-				return true
-			}
-			return ok
 		}
 		return true
 	}
-}
-
-// bothFilters keeps a row group only when both filters do.
-func bothFilters(a, b rowGroupFilter) rowGroupFilter {
-	return func(rg parquet.RowGroup) bool { return a(rg) && b(rg) }
 }
 
 // eachRowGroup calls fn for every row group in path, without reading any rows.
