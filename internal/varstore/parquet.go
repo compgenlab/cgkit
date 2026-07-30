@@ -179,6 +179,21 @@ func (w *Writer) abort() {
 	w.files = nil
 }
 
+// Discard abandons a conversion, leaving nothing behind.
+//
+// A failure partway through must not leave the members on disk. They would look
+// like a store, they would be truncated or incomplete, and -- because
+// conversion refuses to overwrite an existing store -- their presence would
+// block the retry.
+func (w *Writer) Discard() {
+	for _, c := range []io.Closer{w.calls, w.sites, w.regions} {
+		if c != nil {
+			_ = c.Close()
+		}
+	}
+	w.abort()
+}
+
 // WriteCall buffers one ALT-carrying genotype.
 func (w *Writer) WriteCall(c Call) error {
 	w.callBuf = append(w.callBuf, c)
