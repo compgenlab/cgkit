@@ -341,9 +341,9 @@ Chromosome bounds are used **only** when a row group holds exactly one chromosom
 
 **Supply multi-VCF input in coordinate order.** Correctness does not depend on it — the answers are identical either way — but out-of-order input widens the per-group position ranges and pruning gets weaker.
 
-### Measured
+### Historical measurements
 
-Every number below is an ad-hoc measurement recorded in a commit message, taken on 1000 Genomes data that is **not committed to this repository**. There are currently no `go test -bench` benchmarks. Read the middle column carefully; these measure different things and are easy to conflate.
+Every number in this table is an ad-hoc measurement recorded in a commit message, taken on 1000 Genomes data that is **not committed to this repository**, so none of it can be re-checked. The sections after it come from `go test -bench` over a generated corpus and can be. Read the middle column carefully; these measure different things and are easy to conflate.
 
 | result | what was measured | source |
 |---|---|---|
@@ -352,13 +352,52 @@ Every number below is an ad-hoc measurement recorded in a commit message, taken 
 | 429ms vs 426ms (**no effect**) | a `--sample` query with vs without the `sample_id` bloom filter | commit `7f4ca94` |
 | 417ms vs pyarrow's 26.5ms | reading all columns of the same store — i.e. Go row-by-row decode overhead | ad-hoc, same store |
 
-### Store versus plain VCF: not yet measured
+### Store versus plain VCF
 
-**There is no head-to-head timing of this format against querying a plain VCF.** None of the numbers above is that comparison: the first two are store-versus-store, and the fourth is Go-versus-pyarrow on the same store. Publishing a speedup figure here would mean inventing one.
+Measured, and the answer is more qualified than the direction alone suggests. Reproduce with:
 
-What can be said without measuring is structural: a VCF locus lookup must decompress and parse every sample's genotype on the matching line, and without a tabix index must scan to reach it; the store reads only the columns named, only from row groups whose position range admits the target, and holds ~4% as many genotypes to begin with. The direction is not in doubt; the magnitude is unquantified.
+```
+CGKIT_BENCH_SAMPLES=100 CGKIT_BENCH_SITES=5000 \
+  go test ./internal/cmd/vcfcmd/ -run '^$' -bench BenchmarkStoreVsVcf
+```
 
-A reproducible benchmark — a committed corpus *generator* emitting the same synthetic callset both as a VCF and as a store, reporting wall time, bytes read, and row groups decoded — is planned, and this section will be filled in from it.
+100 samples × 5,000 sites, ~5% of genotypes carrying the alternate, so ~25,000 calls in the store:
+
+| targets | store | VCF, unindexed | VCF, tabix-indexed |
+|---|---|---|---|
+| 1 locus | **7.1 ms** | 310 ms | **13.3 ms** |
+| 100 loci | **17.1 ms** | 325 ms | 312 ms |
+
+Two things worth reading carefully.
+
+**Against an indexed VCF a single-locus lookup is only about 1.9× faster, not 40×.** The 310 ms unindexed figure measures a file that has to be read end to end because nothing tells the reader where to look — that is a property of the file not being indexed, not of the format. Quoting it as the comparison would flatter the store considerably.
+
+**The 18× at 100 loci is partly a limitation of this implementation, not of the formats.** `VcfStore` only seeks when a query names exactly one locus or one region; for several it scans and filters, so the index goes unused. A per-locus seeking path would narrow that gap. The store's advantage that *is* structural is holding ~4% as many genotypes and reading only the columns named.
+
+### Bulk queries versus one query per locus
+
+This is the measurement that justifies `Calls` taking a whole target set rather than being called in a loop:
+
+```
+go test ./internal/cmd/vcfcmd/ -run '^$' -bench BenchmarkQueryPanel
+```
+
+| targets | one bulk query | one query per locus | ratio |
+|---|---|---|---|
+| 1 | 7.0 ms | 7.3 ms | 1× |
+| 10 | 15.1 ms | 67.7 ms | 4.5× |
+| 100 | 17.0 ms | 662 ms | 39× |
+| 1000 | 18.9 ms | 6,612 ms | **349×** |
+
+The bulk path is nearly flat — 7 ms to 19 ms across a thousandfold increase in targets — because it makes one ordered pass whatever the panel size. The loop is linear in targets, since each lookup re-opens the store and re-parses the footer. The crossover is somewhere between 1 and 10 targets, so looping loses almost immediately.
+
+Extrapolating the loop to a 10⁶-variant panel gives tens of hours, which is why the API does not expose a shape that invites it.
+
+### Reading these numbers
+
+The corpus is **synthetic and small**, and the machine is a QEMU virtual CPU, so the absolute milliseconds mean little — the ratios and the *shapes* (flat versus linear) are the findings. Row-group size matters enough to be a knob: left at the converter's 250,000 default, a corpus this size lands in a single row group, position statistics can never exclude it, and every lookup scans the whole file. `CGKIT_BENCH_ROWGROUP` controls it, and the benchmark defaults to a value that produces several groups, as a real store would have.
+
+Deliberately not reported: bytes read and row groups decoded. Those would be the more durable numbers, since they survive hardware changes, but they need counters inside `varstore`.
 
 ### Known limitation: --sample queries do not prune
 
