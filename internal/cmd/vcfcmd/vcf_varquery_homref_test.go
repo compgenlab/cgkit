@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compgenlab/cgkit/internal/varstore"
+	"github.com/compgenlab/cghts/varstore"
 )
 
 // Tests for --hom-ref, which adds reference calls to either query mode.

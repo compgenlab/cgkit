@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/compgenlab/cghts/varstore"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
-	"github.com/compgenlab/cgkit/internal/varstore"
 	"github.com/spf13/cobra"
 )
 

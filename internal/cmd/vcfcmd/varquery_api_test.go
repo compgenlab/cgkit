@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compgenlab/cgkit/internal/varstore"
+	"github.com/compgenlab/cghts/varstore"
 )
 
 // Tests for the varstore.Calls(Query) surface, exercised through both backends.
