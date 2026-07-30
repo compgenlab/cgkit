@@ -110,4 +110,4 @@ command's help shows the cgkit version it was added in.
 | `vcf-tocount` | Convert a VCF to a count file using the AD (or RO/AO) format field |
 | `vcf-toparquet` | Convert a VCF to a sparse Parquet genotype store ([format docs](docs/vcf-toparquet.md)) |
 | `vcf-tstv` | Calculate a Ts/Tv ratio for SNVs |
-| `vcf-varquery` | Query which subjects carry a variant, or which variants a subject carries ([format docs](docs/vcf-toparquet.md)) |
+| `vcf-varquery` | Query genotypes by site, by sample, or both ([format docs](docs/vcf-toparquet.md)) |

@@ -19,7 +19,7 @@ import (
 
 var (
 	vcfGtCountOutput  string
-	vcfGtCountSites   string
+	vcfGtCountSites   []string
 	vcfGtCountPassing bool
 	vcfGtCountThreads int
 )
@@ -122,82 +122,39 @@ type gtRow struct {
 	counts map[string]int
 }
 
-// collectGtSites parses command-line loci (chrom:pos[:ref:alt]) followed by the
-// sites in --sites FILE, preserving order.
-func collectGtSites(loci []string, sitesFile string) ([]gtSite, error) {
-	var sites []gtSite
-	for _, locus := range loci {
-		s, err := parseLocus(locus)
-		if err != nil {
-			return nil, err
-		}
-		sites = append(sites, s)
-	}
-	if sitesFile != "" {
-		fileSites, err := readSitesFile(sitesFile)
-		if err != nil {
-			return nil, err
-		}
-		sites = append(sites, fileSites...)
-	}
-	return sites, nil
-}
-
-// parseLocus parses a "chrom:pos" or "chrom:pos:ref:alt" command-line locus.
-func parseLocus(locus string) (gtSite, error) {
-	parts := strings.Split(locus, ":")
-	switch len(parts) {
-	case 2:
-		pos, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return gtSite{}, fmt.Errorf("invalid locus %q: bad position", locus)
-		}
-		return gtSite{chrom: parts[0], pos: pos}, nil
-	case 4:
-		pos, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return gtSite{}, fmt.Errorf("invalid locus %q: bad position", locus)
-		}
-		return gtSite{chrom: parts[0], pos: pos, ref: parts[2], alt: parts[3], hasRA: true}, nil
-	default:
-		return gtSite{}, fmt.Errorf("invalid locus %q: expected chrom:pos or chrom:pos:ref:alt", locus)
-	}
-}
-
-// readSitesFile reads whitespace-separated "chrom pos [ref alt]" lines, skipping
-// blank lines and '#' comments.
-func readSitesFile(filename string) ([]gtSite, error) {
-	f, err := os.Open(filename)
+// collectGtSites resolves the positional loci and any --sites files into concrete
+// sites, through the same target grammar vcf-varquery --variant uses -- so one
+// file works with both commands, and a VCF or a colon-delimited list works here
+// too. One grammar, one parser, nothing to drift.
+func collectGtSites(loci []string, sitesFiles []string) ([]gtSite, error) {
+	t, err := parseTargets(append(append([]string{}, loci...), sitesFiles...))
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
+	// Walk Order rather than Loci then Spans, so the sites come out in the order
+	// they were given -- this command looks each up in turn and its output follows.
 	var sites []gtSite
-	scanner := bufio.NewScanner(f)
-	line := 0
-	for scanner.Scan() {
-		line++
-		text := strings.TrimSpace(scanner.Text())
-		if text == "" || strings.HasPrefix(text, "#") {
+	for _, ref := range t.Order {
+		if ref.locus {
+			l := t.Loci[ref.i]
+			sites = append(sites, gtSite{
+				chrom: l.Chrom, pos: int(l.Pos), ref: l.Ref, alt: l.Alt, hasRA: true,
+			})
 			continue
 		}
-		fields := strings.Fields(text)
-		if len(fields) < 2 {
-			return nil, fmt.Errorf("%s:%d: expected 'chrom pos [ref alt]'", filename, line)
+		sp := t.Spans[ref.i]
+		// A one-base span is a concrete position: "chrom:pos", or a two-column
+		// site-list line. Anything wider names a range, and this command looks up one
+		// position at a time rather than scanning, so it cannot expand one. Refusing
+		// is better than silently taking the first base.
+		if sp.End-sp.Start == 1 {
+			sites = append(sites, gtSite{chrom: sp.Chrom, pos: int(sp.Start) + 1})
+			continue
 		}
-		pos, err := strconv.Atoi(fields[1])
-		if err != nil {
-			return nil, fmt.Errorf("%s:%d: expected 'chrom pos [ref alt]'", filename, line)
-		}
-		site := gtSite{chrom: fields[0], pos: pos}
-		if len(fields) >= 4 {
-			site.ref, site.alt, site.hasRA = fields[2], fields[3], true
-		}
-		sites = append(sites, site)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("vcf-gtcount needs concrete sites, but a target named a "+
+			"range on %q; it looks up one position at a time and cannot expand a region, "+
+			"a whole contig or a BED interval.\n"+
+			"       Give chrom:pos or chrom:pos:ref:alt, or a site list of them", sp.Chrom)
 	}
 	return sites, nil
 }
@@ -499,7 +456,7 @@ func startGtProgress(total int64, done *int64) func() {
 func init() {
 	f := vcfGtCountCmd.Flags()
 	f.StringVarP(&vcfGtCountOutput, "output", "o", "-", "Output filename (- for stdout)")
-	f.StringVar(&vcfGtCountSites, "sites", "", "Read additional sites from FILE (chrom pos [ref alt] per line)")
+	f.StringArrayVar(&vcfGtCountSites, "sites", nil, "Read additional targets from FILE: a VCF, a BED, or \"chrom pos [ref alt]\" lines (repeatable)")
 	f.BoolVar(&vcfGtCountPassing, "passing", false, "Only count records that pass FILTER")
 	f.IntVarP(&vcfGtCountThreads, "threads", "t", 1, "Number of parallel query workers (>= 1)")
 }

@@ -284,7 +284,7 @@ func TestVarQueryAxesAreIndependent(t *testing.T) {
 		{"vcf-varquery", "--variant", "1:100:A:G", "--format", "vcf", base},
 		{"vcf-varquery", "--sample", "S1", "--format", "vcf", base},
 		{"vcf-varquery", "--sample", "S2", "--variant", "1:100:A:G", base},
-		{"vcf-varquery", "--region", "chr1:1-1000", base},
+		{"vcf-varquery", "--variant", "chr1:1-1000", base},
 	} {
 		if err := runVcfErr(t, args...); err != nil {
 			t.Errorf("%v should be accepted now: %v", args[1:], err)
@@ -309,13 +309,14 @@ func TestVarQueryAxesAreIndependent(t *testing.T) {
 	}
 }
 
-// TestVarQueryRegionIsRepeatable pins that --region accumulates rather than
-// overwriting, and works with no other selector.
+// TestVarQueryRegionIsRepeatable pins that region selectors accumulate rather
+// than overwriting, and work with no sample named. Regions are --variant values
+// now; --region is gone rather than kept as a second way to say the same thing.
 func TestVarQueryRegionIsRepeatable(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
-	one := tsvDataRows(dataRowsOnly(runVcf(t, "vcf-varquery", "--region", "chr1:1-150", base)))
+	one := tsvDataRows(dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:1-150", base)))
 	two := tsvDataRows(dataRowsOnly(runVcf(t, "vcf-varquery",
-		"--region", "chr1:1-150", "--region", "chr1:450-600", base)))
+		"--variant", "chr1:1-150", "--variant", "chr1:450-600", base)))
 	if len(two) <= len(one) {
 		t.Errorf("a second --region should add rows: %d then %d\none: %v\ntwo: %v",
 			len(one), len(two), one, two)
@@ -510,7 +511,7 @@ func TestVarQueryUnknownContigIsAnAbsence(t *testing.T) {
 // the caller asserts exists, so an unresolvable one is an error that says what
 // the file does have.
 func TestVarQueryBadRegionIsRejected(t *testing.T) {
-	err := runVcfErr(t, "vcf-varquery", "--sample", "NORMAL", "--region", "chrZZ:1-100", "testdata/sample.vcf.gz")
+	err := runVcfErr(t, "vcf-varquery", "--sample", "NORMAL", "--variant", "chrZZ:1-100", "testdata/sample.vcf.gz")
 	if err == nil {
 		t.Fatal("expected an error for a --region on a contig not in the index")
 	}

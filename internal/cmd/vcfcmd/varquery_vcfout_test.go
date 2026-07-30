@@ -1,6 +1,8 @@
 package vcfcmd
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -45,7 +47,7 @@ func info(t *testing.T, record, key string) string {
 func TestVcfOutRecordsAreInContigOrder(t *testing.T) {
 	base := convert(t, "testdata/contigs.vcf")
 	for _, in := range []string{"testdata/contigs.vcf", base} {
-		rows := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2", "--region", "chr10",
+		rows := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2", "--variant", "chr10",
 			"--format", "vcf", "--min-dp", "10", in))
 		if len(rows) != 4 {
 			t.Fatalf("%s: want 4 records, got %d: %v", in, len(rows), rows)
@@ -89,7 +91,7 @@ func TestVcfOutImpliesHomRef(t *testing.T) {
 // threshold, the recomputed values must equal the store's own catalog.
 func TestVcfOutInfoMatchesStoreWhenComplete(t *testing.T) {
 	base := convert(t, "testdata/contigs.vcf")
-	rows := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2",
+	rows := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2",
 		"--format", "vcf", "--min-dp", "10", base))
 	if len(rows) != 2 {
 		t.Fatalf("want 2 records, got %v", rows)
@@ -109,11 +111,11 @@ func TestVcfOutInfoMatchesStoreWhenComplete(t *testing.T) {
 func TestVcfOutInfoIsRecomputedOverTheSubset(t *testing.T) {
 	base := convert(t, "testdata/contigs.vcf")
 
-	all := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2",
+	all := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2",
 		"--format", "vcf", "--min-dp", "10", base))
 	// S2 alone at chr2:200, where it is 1/1: AC 2 of AN 2, so AF is 1.0 -- not the
 	// 0.5 the whole-cohort catalog reports.
-	sub := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2", "--sample", "S2",
+	sub := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2", "--sample", "S2",
 		"--format", "vcf", "--min-dp", "10", base))
 	if len(all) != 2 || len(sub) != 2 {
 		t.Fatalf("want 2 records each, got %d and %d", len(all), len(sub))
@@ -135,9 +137,9 @@ func TestVcfOutInfoIsRecomputedOverTheSubset(t *testing.T) {
 // store converted from it, INFO included.
 func TestVcfOutBackendsAgree(t *testing.T) {
 	base := convert(t, "testdata/contigs.vcf")
-	a := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2", "--region", "chr10",
+	a := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2", "--variant", "chr10",
 		"--format", "vcf", "--min-dp", "10", "testdata/contigs.vcf"))
-	b := vcfRecords(runVcf(t, "vcf-varquery", "--region", "chr2", "--region", "chr10",
+	b := vcfRecords(runVcf(t, "vcf-varquery", "--variant", "chr2", "--variant", "chr10",
 		"--format", "vcf", "--min-dp", "10", base))
 	// The GT columns carry real DP/GQ from a VCF and none from a store, so compare
 	// the locus and INFO columns -- which is where the recomputation lives.
@@ -152,5 +154,55 @@ func TestVcfOutBackendsAgree(t *testing.T) {
 	if strings.Join(strip(a), "|") != strings.Join(strip(b), "|") {
 		t.Errorf("backends disagree\n vcf:\n  %s\n parquet:\n  %s",
 			strings.Join(strip(a), "\n  "), strings.Join(strip(b), "\n  "))
+	}
+}
+
+// TestVcfOutBgzipAndIndex pins that --format vcf goes through cghts's VcfWriter
+// rather than hand-written text, which is what makes bgzip and --tbi available.
+//
+// It used to write plain text with fmt.Fprintln, so a genotype matrix over a real
+// cohort was uncompressed and unindexable -- close to useless as PGS input.
+func TestVcfOutBgzipAndIndex(t *testing.T) {
+	base := convert(t, "testdata/contigs.vcf")
+	path := filepath.Join(t.TempDir(), "matrix.vcf.gz")
+	runVcf(t, "vcf-varquery", "--variant", "chr2", "--variant", "chr10",
+		"--min-dp", "10", "--format", "vcf", "-o", path, "--tbi", base)
+
+	// BGZF sets the gzip FEXTRA flag; stdlib gzip does not, so this distinguishes a
+	// regression to plain gzip.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) < 4 || raw[3]&0x04 == 0 {
+		t.Errorf("output is gzip but not BGZF (flags=0x%02x); tabix cannot index it", raw[3])
+	}
+	if _, err := os.Stat(path + ".tbi"); err != nil {
+		t.Errorf("--tbi did not write an index: %v", err)
+	}
+
+	// The written file must be readable as a store in its own right, which exercises
+	// the header, the records and the genotypes together.
+	rows := tsvDataRows(dataRowsOnly(runVcf(t, "vcf-varquery",
+		"--variant", "chr10:200:T:C", "--hom-ref", "--min-dp", "10", path)))
+	if len(rows) != 2 {
+		t.Fatalf("round-trip gave %d rows, want 2: %v", len(rows), rows)
+	}
+	if !strings.Contains(rows[0], "\tS1\t0/0\t") || !strings.Contains(rows[1], "\tS2\t0/1\t") {
+		t.Errorf("round-tripped genotypes wrong: %v", rows)
+	}
+}
+
+// TestVcfOutTbiNeedsBgzipName pins that --tbi refuses a name it cannot index
+// rather than writing an index nothing can use.
+func TestVcfOutTbiNeedsBgzipName(t *testing.T) {
+	base := convert(t, "testdata/contigs.vcf")
+	err := runVcfErr(t, "vcf-varquery", "--variant", "chr2", "--format", "vcf",
+		"-o", filepath.Join(t.TempDir(), "plain.vcf"), "--tbi", base)
+	if err == nil {
+		t.Fatal("--tbi with a non-bgzip output name should be refused")
+	}
+	if !strings.Contains(err.Error(), ".gz") {
+		t.Errorf("the error should name the requirement, got %v", err)
 	}
 }
