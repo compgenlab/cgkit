@@ -94,10 +94,23 @@ a non-carrier would invent an observation.
   -v, --verbose       report the backend, the store's conversion settings, and
                       whether the quality gate could actually act, on stderr
 
-Tabular output splits the locus into four leading columns (chrom, pos, ref,
-alt) rather than one packed chrom:pos:ref:alt field, so it can be cut and
-sorted on position directly. The chromosome is echoed the way it was asked for,
-whichever naming convention the file itself uses.`,
+Both query modes emit one layout, so --sample and --variant output can be
+concatenated, sorted and cut the same way:
+
+  chrom pos ref alt sample gt dp min_dp ad_ref ad_alt gq
+
+The locus leads as four columns rather than one packed chrom:pos:ref:alt field,
+so rows cut and sort on position directly. The chromosome is echoed the way it
+was asked for, whichever naming convention the file itself uses. (--classify
+keeps its own state column and omits min_dp, so that its output stays
+byte-identical across backends.)
+
+min_dp is the tightest lower bound on depth the backend can vouch for. Where a
+call records its own depth that is the bound. A reference call recovered from a
+store has no recorded depth, but it came from a run built at the conversion
+--min-dp, so the bound is that threshold -- which is the evidence that the site
+was covered well enough to call. Anything else reports ".", since a threshold
+written where nothing is known would assert a depth the data never had.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -358,14 +371,14 @@ func runVarQuerySamples(out *bufio.Writer, store varstore.Store, span *varstore.
 	}
 
 	provenance(out, source)
-	fmt.Fprintln(out, strings.Join([]string{
-		"sample", "chrom", "pos", "ref", "alt", "gt", "dp", "ad_ref", "ad_alt", "gq",
-	}, "\t"))
+	fmt.Fprintln(out, strings.Join(tsvColumns, "\t"))
+	minDP := vouchedMinDP(store)
 	for _, r := range results {
 		for _, c := range r.Calls {
-			fmt.Fprintf(out, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				c.SampleID, c.Chrom, c.Pos, c.Ref, c.Alt, c.GT,
-				intOrDot(c.DP), intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ))
+			fmt.Fprintf(out, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				c.Chrom, c.Pos, c.Ref, c.Alt, c.SampleID, c.GT,
+				intOrDot(c.DP), minDPOf(c, minDP),
+				intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ))
 		}
 	}
 	return nil
@@ -542,10 +555,13 @@ func runVarQueryVariants(cmd *cobra.Command, out *bufio.Writer, store varstore.S
 	}
 
 	provenance(out, source)
-	// The locus is emitted as four columns rather than one packed
-	// chrom:pos:ref:alt field, matching --sample mode and keeping the output
-	// sortable and cut-able on position without re-splitting a composite key.
+	minDP := vouchedMinDP(store)
 	if vcfVarQueryClassify {
+		// Deliberately NOT the shared layout's min_dp column. A store can vouch for
+		// the threshold its runs were built at; a VCF knows the exact depth but
+		// Classify does not carry it for a non-carrier. Reporting the tightest
+		// bound each backend has would make the two disagree here, and byte-for-byte
+		// agreement between backends is the property this mode exists to guarantee.
 		fmt.Fprintln(out, strings.Join([]string{
 			"chrom", "pos", "ref", "alt", "sample", "state", "gt", "dp", "gq",
 		}, "\t"))
@@ -562,18 +578,17 @@ func runVarQueryVariants(cmd *cobra.Command, out *bufio.Writer, store varstore.S
 		}
 		return nil
 	}
-	fmt.Fprintln(out, strings.Join([]string{
-		"chrom", "pos", "ref", "alt", "sample", "gt", "dp", "ad_ref", "ad_alt", "gq",
-	}, "\t"))
+	fmt.Fprintln(out, strings.Join(tsvColumns, "\t"))
 	for _, r := range results {
 		for _, c := range r.Calls {
 			// The queried locus, not the call's stored spelling: every row of a
 			// --variant query then reads back the way it was asked for, and both
 			// sub-modes agree even though only this one has calls to draw on.
-			fmt.Fprintf(out, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(out, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				r.Locus.Chrom, r.Locus.Pos, r.Locus.Ref, r.Locus.Alt,
 				c.SampleID, c.GT,
-				intOrDot(c.DP), intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ))
+				intOrDot(c.DP), minDPOf(c, minDP),
+				intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ))
 		}
 	}
 	return nil
@@ -585,6 +600,44 @@ func intOrDot(v int32) string {
 		return "."
 	}
 	return fmt.Sprint(v)
+}
+
+// tsvColumns is the one tabular layout the genotype outputs use. The locus
+// leads, as four columns rather than one packed chrom:pos:ref:alt field, so rows
+// sort and cut on position without re-splitting a composite key.
+var tsvColumns = []string{
+	"chrom", "pos", "ref", "alt", "sample", "gt", "dp", "min_dp", "ad_ref", "ad_alt", "gq",
+}
+
+// vouchedMinDP is the depth threshold a store's callable runs were built at, or 0
+// for a backend with no such threshold -- a VCF, where a call either carries its
+// own depth or none is knowable.
+func vouchedMinDP(store varstore.Store) int32 {
+	if ps, ok := store.(*varstore.ParquetStore); ok {
+		if p := ps.Provenance(); !p.NoCallable {
+			return p.MinDP
+		}
+	}
+	return 0
+}
+
+// minDPOf renders min_dp: the tightest lower bound on depth the backend can
+// vouch for at this call.
+//
+// An exact depth is its own best bound. Where there is none, a store can still
+// vouch for the threshold its runs were built at -- but only for a reconstructed
+// reference call, which by construction came from such a run. A store's calls
+// file holds only ALT-carrying genotypes, so an all-reference GT identifies those
+// rows unambiguously. Anything else without a depth reports ".", because nothing
+// is known: putting a threshold there would assert a depth the data never had.
+func minDPOf(c varstore.Call, storeMinDP int32) string {
+	if c.DP != varstore.Missing {
+		return fmt.Sprint(c.DP)
+	}
+	if storeMinDP > 0 && c.GT == varstore.HomRefGT {
+		return fmt.Sprint(storeMinDP)
+	}
+	return "."
 }
 
 func init() {

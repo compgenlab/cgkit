@@ -442,7 +442,11 @@ func TestVarQueryLocusColumnsAreSplit(t *testing.T) {
 		header string
 	}{
 		{"carriers", []string{"vcf-varquery", "--variant", "chr1:100:A:G", base},
-			"chrom\tpos\tref\talt\tsample\tgt\tdp\tad_ref\tad_alt\tgq"},
+			"chrom\tpos\tref\talt\tsample\tgt\tdp\tmin_dp\tad_ref\tad_alt\tgq"},
+		// S2 is the carrier at chr1:100, so --sample lands on the same locus the
+		// other cases assert -- which is what makes the shared layout checkable.
+		{"samples", []string{"vcf-varquery", "--sample", "S2", base},
+			"chrom\tpos\tref\talt\tsample\tgt\tdp\tmin_dp\tad_ref\tad_alt\tgq"},
 		{"classify", []string{"vcf-varquery", "--variant", "chr1:100:A:G", "--classify", base},
 			"chrom\tpos\tref\talt\tsample\tstate\tgt\tdp\tgq"},
 	}

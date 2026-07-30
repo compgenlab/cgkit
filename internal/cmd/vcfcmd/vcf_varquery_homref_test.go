@@ -14,19 +14,38 @@ import (
 // a default: it may only be reported where the source actually observed the
 // sample to be all-reference. So most of these pin what must NOT appear.
 
-// identityRows keeps the columns that identify a row -- through gt, dropping
-// dp/ad_ref/ad_alt/gq. Both modes put six identity columns first.
+// Column positions in the shared tabular layout, which both query modes use:
 //
-// The quality columns are deliberately excluded: a Parquet store keeps only
-// alternate genotypes, so a reference call recovered from one has no DP/AD/GQ to
-// report where the same query against a VCF does. That asymmetry is real and
-// documented; what must not differ is WHICH rows appear.
+//	chrom pos ref alt sample gt dp min_dp ad_ref ad_alt gq
+const (
+	colChrom = iota
+	colPos
+	colRef
+	colAlt
+	colSample
+	colGT
+	colDP
+	colMinDP
+	colADRef
+	colADAlt
+	colGQ
+	numCols
+)
+
+// identityRows keeps the columns that identify a row -- through gt, dropping the
+// quality columns.
+//
+// Those are deliberately excluded: a Parquet store keeps only alternate
+// genotypes, so a reference call recovered from one has no DP/AD/GQ to report
+// where the same query against a VCF does, and min_dp is a threshold on one
+// backend and an exact depth on the other. That asymmetry is real and documented;
+// what must not differ is WHICH rows appear.
 func identityRows(s string) string {
 	var out []string
 	for _, l := range strings.Split(dataRowsOnly(s), "\n") {
 		f := strings.Split(l, "\t")
-		if len(f) > 6 {
-			f = f[:6]
+		if len(f) > colDP {
+			f = f[:colDP]
 		}
 		out = append(out, strings.Join(f, "\t"))
 	}
@@ -98,10 +117,10 @@ func TestHomRefSampleModeSkipsOtherAlternates(t *testing.T) {
 		got := runVcf(t, "vcf-varquery", "--sample", "S2", "--hom-ref", in)
 		for _, row := range strings.Split(dataRowsOnly(got), "\n") {
 			f := strings.Split(row, "\t")
-			if len(f) < 6 || f[0] != "S2" {
+			if len(f) < numCols || f[colSample] != "S2" {
 				continue
 			}
-			if f[2] == "200" && f[5] == varstore.HomRefGT {
+			if f[colPos] == "200" && f[colGT] == varstore.HomRefGT {
 				t.Errorf("%s: S2 reported as 0/0 at the multiallelic record it carries T at:\n%s",
 					in, row)
 			}
@@ -114,10 +133,10 @@ func TestHomRefSampleModeSkipsOtherAlternates(t *testing.T) {
 func TestHomRefUnionKeepsCarriers(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
 	got := dataRowsOnly(runVcf(t, "vcf-varquery", "--sample", "S1", "--hom-ref", "--min-dp", "10", base))
-	if !strings.Contains(got, "\t500\tA\tT\t0/1\t") {
+	if !strings.Contains(got, "\t500\tA\tT\tS1\t0/1\t") {
 		t.Errorf("the carried variant at chr1:500 should still be reported:\n%s", got)
 	}
-	if !strings.Contains(got, "\t300\tG\tA\t0/0\t") {
+	if !strings.Contains(got, "\t300\tG\tA\tS1\t0/0\t") {
 		t.Errorf("the reference call at chr1:300 should be reported:\n%s", got)
 	}
 
@@ -224,16 +243,90 @@ func TestHomRefStoreRowsCarryNoQuality(t *testing.T) {
 	for _, row := range strings.Split(dataRowsOnly(runVcf(t, "vcf-varquery",
 		"--sample", "S1", "--hom-ref", "--min-dp", "10", base)), "\n") {
 		f := strings.Split(row, "\t")
-		if len(f) != 10 || f[0] != "S1" {
+		if len(f) != numCols || f[colSample] != "S1" {
 			continue
 		}
-		gt, dp, gq := f[5], f[6], f[9]
+		gt, dp, gq := f[colGT], f[colDP], f[colGQ]
 		if gt == varstore.HomRefGT && (dp != "." || gq != ".") {
 			t.Errorf("a store cannot know a reference call's quality, got dp=%s gq=%s:\n%s",
 				dp, gq, row)
 		}
 		if gt == "0/1" && dp == "." {
 			t.Errorf("a carrier row must keep its depth:\n%s", row)
+		}
+	}
+}
+
+// TestBothModesShareOneLayout pins the output contract: --sample and --variant
+// emit identical columns, so their output can be concatenated, cut and sorted the
+// same way. They used to differ -- --sample led with the sample column.
+func TestBothModesShareOneLayout(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf")
+	want := strings.Join([]string{
+		"chrom", "pos", "ref", "alt", "sample", "gt", "dp", "min_dp", "ad_ref", "ad_alt", "gq",
+	}, "\t")
+	for _, args := range [][]string{
+		{"vcf-varquery", "--sample", "S1", base},
+		{"vcf-varquery", "--variant", "chr1:100:A:G", base},
+		{"vcf-varquery", "--sample", "S1", "--hom-ref", base},
+		{"vcf-varquery", "--variant", "chr1:100:A:G", "--hom-ref", base},
+	} {
+		header := strings.Split(dataRowsOnly(runVcf(t, args...)), "\n")[0]
+		if header != want {
+			t.Errorf("%v\n header = %q\n   want = %q", args[1:], header, want)
+		}
+	}
+}
+
+// TestMinDPReportsTheVouchedFloor pins what min_dp means: the tightest lower
+// bound on depth the backend can vouch for.
+//
+// This is the whole reason the column exists. A reference call recovered from a
+// store has no recorded depth, but it came from a run built at the conversion
+// --min-dp -- so the store can still say the site was covered well enough to
+// call, which a bare "." would throw away.
+func TestMinDPReportsTheVouchedFloor(t *testing.T) {
+	base := convert(t, "testdata/coverage.vcf") // --min-dp defaults to 10
+
+	rows := map[string][]string{}
+	for _, l := range strings.Split(dataRowsOnly(runVcf(t, "vcf-varquery",
+		"--sample", "S1", "--hom-ref", "--min-dp", "10", base)), "\n") {
+		if f := strings.Split(l, "\t"); len(f) == numCols && f[colChrom] != "chrom" {
+			rows[f[colChrom]+":"+f[colPos]] = f
+		}
+	}
+
+	// A reconstructed reference call: no depth of its own, but the run vouches
+	// for the conversion threshold.
+	ref, ok := rows["chr1:300"]
+	if !ok {
+		t.Fatalf("expected a reference call at chr1:300; got %v", rows)
+	}
+	if ref[colDP] != "." || ref[colMinDP] != "10" {
+		t.Errorf("store reference call: dp=%s min_dp=%s, want dp=. min_dp=10 "+
+			"(no recorded depth, but callable at the conversion threshold)",
+			ref[colDP], ref[colMinDP])
+	}
+
+	// A carrier records its own depth, which is its own best bound.
+	carrier, ok := rows["chr1:500"]
+	if !ok {
+		t.Fatalf("expected a carrier at chr1:500; got %v", rows)
+	}
+	if carrier[colDP] != "30" || carrier[colMinDP] != "30" {
+		t.Errorf("carrier: dp=%s min_dp=%s, want both 30", carrier[colDP], carrier[colMinDP])
+	}
+
+	// A VCF backend knows every depth exactly, so min_dp is never a threshold.
+	for _, l := range strings.Split(dataRowsOnly(runVcf(t, "vcf-varquery",
+		"--sample", "S1", "--hom-ref", "--min-dp", "10", "testdata/coverage.vcf")), "\n") {
+		f := strings.Split(l, "\t")
+		if len(f) != numCols || f[colChrom] == "chrom" {
+			continue
+		}
+		if f[colDP] != f[colMinDP] {
+			t.Errorf("vcf backend: dp=%s but min_dp=%s; an exact depth is its own bound\n%s",
+				f[colDP], f[colMinDP], l)
 		}
 	}
 }
@@ -294,11 +387,11 @@ func homRefSamples(t *testing.T, out string) []string {
 	var got []string
 	for _, l := range strings.Split(dataRowsOnly(out), "\n") {
 		f := strings.Split(l, "\t")
-		if len(f) < 6 || f[0] == "chrom" {
+		if len(f) < numCols || f[colChrom] == "chrom" {
 			continue
 		}
-		if f[5] == varstore.HomRefGT {
-			got = append(got, f[4])
+		if f[colGT] == varstore.HomRefGT {
+			got = append(got, f[colSample])
 		}
 	}
 	return got
