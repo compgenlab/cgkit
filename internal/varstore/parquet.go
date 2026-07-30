@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"path/filepath"
 	"sort"
@@ -455,33 +456,136 @@ func (s *ParquetStore) Samples() ([]string, error) {
 	return s.samples, nil
 }
 
-// Carriers returns the gated ALT calls at a locus.
-func (s *ParquetStore) Carriers(l Locus, g Gate) ([]Call, error) {
-	var out []Call
-	err := scanParquetPruned(CallsPath(s.base), locusFilter(l), func(c Call) bool {
-		if SameLocus(c.Locus(), l) && g.Admits(c) {
-			out = append(out, c)
+// Calls streams the genotypes a query selects, in the store's own order.
+func (s *ParquetStore) Calls(q Query) (iter.Seq2[Call, error], error) {
+	// Fail before iterating: a caller asking for reference calls from a store that
+	// cannot reconstruct them should learn so now, not receive a silently
+	// ALT-only stream.
+	if q.IncludeRef {
+		if err := s.classifiable(); err != nil {
+			return nil, err
 		}
-		return true
-	})
-	return out, err
+	}
+	p := q.plan()
+	keep := callsFilter(q)
+
+	if !q.IncludeRef {
+		// The ALT-only case genuinely streams. calls.parquet is written in store
+		// order, so rows are yielded as they decode with nothing buffered.
+		return func(yield func(Call, error) bool) {
+			err := scanParquetPruned(CallsPath(s.base), keep, func(c Call) bool {
+				if !p.wantsCall(c) {
+					return true
+				}
+				return yield(c, nil)
+			})
+			if err != nil {
+				yield(Call{}, err)
+			}
+		}, nil
+	}
+
+	// Reference calls have to be interleaved with the ALT calls in one order, and
+	// they are derived from two other files, so this path assembles before it
+	// yields. Ordering comes from walking sites.parquet -- itself in store order --
+	// rather than from sorting, so contig order is preserved for free.
+	//
+	// It is bounded by the query, not by the store: naming samples or loci bounds
+	// what is held. An unrestricted IncludeRef query over a whole store is the case
+	// that still wants a streaming merge of the two scans.
+	return func(yield func(Call, error) bool) {
+		rows, err := s.callsWithRef(p, keep)
+		if err != nil {
+			yield(Call{}, err)
+			return
+		}
+		for _, c := range rows {
+			if !yield(c, nil) {
+				return
+			}
+		}
+	}, nil
 }
 
-// Variants returns the gated ALT calls for one sample.
-func (s *ParquetStore) Variants(sample string, span *Span, g Gate) ([]Call, error) {
+// callsWithRef assembles ALT and reference calls for a query, in store order.
+func (s *ParquetStore) callsWithRef(p *plan, keep rowGroupFilter) ([]Call, error) {
+	roster, err := s.Samples()
+	if err != nil {
+		return nil, err
+	}
+	wanted := make([]string, 0, len(roster))
+	for _, name := range roster {
+		if p.wantsSample(name) {
+			wanted = append(wanted, name)
+		}
+	}
+
+	// One pass over the calls. Two things come out of it: the ALT rows to emit,
+	// grouped by site, and -- keyed by record rather than locus, and deliberately
+	// UNGATED -- which samples carry some alternate. A below-gate ALT makes a
+	// sample an uncertain carrier, never a reference observation, and any alternate
+	// of a multiallelic record disqualifies every site split out of it.
+	altBySite := map[Locus][]Call{}
+	carries := map[string]map[RecordKey]bool{}
+	if err := scanParquetPruned(CallsPath(s.base), keep, func(c Call) bool {
+		if !p.wantsSample(c.SampleID) {
+			return true
+		}
+		loc := c.Locus()
+		// Record level, not site level: a call at a SIBLING locus of the same
+		// record still disqualifies the sample from being reference here, and
+		// testing wantsSite would throw that evidence away.
+		if !p.wantsRecord(loc) {
+			return true
+		}
+		if carries[c.SampleID] == nil {
+			carries[c.SampleID] = map[RecordKey]bool{}
+		}
+		carries[c.SampleID][loc.Record()] = true
+		if p.wantsSite(loc) && p.q.Gate.Admits(c) {
+			k := canonLocus(loc)
+			altBySite[k] = append(altBySite[k], c)
+		}
+		return true
+	}); err != nil {
+		return nil, err
+	}
+
+	runs, err := s.runsFor(wanted, p)
+	if err != nil {
+		return nil, err
+	}
+
 	var out []Call
-	keep := bothFilters(sampleFilter(sample), spanFilter(span))
-	err := scanParquetPruned(CallsPath(s.base), keep, func(c Call) bool {
-		if c.SampleID != sample || !g.Admits(c) {
+	err = scanParquetPruned(SitesPath(s.base), siteScanFilter(p.q), func(site Site) bool {
+		loc := site.Locus()
+		if !p.wantsSite(loc) {
 			return true
 		}
-		if span != nil && !span.Contains(c.Chrom, c.Pos) {
-			return true
+		k := canonLocus(loc)
+		// ALT rows first, already in roster order from the scan above.
+		out = append(out, altBySite[k]...)
+		delete(altBySite, k)
+		for _, name := range wanted {
+			if carries[name][loc.Record()] {
+				continue // carries this or another alternate of the record
+			}
+			if !runs.covers(name, site.Chrom, site.Pos) {
+				continue // never called here at adequate depth
+			}
+			out = append(out, HomRefCall(name, loc))
 		}
-		out = append(out, c)
 		return true
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	// A call whose site is missing from the catalog should be impossible, but
+	// dropping it silently would be worse than emitting it out of order.
+	for _, calls := range altBySite {
+		out = append(out, calls...)
+	}
+	return out, nil
 }
 
 // Classify resolves every sample at a locus.
@@ -581,111 +685,22 @@ func (s *ParquetStore) classifiable() error {
 	return nil
 }
 
-// HomRefs returns a reference call for each sample observed to be all-reference
-// at a locus.
+// runsBySample holds callable runs for the samples a query selected, grouped by
+// canonical chromosome and sorted by start.
 //
-// The gate is not applied to these rows, because there is nothing to apply it
-// to: the store holds no DP or GQ for a genotype it never recorded. What stands
-// in for it is the --min-dp baked into the runs at conversion, which is why
-// querying at a different threshold is worth a warning.
-func (s *ParquetStore) HomRefs(l Locus, g Gate) ([]Call, error) {
-	states, err := s.Classify(l, g)
-	if err != nil {
-		return nil, err
-	}
+// Held in memory because reconstructing reference calls tests every catalog site
+// against it, and re-scanning the regions file per site would be quadratic. A run
+// spans as many sites as the sample was called at consecutively, so this stays far
+// smaller than the regions file -- but it grows with the number of samples
+// selected, which is the bound on an unrestricted IncludeRef query.
+type runsBySample map[string]map[string][]CalledSiteRun
 
-	// A sample carrying a different alternate of the same record is a
-	// non-carrier of *this* allele but is not all-reference: its genotype is
-	// 0/2, and a 0/0 row for it would be a genotype the data never contained.
-	// The record's other split rows are what distinguish the two.
-	carriesOther := map[string]bool{}
-	want := l.Record()
-	if err := scanParquetPruned(CallsPath(s.base), locusFilter(l), func(c Call) bool {
-		if c.Locus().Record() == want {
-			carriesOther[c.SampleID] = true
-		}
-		return true
-	}); err != nil {
-		return nil, err
-	}
-
-	// Report the store's own spelling of the chromosome, as Carriers does, rather
-	// than however the query happened to spell it.
-	loc := l
-	if site, found, err := s.Site(l); err == nil && found {
-		loc = site.Locus()
-	}
-
-	var out []Call
-	for _, st := range states {
-		if st.State == StateNonCarrier && !carriesOther[st.SampleID] {
-			out = append(out, HomRefCall(st.SampleID, loc))
-		}
-	}
-	return out, nil
-}
-
-// HomRefVariants returns the catalog sites at which one sample was observed to
-// be all-reference: interrogated, called at adequate depth, and carrying no
-// alternate allele at that record.
-//
-// Note that this walks the whole sites catalog, so over a whole-genome store it
-// enumerates nearly every site the callset contains. A span keeps it bounded.
-func (s *ParquetStore) HomRefVariants(sample string, span *Span, g Gate) ([]Call, error) {
-	if err := s.classifiable(); err != nil {
-		return nil, err
-	}
-
-	// Deliberately ungated: an ALT call below the gate makes the sample an
-	// uncertain carrier, never a reference observation. Keyed by record rather
-	// than by locus so any alternate of a multiallelic record disqualifies all of
-	// its split sites, matching HomRefs.
-	carries := map[RecordKey]bool{}
-	if err := scanParquetPruned(CallsPath(s.base),
-		bothFilters(sampleFilter(sample), spanFilter(span)), func(c Call) bool {
-			if c.SampleID == sample {
-				carries[c.Locus().Record()] = true
-			}
-			return true
-		}); err != nil {
-		return nil, err
-	}
-
-	runs, err := s.runsFor(sample, span)
-	if err != nil {
-		return nil, err
-	}
-
-	var out []Call
-	err = scanParquetPruned(SitesPath(s.base), spanFilter(span), func(site Site) bool {
-		if span != nil && !span.Contains(site.Chrom, site.Pos) {
-			return true
-		}
-		l := site.Locus()
-		if carries[l.Record()] || !runs.covers(site.Chrom, site.Pos) {
-			return true
-		}
-		out = append(out, HomRefCall(sample, l))
-		return true
-	})
-	return out, err
-}
-
-// sampleRuns is one sample's called-site runs, grouped by canonical chromosome
-// and sorted by start.
-//
-// It is held in memory because a --sample query tests every catalog site against
-// it, and re-scanning the regions file per site would be quadratic. Only one
-// sample's runs are loaded, and a run spans as many sites as the sample was
-// called at consecutively, so this is far smaller than the regions file.
-type sampleRuns map[string][]CalledSiteRun
-
-// covers reports whether a run brackets a 1-based position. Runs for one sample
-// on one chromosome are disjoint and increasing -- the converter closes a run
-// before opening the next -- so the last run starting at or before pos is the
-// only one that can contain it.
-func (r sampleRuns) covers(chrom string, pos int32) bool {
-	runs := r[CanonKey(chrom)]
+// covers reports whether a run brackets a 1-based position for one sample. Runs
+// for one sample on one chromosome are disjoint and increasing -- the converter
+// closes a run before opening the next -- so the last run starting at or before
+// pos is the only one that can contain it.
+func (r runsBySample) covers(sample, chrom string, pos int32) bool {
+	runs := r[sample][CanonKey(chrom)]
 	i := sort.Search(len(runs), func(i int) bool { return runs[i].Start > pos })
 	if i == 0 {
 		return false
@@ -693,25 +708,34 @@ func (r sampleRuns) covers(chrom string, pos int32) bool {
 	return pos <= runs[i-1].End
 }
 
-// runsFor loads one sample's called-site runs.
+// runsFor loads the called-site runs for the named samples in one pass.
 //
-// A span only prunes row groups here; runs surviving that are kept whatever
-// their extent, since a run beginning before the span may still reach into it.
-func (s *ParquetStore) runsFor(sample string, span *Span) (sampleRuns, error) {
-	out := sampleRuns{}
-	err := scanParquetPruned(RegionsPath(s.base),
-		bothFilters(sampleFilter(sample), spanRunFilter(span)), func(r CalledSiteRun) bool {
-			if r.SampleID == sample {
-				k := CanonKey(r.Chrom)
-				out[k] = append(out[k], r)
-			}
+// The query only prunes row groups here; runs surviving that are kept whatever
+// their extent, since a run beginning before a span may still reach into it.
+func (s *ParquetStore) runsFor(samples []string, p *plan) (runsBySample, error) {
+	want := make(map[string]bool, len(samples))
+	for _, name := range samples {
+		want[name] = true
+	}
+	out := runsBySample{}
+	err := scanParquetPruned(RegionsPath(s.base), runScanFilter(p.q), func(r CalledSiteRun) bool {
+		if !want[r.SampleID] {
 			return true
-		})
+		}
+		if out[r.SampleID] == nil {
+			out[r.SampleID] = map[string][]CalledSiteRun{}
+		}
+		k := CanonKey(r.Chrom)
+		out[r.SampleID][k] = append(out[r.SampleID][k], r)
+		return true
+	})
 	if err != nil {
 		return nil, err
 	}
-	for _, runs := range out {
-		sort.Slice(runs, func(i, j int) bool { return runs[i].Start < runs[j].Start })
+	for _, byChrom := range out {
+		for _, runs := range byChrom {
+			sort.Slice(runs, func(i, j int) bool { return runs[i].Start < runs[j].Start })
+		}
 	}
 	return out, nil
 }
@@ -759,16 +783,3 @@ func (s *ParquetStore) SiteKnown(l Locus) (bool, error) {
 
 // Close is a no-op; ParquetStore opens files per query.
 func (s *ParquetStore) Close() error { return nil }
-
-// SortCalls orders calls by position then sample, for stable output.
-func SortCalls(c []Call) {
-	sort.SliceStable(c, func(i, j int) bool {
-		if c[i].Chrom != c[j].Chrom {
-			return c[i].Chrom < c[j].Chrom
-		}
-		if c[i].Pos != c[j].Pos {
-			return c[i].Pos < c[j].Pos
-		}
-		return c[i].SampleID < c[j].SampleID
-	})
-}

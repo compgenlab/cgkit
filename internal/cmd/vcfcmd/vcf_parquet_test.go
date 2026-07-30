@@ -34,7 +34,7 @@ func readCalls(t *testing.T, base string) []varstore.Call {
 	}
 	var calls []varstore.Call
 	for _, name := range samples {
-		c, err := s.Variants(name, nil, varstore.Gate{})
+		c, err := varstore.CollectCalls(s, varstore.Query{Samples: []string{name}})
 		if err != nil {
 			t.Fatalf("Variants(%s): %v", name, err)
 		}

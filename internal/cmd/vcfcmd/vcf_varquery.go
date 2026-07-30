@@ -330,18 +330,20 @@ func runVarQuerySamples(out *bufio.Writer, store varstore.Store, span *varstore.
 	var results []varQuerySampleResult
 
 	for _, s := range vcfVarQuerySamples {
-		calls, err := store.Variants(s, span, gate)
+		q := varstore.Query{
+			Samples:    []string{s},
+			Gate:       gate,
+			IncludeRef: vcfVarQueryHomRef,
+		}
+		if span != nil {
+			q.Spans = []varstore.Span{*span}
+		}
+		// No sort: the store emits in its own (chrom, pos, alt, sample) order,
+		// which is contig order rather than lexicographic.
+		calls, err := varstore.CollectCalls(store, q)
 		if err != nil {
 			return err
 		}
-		if vcfVarQueryHomRef {
-			ref, err := store.HomRefVariants(s, span, gate)
-			if err != nil {
-				return err
-			}
-			calls = append(calls, ref...)
-		}
-		varstore.SortCalls(calls)
 		results = append(results, varQuerySampleResult{Sample: s, Calls: calls})
 	}
 
@@ -413,8 +415,13 @@ func writeVarQueryVcf(out *bufio.Writer, results []varQuerySampleResult, source 
 	}
 	// Sort rather than emit in first-seen order. Loci are gathered per sample, so
 	// the second sample's private loci would otherwise all land after the first
-	// sample's -- an unsorted VCF, which cannot be indexed. The ordering matches
-	// SortCalls so the tabular and VCF outputs agree on row order.
+	// sample's -- an unsorted VCF, which cannot be indexed.
+	//
+	// NOTE: this compares chromosomes LEXICOGRAPHICALLY, so chr10 sorts before
+	// chr2. Harmless while a store holds few contigs, wrong for a real one, since
+	// an indexable VCF needs the header's contig order. The fix is to emit in the
+	// store's own order -- which Calls already streams in -- rather than to patch
+	// this comparator, which cannot know the contig order.
 	sort.Slice(order, func(i, j int) bool {
 		a, b := order[i], order[j]
 		if a.chrom != b.chrom {
@@ -459,36 +466,39 @@ func runVarQueryVariants(cmd *cobra.Command, out *bufio.Writer, store varstore.S
 			return err
 		}
 		r := variantResult{Variant: locus.String(), Locus: locus}
-		nCarriers, nHomRef := 0, -1
+		at := varstore.Query{Loci: []varstore.Locus{locus}, Gate: gate}
 
 		// Compare against the ungated result so the gate's effect is a measured
 		// number rather than an inference from the row count.
 		var ungated []varstore.Call
 		if vcfVarQueryVerbose && !gate.IsZero() {
-			ungated, err = store.Carriers(locus, varstore.Gate{})
+			ungated, err = varstore.CollectCalls(store, varstore.Query{Loci: at.Loci})
 			if err != nil {
 				return err
 			}
 		}
 
-		calls, err := store.Carriers(locus, gate)
+		at.IncludeRef = vcfVarQueryHomRef
+		calls, err := varstore.CollectCalls(store, at)
 		if err != nil {
 			return err
 		}
-		// Kept separate from the row count: the gate's effect is measured against
+		r.Calls = calls
+
+		// Counted apart from the row total: the gate's effect is measured against
 		// the ALT calls alone, and reference rows are not gated calls that
 		// survived, they are a different question's answer.
-		nCarriers = len(calls)
+		nCarriers, nHomRef := 0, -1
 		if vcfVarQueryHomRef {
-			ref, err := store.HomRefs(locus, gate)
-			if err != nil {
-				return err
-			}
-			nHomRef = len(ref)
-			calls = append(calls, ref...)
+			nHomRef = 0
 		}
-		varstore.SortCalls(calls)
-		r.Calls = calls
+		for _, c := range calls {
+			if varstore.IsAltCarrier(c.GT) {
+				nCarriers++
+			} else if nHomRef >= 0 {
+				nHomRef++
+			}
+		}
 		if vcfVarQueryVerbose {
 			reportVariant(cmd, store, locus, nCarriers, nHomRef)
 			if !gate.IsZero() {
