@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compgenlab/cgkit/internal/varstore"
+	"github.com/compgenlab/cghts/varstore"
 )
 
 // convert runs vcf-toparquet into a temp dir and returns the store base name.
