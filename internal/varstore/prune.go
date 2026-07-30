@@ -137,6 +137,33 @@ func coveringFilter(chrom string, pos int32) rowGroupFilter {
 	}
 }
 
+// spanRunFilter keeps row groups whose runs could overlap a span.
+//
+// Like coveringFilter, only Start can bound the search: End is not sorted, so a
+// group whose runs all start before the span may still hold one reaching into
+// it. Only the other side is safe -- a group whose earliest run begins after the
+// span's last position cannot overlap it at all.
+func spanRunFilter(s *Span) rowGroupFilter {
+	if s == nil {
+		return keepAll
+	}
+	return func(rg parquet.RowGroup) bool {
+		if lo, _, ok := colBounds(rg, "start"); ok {
+			// Span is 0-based half-open, so its last 1-based position is End.
+			if int64(s.End) < lo.Int64() {
+				return false
+			}
+		}
+		if lo, hi, ok := colBounds(rg, "chrom"); ok {
+			a, b := lo.String(), hi.String()
+			if a == b && !SameChrom(a, s.Chrom) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
 // sampleFilter keeps row groups that may contain a sample, consulting the
 // bloom filter on sample_id when the writer produced one. Sample ids are
 // high-cardinality and unsorted, so statistics are useless here but a bloom

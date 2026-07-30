@@ -1,2 +1,7 @@
 bin/*
 tmp/*
+
+# Local dev workspace joining the sibling cghts checkout. Release builds have no
+# go.work and use the go.mod pin instead.
+go.work
+go.work.sum
