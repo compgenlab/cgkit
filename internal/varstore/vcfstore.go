@@ -3,6 +3,7 @@ package varstore
 import (
 	"fmt"
 	"io"
+	"iter"
 	"math"
 	"strings"
 
@@ -119,135 +120,98 @@ func (s *VcfStore) spanFor(l Locus) *Span {
 	return &Span{Chrom: l.Chrom, Start: l.Pos - 1, End: l.Pos}
 }
 
-// Carriers returns the gated ALT calls at a locus.
-func (s *VcfStore) Carriers(l Locus, g Gate) ([]Call, error) {
-	var out []Call
-	err := s.scan(s.spanFor(l), false, func(rec *vcf.VcfRecord) (bool, error) {
-		if !SameChrom(rec.Chrom, l.Chrom) || int32(rec.Pos) != l.Pos || rec.Ref != l.Ref {
-			return true, nil
-		}
-		altIdx := altIndex(rec, l.Alt)
-		if altIdx < 0 {
-			return true, nil
-		}
-		for i, name := range s.samples {
-			if i >= rec.NumSamples() {
-				break
-			}
-			sf, err := ReadSample(rec, i)
-			if err != nil {
-				return false, err
-			}
-			c, ok := CallFor(rec, name, sf, altIdx, l.Alt)
-			if ok && g.Admits(c) {
-				out = append(out, c)
-			}
-		}
-		return true, nil
-	})
-	return out, err
-}
-
-// Variants returns the gated ALT calls for one sample.
-func (s *VcfStore) Variants(sample string, span *Span, g Gate) ([]Call, error) {
-	idx := -1
-	for i, n := range s.samples {
-		if n == sample {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return nil, fmt.Errorf("sample not found: %s", sample)
-	}
-	var out []Call
-	err := s.scan(span, true, func(rec *vcf.VcfRecord) (bool, error) {
-		if idx >= rec.NumSamples() {
-			return true, nil
-		}
-		sf, err := ReadSample(rec, idx)
-		if err != nil {
-			return false, err
-		}
-		if !IsAltCarrier(sf.GT) {
-			return true, nil
-		}
-		for j, alt := range rec.Alt() {
-			c, ok := CallFor(rec, sample, sf, j+1, alt)
-			if ok && g.Admits(c) {
-				out = append(out, c)
-			}
-		}
-		return true, nil
-	})
-	return out, err
-}
-
-// HomRefs returns the samples observed to be all-reference at a locus.
+// Calls streams the genotypes a query selects, in file order.
 //
-// A VCF needs no reconstruction here: the genotype is written down, so the row
-// carries the recorded GT -- preserving ploidy and phasing -- along with its real
-// DP/AD/GQ. A Parquet store cannot, and synthesizes a bare 0/0; see HomRefCall.
-func (s *VcfStore) HomRefs(l Locus, g Gate) ([]Call, error) {
-	var out []Call
-	err := s.scan(s.spanFor(l), false, func(rec *vcf.VcfRecord) (bool, error) {
-		if !SameChrom(rec.Chrom, l.Chrom) || int32(rec.Pos) != l.Pos || rec.Ref != l.Ref {
+// A VCF needs no reconstruction: it carries an explicit genotype for every sample
+// at every record, so reference rows come straight from the data with their real
+// GT -- preserving ploidy and phasing -- and their real DP/AD/GQ. A Parquet store
+// cannot, and synthesizes a bare 0/0; see HomRefCall.
+func (s *VcfStore) Calls(q Query) (iter.Seq2[Call, error], error) {
+	p := q.plan()
+	span, strict := s.seek(q)
+
+	return func(yield func(Call, error) bool) {
+		stopped := false
+		emit := func(c Call) bool {
+			if yield(c, nil) {
+				return true
+			}
+			stopped = true
+			return false
+		}
+
+		err := s.scan(span, strict, func(rec *vcf.VcfRecord) (bool, error) {
+			// Read each wanted sample once, then walk the alternates -- the
+			// alt-major order the Parquet side emits, so the two agree row for row.
+			n := rec.NumSamples()
+			if n > len(s.samples) {
+				n = len(s.samples)
+			}
+			type sampleField struct {
+				name string
+				f    SampleFields
+			}
+			fields := make([]sampleField, 0, n)
+			for i := 0; i < n; i++ {
+				name := s.samples[i]
+				if !p.wantsSample(name) {
+					continue
+				}
+				f, err := ReadSample(rec, i)
+				if err != nil {
+					return false, err
+				}
+				fields = append(fields, sampleField{name, f})
+			}
+
+			for j, alt := range rec.Alt() {
+				loc := Locus{Chrom: rec.Chrom, Pos: int32(rec.Pos), Ref: rec.Ref, Alt: alt}
+				if !p.wantsSite(loc) {
+					continue
+				}
+				for _, sf := range fields {
+					if c, ok := CallFor(rec, sf.name, sf.f, j+1, alt); ok && q.Gate.Admits(c) {
+						if !emit(c) {
+							return false, nil
+						}
+					}
+				}
+				if !q.IncludeRef {
+					continue
+				}
+				for _, sf := range fields {
+					if c, ok := homRefCallFor(rec, sf.name, sf.f, j+1, alt, q.Gate); ok {
+						if !emit(c) {
+							return false, nil
+						}
+					}
+				}
+			}
 			return true, nil
+		})
+		if err != nil && !stopped {
+			yield(Call{}, err)
 		}
-		altIdx := altIndex(rec, l.Alt)
-		if altIdx < 0 {
-			return true, nil
-		}
-		for i, name := range s.samples {
-			if i >= rec.NumSamples() {
-				break
-			}
-			sf, err := ReadSample(rec, i)
-			if err != nil {
-				return false, err
-			}
-			if c, ok := homRefCallFor(rec, name, sf, altIdx, l.Alt, g); ok {
-				out = append(out, c)
-			}
-		}
-		return false, nil
-	})
-	return out, err
+	}, nil
 }
 
-// HomRefVariants returns the records at which one sample was all-reference.
+// seek picks the tabix span for a query, and whether an unresolvable contig is an
+// error.
 //
-// A multiallelic record yields one row per ALT allele, matching how the sites
-// catalog splits it: a 0/0 sample really is reference for each alternate the
-// record proposed.
-func (s *VcfStore) HomRefVariants(sample string, span *Span, g Gate) ([]Call, error) {
-	idx := -1
-	for i, n := range s.samples {
-		if n == sample {
-			idx = i
-			break
-		}
+// That second value is the old strictRef distinction, now derived from which axis
+// the restriction came from: a Span comes from --region, which names a contig the
+// caller asserts exists, so an unknown name is an error. A Locus merely asks
+// whether something is present, and a contig the file lacks is an absence.
+func (s *VcfStore) seek(q Query) (*Span, bool) {
+	if len(q.Spans) == 1 && len(q.Loci) == 0 {
+		return &q.Spans[0], true
 	}
-	if idx < 0 {
-		return nil, fmt.Errorf("sample not found: %s", sample)
+	if len(q.Loci) == 1 && len(q.Spans) == 0 {
+		return s.spanFor(q.Loci[0]), false
 	}
-	var out []Call
-	err := s.scan(span, true, func(rec *vcf.VcfRecord) (bool, error) {
-		if idx >= rec.NumSamples() {
-			return true, nil
-		}
-		sf, err := ReadSample(rec, idx)
-		if err != nil {
-			return false, err
-		}
-		for j, alt := range rec.Alt() {
-			if c, ok := homRefCallFor(rec, sample, sf, j+1, alt, g); ok {
-				out = append(out, c)
-			}
-		}
-		return true, nil
-	})
-	return out, err
+	// Several selectors, or none: scan and filter per row. Seeking repeatedly
+	// would be worth it only for a sparse target set, and is a later concern.
+	return nil, false
 }
 
 // homRefCallFor builds the reference-call row for one sample at one ALT allele,
