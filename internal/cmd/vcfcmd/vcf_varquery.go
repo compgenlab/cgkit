@@ -338,8 +338,38 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 		}
 	case *varstore.VcfStore:
 		names, _ := s.Samples()
-		fmt.Fprintf(out, "store    vcf %s (%d samples)\n", path, len(names))
+		kind := "vcf"
+		if isGvcfPath(path) {
+			kind = "gvcf"
+		}
+		fmt.Fprintf(out, "store    %s %s (%d samples)\n", kind, path, len(names))
+		if kind == "gvcf" {
+			// Worth saying, because it explains a result that otherwise looks wrong:
+			// a row for a position no variant record mentions. Only a gVCF can
+			// answer there, and the depth reported is the block's floor rather than
+			// a depth measured at that base.
+			fmt.Fprintf(out, "  spans       blocks  (reference blocks answer for positions no variant reports)\n")
+			fmt.Fprintf(out, "  NOTE        min_dp on a reference row is the block's MIN_DP; dp is \".\"\n")
+		}
 	}
+}
+
+// isGvcfPath reports whether a VCF's header identifies it as a gVCF.
+//
+// Re-reading the header costs one open, and only under -v. The alternative is
+// threading the header out of the store, which would put a gVCF-shaped hole in the
+// Store interface for the sake of a verbose line.
+func isGvcfPath(path string) bool {
+	r, err := vcf.NewVcfFile(path)
+	if err != nil {
+		return false
+	}
+	defer r.Close()
+	h, err := r.Header()
+	if err != nil {
+		return false
+	}
+	return isGvcfHeader(h)
 }
 
 // warnUnknownSites notes any queried variant the source never reported.
@@ -788,6 +818,12 @@ func vouchedMinDP(store varstore.Store) int32 {
 // rows unambiguously. Anything else without a depth reports ".", because nothing
 // is known: putting a threshold there would assert a depth the data never had.
 func minDPOf(c varstore.Call, storeMinDP int32) string {
+	// A floor the source itself vouched for outranks both: a gVCF block's MIN_DP is
+	// the minimum depth anywhere in the block, so it holds everywhere the row applies,
+	// where the recorded DP would be the depth at one base only.
+	if c.MinDP > 0 {
+		return fmt.Sprint(c.MinDP)
+	}
 	if c.DP != varstore.Missing {
 		return fmt.Sprint(c.DP)
 	}
