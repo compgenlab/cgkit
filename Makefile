@@ -9,7 +9,9 @@ LDFLAGS := -X 'github.com/compgenlab/cgkit/internal/cmd.Version=$(VERSION)' \
 # sibling go.work workspace; release builds (no go.work present) use the
 # pinned module version from go.mod.
 
-.PHONY: build clean test bump-cghts
+RELEASE_BRANCH ?= main
+
+.PHONY: build clean test bump-cghts release-check
 
 build: $(BIN_DIR)/cgkit.darwin_arm64 $(BIN_DIR)/cgkit.darwin_amd64 $(BIN_DIR)/cgkit.linux_arm64 $(BIN_DIR)/cgkit.linux_amd64 $(BIN_DIR)/cgkit.windows_amd64.exe
 
@@ -45,3 +47,25 @@ bump-cghts:
 	GOWORK=off GOPRIVATE=github.com/compgenlab/* GOCACHE=/tmp/go-build-cache \
 		go get github.com/compgenlab/cghts@latest
 	GOWORK=off GOCACHE=/tmp/go-build-cache go mod tidy
+
+# Gate to run BEFORE tagging a release; it tags nothing itself. Verifies the
+# state being released is the state that was tested -- clean tree, on the release
+# branch, in sync with origin, tag unused -- then vets, tests and cross-builds
+# with GOWORK=off.
+#
+# GOWORK=off matters here specifically: ordinary targets resolve cghts through
+# the sibling go.work workspace, but a release resolves the go.mod pin. Passing
+# tests locally says nothing about whether the released artifact builds.
+#
+#   make release-check
+#   make release-check TAG=v1.2.3
+#   make release-check RELEASE_BRANCH=topic   # exercise it off main
+release-check:
+	@sh scripts/release-check.sh "$(RELEASE_BRANCH)" "$(TAG)"
+	@echo "--- verifying against the go.mod pin (GOWORK=off), not the workspace ---"
+	GOWORK=off GOCACHE=/tmp/go-build-cache go vet ./...
+	@out=$$(gofmt -l . 2>/dev/null); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+	GOWORK=off GOCACHE=/tmp/go-build-cache go test ./...
+	GOWORK=off $(MAKE) --no-print-directory build
+	@echo
+	@echo "release-check PASSED -- safe to tag."
