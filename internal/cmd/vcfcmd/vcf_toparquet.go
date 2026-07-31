@@ -159,6 +159,17 @@ could answer off-catalog positions.
 			return err
 		}
 
+		// Before the writer exists, since it needs them at construction.
+		contigs, err := collectContigs(cmd, args, vcfToParquetRegion)
+		if err != nil {
+			return err
+		}
+		if len(contigs) == 0 && vcfToParquetVerbose {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"note: no ##contig lines in the input; a VCF exported from this store "+
+					"cannot declare its reference\n")
+		}
+
 		w, err := varstore.NewWriter(vcfToParquetOut, varstore.WriterOpts{
 			Codec:        codec,
 			RowGroupSize: int64(vcfToParquetRowGroupSize),
@@ -168,6 +179,7 @@ could answer off-catalog positions.
 			Program:      buildinfo.String(),
 			Command:      buildinfo.CommandLine(),
 			Source:       strings.Join(args, ", "),
+			Contigs:      contigs,
 		})
 		if err != nil {
 			return err
@@ -648,4 +660,63 @@ func (c *parquetConverter) checkOrder(rec *vcf.VcfRecord, path string) error {
 	c.seenChrom[chrom] = true
 	c.lastPos = pos
 	return nil
+}
+
+// collectContigs gathers the ##contig lines of every input, so the store can be
+// exported back to VCF with a header that says which reference it came from.
+//
+// The UNION, not the first input's. A whole-genome callset usually ships one VCF
+// per chromosome, and such a file often declares only its own contig -- taking the
+// first input's list would silently lose every other chromosome, which is exactly
+// the case multi-input conversion exists to serve.
+//
+// Lines are kept verbatim, so lengths and any extra fields survive rather than
+// being reconstructed approximately.
+func collectContigs(cmd *cobra.Command, inputs []string, region string) ([]string, error) {
+	type origin struct {
+		line string
+		from string
+	}
+	byID := map[string]origin{}
+	var order []string
+
+	for _, path := range inputs {
+		src, err := openRecordSource(cmd, path, region)
+		if err != nil {
+			return nil, err
+		}
+		names := src.header.ContigNames()
+		for _, id := range names {
+			def, ok := src.header.ContigDef(id)
+			if !ok {
+				continue
+			}
+			line := def.String()
+			prev, seen := byID[id]
+			if !seen {
+				byID[id] = origin{line: line, from: path}
+				order = append(order, id)
+				continue
+			}
+			// Same contig declared differently by two inputs. A differing length
+			// means the inputs were called against different references, which would
+			// make one store out of two incompatible callsets -- refused for the same
+			// reason a differing sample set is.
+			if prev.line != line {
+				src.close()
+				return nil, fmt.Errorf("inputs disagree about contig %s:\n"+
+					"       %s: %s\n"+
+					"       %s: %s\n"+
+					"       a differing length means these were called against different "+
+					"references", id, prev.from, prev.line, path, line)
+			}
+		}
+		src.close()
+	}
+
+	out := make([]string, 0, len(order))
+	for _, id := range order {
+		out = append(out, byID[id].line)
+	}
+	return out, nil
 }

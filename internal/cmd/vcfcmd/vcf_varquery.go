@@ -618,12 +618,14 @@ func gtMatrixHeader(names []string, source string, store varstore.Store, q varst
 		h.AddFormat(&vcf.AnnotationDef{ID: "DS", Number: "A", Type: "Float",
 			Description: "Alt-allele dosage derived from GT"})
 	}
-	// Contigs the query named, so the header declares the sequences the records use.
-	// A store keeps no contig list of its own -- no length either -- so this covers
-	// only a query that named its sites, and the lines are lengthless. Recording the
-	// source's ##contig lines at conversion is the real fix; see the MetaContigs note.
-	for _, name := range queryContigs(q) {
-		h.AddContig(&vcf.ContigDef{ID: name})
+	// Contig declarations. A store that recorded its source's ##contig lines can
+	// reproduce them verbatim, lengths included; otherwise the best available is a
+	// bare ID for each contig the query named, which is nothing at all for a query
+	// that named none.
+	if !addRecordedContigs(h, store) {
+		for _, name := range queryContigs(q) {
+			h.AddContig(&vcf.ContigDef{ID: name})
+		}
 	}
 	stampVcfProvenance(h, "vcf-varquery")
 	h.AddLine("##cgkit_vcf-varquerySource=" + source)
@@ -638,6 +640,38 @@ func gtMatrixHeader(names []string, source string, store varstore.Store, q varst
 			"DP/AD/GQ; only the fact that the call was made survives conversion")
 	}
 	return h, nil
+}
+
+// addRecordedContigs emits the store's own ##contig lines, reporting whether it
+// had any.
+//
+// The lines are replayed through ContigDef.OrigLine, which String() returns
+// unchanged -- so a length, an assembly, an md5 or anything else the source
+// declared survives rather than being rebuilt from the parts we happen to model.
+func addRecordedContigs(h *vcf.VcfHeader, store varstore.Store) bool {
+	ps, ok := store.(*varstore.ParquetStore)
+	if !ok {
+		return false // a VCF backend: its own header is not exposed for replay
+	}
+	lines := ps.Contigs()
+	if len(lines) == 0 {
+		return false
+	}
+	for _, line := range lines {
+		h.AddContig(&vcf.ContigDef{ID: contigIDOf(line), OrigLine: line})
+	}
+	return true
+}
+
+// contigIDOf pulls the ID out of a "##contig=<ID=x,...>" line, which is needed
+// only as the map key the header stores definitions under.
+func contigIDOf(line string) string {
+	_, rest, ok := strings.Cut(line, "<ID=")
+	if !ok {
+		return line
+	}
+	id, _, _ := strings.Cut(rest, ",")
+	return strings.TrimSuffix(id, ">")
 }
 
 // queryContigs lists the distinct contigs a query's selectors name, in the order
