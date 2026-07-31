@@ -462,6 +462,7 @@ Conversion records these keys in the calls file, reported by `vcf-varquery -v`:
 | `cgkit.samples` | the sample roster, in source order |
 | `cgkit.min_dp` | the callable threshold used |
 | `cgkit.span_semantics` | `sites` or `blocks` |
+| `cgkit.contigs` | the source's `##contig` lines, verbatim — so an export can declare its reference |
 | `cgkit.nocallable` | `1` when regions are absent by request |
 | `cgkit.source` | input filename(s) |
 | `cgkit.program`, `cgkit.command` | cgkit version and full command line |
