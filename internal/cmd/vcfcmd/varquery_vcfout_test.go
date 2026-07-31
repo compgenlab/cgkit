@@ -263,3 +263,76 @@ func idOf(line string) string {
 	id, _, _ := strings.Cut(rest, ",")
 	return strings.TrimSuffix(id, ">")
 }
+
+// TestContigsSurviveConversion pins that a store carries its source's ##contig
+// lines and an export replays them verbatim.
+//
+// Without them the export is not self-describing: contig lines are how a VCF says
+// which reference it was called against, and lengths cannot be reconstructed from
+// the loci a query happened to touch.
+func TestContigsSurviveConversion(t *testing.T) {
+	base := convert(t, "testdata/contigs.vcf")
+
+	want := []string{"##contig=<ID=chr2,length=1000>", "##contig=<ID=chr10,length=1000>"}
+	for _, args := range [][]string{
+		// A query naming one contig still gets the whole declared set...
+		{"vcf-varquery", "--variant", "chr2", "--min-dp", "10", "--format", "vcf", base},
+		// ...and so does one naming no sites at all, which previously got nothing.
+		{"vcf-varquery", "--sample", "S1", "--hom-ref", "--min-dp", "10", "--format", "vcf", base},
+	} {
+		var got []string
+		for _, l := range strings.Split(runVcf(t, args...), "\n") {
+			if strings.HasPrefix(l, "##contig") {
+				got = append(got, l)
+			}
+		}
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("%v\n got:  %v\n want: %v", args[1:], got, want)
+		}
+	}
+}
+
+// TestContigsAreTheUnionOfInputs pins that multi-input conversion keeps every
+// input's contigs. A per-chromosome callset declares only its own contig per file,
+// so taking the first input's list would silently lose the rest -- exactly the case
+// multi-input conversion exists for.
+func TestContigsAreTheUnionOfInputs(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "store") + "/"
+	runVcf(t, "vcf-toparquet", "--out", base,
+		"testdata/multi_chr1.vcf", "testdata/multi_chr2.vcf")
+
+	out := runVcf(t, "vcf-varquery", "--sample", "S1", "--hom-ref", "--format", "vcf", base)
+	for _, want := range []string{"##contig=<ID=chr1,", "##contig=<ID=chr2,"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s from the union of both inputs", want)
+		}
+	}
+}
+
+// TestConflictingContigLengthIsRefused pins that inputs disagreeing about a contig
+// are rejected. A differing length means they were called against different
+// references, which would make one store out of two incompatible callsets -- the
+// same reason a differing sample set is refused.
+func TestConflictingContigLengthIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	src, err := os.ReadFile("testdata/multi_chr1.vcf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	altered := filepath.Join(dir, "altered.vcf")
+	if err := os.WriteFile(altered,
+		[]byte(strings.ReplaceAll(string(src), "length=1000", "length=999")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = runVcfErr(t, "vcf-toparquet", "--out", filepath.Join(dir, "store")+"/",
+		altered, "testdata/multi_chr1.vcf")
+	if err == nil {
+		t.Fatal("conflicting contig lengths should be refused")
+	}
+	for _, want := range []string{"disagree about contig", "different references"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should explain the conflict, got %v", err)
+		}
+	}
+}
