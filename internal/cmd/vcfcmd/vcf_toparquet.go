@@ -419,6 +419,10 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 
 	alts := rec.Alt()
 	pos := int32(rec.Pos)
+	// How far the source record reached. The store's writer would otherwise derive
+	// this from len(REF) alone, which is right for a plain variant but understates a
+	// symbolic ALT or a gVCF block -- and a region query then misses the record.
+	refEnd := int32(rec.RefSpanEnd())
 	nAlts := len(alts)
 	if nAlts > 1 {
 		c.nMultiAllelic++
@@ -487,6 +491,7 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 			if !ok {
 				continue
 			}
+			call.RefEnd = refEnd
 			carriers[j]++
 			if err := c.w.WriteCall(call); err != nil {
 				return err
@@ -500,6 +505,7 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 			Pos:       pos,
 			Ref:       rec.Ref,
 			Alt:       alt,
+			RefEnd:    refEnd,
 			AC:        acCounts[j],
 			AN:        an,
 			NCarriers: carriers[j],

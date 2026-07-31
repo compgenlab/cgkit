@@ -194,3 +194,49 @@ func countVcfRecords(t *testing.T, filename string) int {
 	}
 	return n
 }
+
+// TestVcfStripKeepsGvcfEnd covers the guard: a gVCF's reference blocks declare
+// their extent only through INFO/END, so stripping it produces a file that still
+// parses while claiming a single base of coverage where it claimed thousands.
+func TestVcfStripKeepsGvcfEnd(t *testing.T) {
+	out := runVcf(t, "vcf-strip", "--all", "testdata/sample.g.vcf")
+
+	if !strings.Contains(out, "END=5000") || !strings.Contains(out, "END=9000") {
+		t.Errorf("--all on a gVCF dropped INFO/END:\n%s", out)
+	}
+	if !strings.Contains(out, "##INFO=<ID=END") {
+		t.Errorf("INFO/END kept in records but not declared in the header:\n%s", out)
+	}
+	if !strings.Contains(out, "looks like a gVCF") {
+		t.Errorf("no warning about keeping END; stderr was:\n%s", out)
+	}
+	// Everything else --all asks for still goes.
+	if strings.Contains(out, "DP=30") {
+		t.Errorf("--all should still have stripped INFO/DP:\n%s", out)
+	}
+}
+
+// TestVcfStripForceEndRemovesIt is the override: asked explicitly, it complies, and
+// still says what the consequence is.
+func TestVcfStripForceEndRemovesIt(t *testing.T) {
+	out := runVcf(t, "vcf-strip", "--all", "--force-end", "testdata/sample.g.vcf")
+
+	if strings.Contains(out, "END=") {
+		t.Errorf("--force-end should have removed INFO/END:\n%s", out)
+	}
+	if strings.Contains(out, "##INFO=<ID=END") {
+		t.Errorf("--force-end left the END declaration behind:\n%s", out)
+	}
+	if !strings.Contains(out, "--force-end") {
+		t.Errorf("no warning on forced removal; stderr was:\n%s", out)
+	}
+}
+
+// TestVcfStripPlainVcfUnaffected pins that the guard is inert for ordinary input --
+// the reason the existing --all parity cases keep passing.
+func TestVcfStripPlainVcfUnaffected(t *testing.T) {
+	out := runVcf(t, "vcf-strip", "--all", "testdata/sample.vcf")
+	if strings.Contains(out, "gVCF") {
+		t.Errorf("gVCF guard fired on a plain VCF; stderr was:\n%s", out)
+	}
+}
