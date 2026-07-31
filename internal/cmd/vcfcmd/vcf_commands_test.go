@@ -531,3 +531,45 @@ func TestVcfToBedIncludePosPadding(t *testing.T) {
 		t.Errorf("vcf-tobed --include-pos --padding mismatch.\n got: %q\nwant: %q", got, want)
 	}
 }
+
+// TestVcfToBedSpans pins the reference span each kind of record covers.
+//
+// These are the cases the old implementation got wrong, and none of them appear in
+// testdata/sample.vcf, which is why the ngsutilsj parity goldens kept passing
+// through the fix. The first two diverge from ngsutilsj deliberately -- see the note
+// in vcf_parity_test.go.
+func TestVcfToBedSpans(t *testing.T) {
+	got := runVcf(t, "vcf-tobed", "testdata/spans.vcf")
+	want := strings.Join([]string{
+		// REF is 4 bases at POS 100, covering 0-based [99,103). ngsutilsj gives
+		// 99 104, one too many.
+		"chr1\t99\t103\tDEL",
+		// 8-base REF with a 2-base ALT. Typed INS by AltPositions, which used to
+		// collapse it to a single base.
+		"chr1\t199\t207\tINS",
+		// An insertion occupies only the base REF names, however long ALT is.
+		"chr1\t299\t300\tINS",
+		// Symbolic ALT: END is an absolute 1-based inclusive end.
+		"chr1\t399\t1400\tDEL",
+		// SVLEN is reported negative for a deletion; the span it covers is positive.
+		"chr1\t1499\t1749\tDEL",
+		"",
+	}, "\n")
+	if got != want {
+		t.Errorf("vcf-tobed spans:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestVcfToBedSkipsRefBlocks pins that reference blocks stay out of a variant BED.
+// They previously came out mislabelled SNV, or vanished silently when ALT was ".".
+func TestVcfToBedSkipsRefBlocks(t *testing.T) {
+	// The fixture holds a block at 100 (END=5000), a variant at 5001 whose ALT is
+	// "G,<NON_REF>", and a block at 5002 (END=9000). Only the variant is a variant,
+	// and only its real allele -- not the <NON_REF> sitting beside it -- is an
+	// interval. Asserted exactly: a substring check for "5000" would also match the
+	// variant's own start.
+	got := runVcf(t, "vcf-tobed", "testdata/sample.g.vcf")
+	if want := "chr1\t5000\t5001\tSNV\n"; got != want {
+		t.Errorf("vcf-tobed on a gVCF:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}

@@ -21,6 +21,7 @@ var (
 	vcfStripFilter     []string
 	vcfStripSample     []string
 	vcfStripKeepInfo   []string
+	vcfStripForceEnd   bool
 	vcfStripKeepFormat []string
 	vcfStripKeepFilter []string
 	vcfStripKeepSample []string
@@ -107,8 +108,20 @@ keeping the output in VCF format.
 			return err
 		}
 
+		// A gVCF's reference blocks declare their extent with INFO/END. Removing it
+		// leaves a file that still parses but silently claims one base of coverage
+		// where it claimed thousands, so rescue it unless told otherwise.
+		gvcf := isGvcfHeader(header)
+		keepEnd := gvcf && infoSet.strips("END") && !vcfStripForceEnd
+		if gvcf && infoSet.strips("END") {
+			warnStrippingGvcfEnd(cmd, keepEnd)
+		}
+
 		// Header: drop stripped INFO/FORMAT/FILTER defs.
 		for _, id := range append([]string(nil), header.InfoIDs()...) {
+			if keepEnd && id == "END" {
+				continue
+			}
 			if infoSet.strips(id) {
 				header.RemoveInfo(id)
 			}
@@ -151,7 +164,7 @@ keeping the output in VCF format.
 			if err != nil {
 				return err
 			}
-			if err := stripRecord(rec, infoSet, formatSet, filterSet, keptIdx, dbsnp); err != nil {
+			if err := stripRecord(rec, infoSet, formatSet, filterSet, keptIdx, dbsnp, keepEnd, vcfStripForceEnd); err != nil {
 				return err
 			}
 			if vcfStripPassing && rec.IsFiltered() {
@@ -174,9 +187,25 @@ keeping the output in VCF format.
 	},
 }
 
-func stripRecord(rec *vcf.VcfRecord, infoSet, formatSet, filterSet stripSet, keptIdx []int, dbsnp bool) error {
+func stripRecord(rec *vcf.VcfRecord, infoSet, formatSet, filterSet stripSet, keptIdx []int, dbsnp bool, keepEnd, forceEnd bool) error {
+	// Last line of defence for a gVCF whose header declared nothing that
+	// isGvcfHeader recognises. By now the output header has already been written,
+	// so END cannot be reinstated -- and continuing would emit records carrying an
+	// undeclared END, or none at all. Fail instead of writing that file.
+	if !keepEnd && !forceEnd && infoSet.strips("END") && rec.IsRefBlock() {
+		if _, ok := rec.Info().Get("END"); ok {
+			return fmt.Errorf("%s:%d is a reference block with INFO/END, but END is being stripped\n"+
+				"       and the header did not identify this file as a gVCF.\n"+
+				"       Removing END would silently reduce every block to one base.\n"+
+				"       Use --keep-info END to retain it, or --force-end to remove it anyway",
+				rec.Chrom, rec.Pos)
+		}
+	}
 	// INFO keys.
 	for _, k := range append([]string(nil), rec.Info().Keys()...) {
+		if keepEnd && k == "END" {
+			continue
+		}
 		if infoSet.strips(k) {
 			rec.Info().Remove(k)
 		}
@@ -248,6 +277,8 @@ func init() {
 	f.BoolVar(&vcfStripPassing, "passing", false, "Only output passing variants (post-strip)")
 	f.BoolVar(&vcfStripOnlySNVs, "only-snvs", false, "Only output SNVs")
 	f.BoolVar(&vcfStripOnlyIndels, "only-indels", false, "Only output indels")
+	f.BoolVar(&vcfStripForceEnd, "force-end", false,
+		"Allow removing INFO/END from a gVCF (by default it is kept, since removing it collapses every reference block to one base)")
 	f.StringArrayVar(&vcfStripInfo, "info", nil, "Remove these INFO fields (glob or @file; repeatable)")
 	f.StringArrayVar(&vcfStripFormat, "format", nil, "Remove these FORMAT fields (glob or @file; repeatable)")
 	f.StringArrayVar(&vcfStripFilter, "filter", nil, "Remove these FILTER codes (glob or @file; repeatable)")

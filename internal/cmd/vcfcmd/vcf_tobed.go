@@ -6,6 +6,8 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
+
+	"github.com/compgenlab/cghts/vcf"
 )
 
 var (
@@ -25,10 +27,13 @@ var vcfToBedCmd = &cobra.Command{
 	Short:       "Export allele positions from a VCF file to BED format",
 	Long: `Export allele positions from a VCF file to BED format.
 
-Each variant is written as a BED interval [POS-1, end), where end is the
-alternate-allele position (for SVs this is resolved from the ALT field or an
-INFO key such as END). The fourth column is the variant type (SNV, DEL, BND,
-...), or the original CHROM_POS when --include-pos is given.
+Each variant is written as a BED interval [POS-1, end) covering the reference
+bases the record spans: len(REF) for a plain variant, widened by INFO/END,
+INFO/SVLEN or FORMAT/LEN where those apply. The fourth column is the variant
+type (SNV, DEL, BND, ...), or the original CHROM_POS when --include-pos is
+given.
+
+gVCF reference blocks are skipped -- they describe coverage, not variants.
 
 Breakends (BND) that span two different chromosomes cannot be represented in
 BED and are skipped.`,
@@ -60,9 +65,28 @@ BED and are skipped.`,
 			if vcfToBedPassing && rec.IsFiltered() {
 				continue
 			}
+			// A gVCF reference block is not a variant, so it has no place in a BED
+			// of variant positions. Worth skipping explicitly: such a record used
+			// to be emitted mislabelled as an SNV, or silently dropped when its ALT
+			// was a bare ".".
+			if rec.IsRefBlock() {
+				continue
+			}
 			chrom := rec.Chrom
 			pos := rec.Pos
+			// The reference bases this record actually covers. AltPositions cannot
+			// answer this: it resolves an SV's *partner breakpoint*, which may be on
+			// another chromosome, where this asks how far the record itself reaches.
+			// Using it for the end gave a plain deletion one base too many and
+			// collapsed a multi-base-ALT deletion to a single base.
+			_, refEnd := rec.RefSpan()
 			for _, alt := range rec.AltPositions(vcfToBedAltChrom, vcfToBedAltPos, "", "") {
+				// A gVCF variant record carries the block allele alongside the real
+				// one ("G,<NON_REF>"), so the record itself is kept while this
+				// allele is not -- it names no variant to report.
+				if vcf.IsRefBlockAlt(alt.Alt) {
+					continue
+				}
 				chrom2 := alt.Chrom
 				if vcfToBedAltChrom != "" {
 					if v, ok := rec.Info().Get(vcfToBedAltChrom); ok {
@@ -73,19 +97,27 @@ BED and are skipped.`,
 					// BND across chromosomes cannot be written to BED.
 					continue
 				}
-				endpos := alt.Pos
+				start, endpos := pos-1, refEnd
+				// An explicit --alt-pos still wins: the caller is naming the INFO
+				// field that holds the end, and for a breakend that partner may lie
+				// upstream, so order the two rather than emit a negative interval.
 				if vcfToBedAltPos != "" {
 					if v, ok := rec.Info().Get(vcfToBedAltPos); ok {
 						if n, err := v.Int(); err == nil {
 							endpos = n
 						}
 					}
+				} else if alt.Type == vcf.VarBND {
+					endpos = alt.Pos
+				}
+				if endpos < start {
+					start, endpos = endpos, start
 				}
 				name := alt.Type.String()
 				if vcfToBedIncludePos {
 					name = fmt.Sprintf("%s_%d", rec.Chrom, rec.Pos)
 				}
-				fmt.Fprintf(out, "%s\t%d\t%d\t%s\n", chrom, (pos-1)-vcfToBedPadding, endpos+vcfToBedPadding, name)
+				fmt.Fprintf(out, "%s\t%d\t%d\t%s\n", chrom, start-vcfToBedPadding, endpos+vcfToBedPadding, name)
 			}
 		}
 

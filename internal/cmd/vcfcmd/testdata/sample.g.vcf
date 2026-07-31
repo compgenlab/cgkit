@@ -1,0 +1,14 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=100000>
+##ALT=<ID=NON_REF,Description="Represents any possible alternative allele">
+##GVCFBlock0-1=minGQ=0(inclusive),maxGQ=1(exclusive)
+##INFO=<ID=END,Number=1,Type=Integer,Description="Stop position of the interval">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Approximate read depth">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
+##FORMAT=<ID=MIN_DP,Number=1,Type=Integer,Description="Minimum DP in the block">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	100	.	A	<NON_REF>	.	.	END=5000;DP=30	GT:DP:GQ:MIN_DP	0/0:32:99:28
+chr1	5001	rs1	A	G,<NON_REF>	500	.	DP=44	GT:DP:GQ	0/1:44:99
+chr1	5002	.	C	<NON_REF>	.	.	END=9000;DP=28	GT:DP:GQ:MIN_DP	0/0:29:99:25

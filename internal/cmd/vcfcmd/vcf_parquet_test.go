@@ -1053,3 +1053,64 @@ func keys(m map[string]varstore.Call) []string {
 	}
 	return out
 }
+
+// TestSpanningRecordBackendsAgree is the cross-backend case for overlap selection.
+//
+// The existing agreement tests use short REFs and the --sample axis, so none of them
+// exercises a record that starts before the queried span. Both backends must return
+// it, and must return the same rows: the VCF side reads the span off the record, the
+// Parquet side off the ref_end column written at conversion, and those are two
+// different code paths reaching one answer.
+func TestSpanningRecordBackendsAgree(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "spanning.vcf")
+	ref := strings.Repeat("ACGT", 50) // 200 bases
+	body := strings.Join([]string{
+		"##fileformat=VCFv4.2",
+		"##contig=<ID=chr1,length=100000>",
+		`##ALT=<ID=DEL,Description="Deletion">`,
+		`##INFO=<ID=END,Number=1,Type=Integer,Description="End">`,
+		`##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">`,
+		`##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">`,
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1",
+		"chr1\t1000\t.\tN\t<DEL>\t.\tPASS\tEND=2000\tGT:DP\t0/1:30",
+		"chr1\t3000\t.\t" + ref + "\tA\t.\tPASS\t.\tGT:DP\t0/1:30",
+		"chr1\t9000\t.\tG\tC\t.\tPASS\t.\tGT:DP\t0/1:30",
+		"",
+	}, "\n")
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gz := filepath.Join(dir, "spanning.vcf.gz")
+	runVcf(t, "vcf-filter", "-o", gz, "--tbi", src)
+	store := filepath.Join(dir, "store") + string(os.PathSeparator)
+	runVcf(t, "vcf-toparquet", "--out", store, "--min-dp", "10", src)
+
+	for _, region := range []string{
+		"chr1:1400-1600", // inside the symbolic DEL, via INFO/END
+		"chr1:3100-3150", // inside the 200bp explicit-REF deletion
+		"chr1:8000-8100", // between records: both backends must say nothing
+		"chr1:9000-9000", // an ordinary variant, unchanged by any of this
+	} {
+		t.Run(region, func(t *testing.T) {
+			fromVcf := identityRows(runVcf(t, "vcf-varquery", "--variant", region, "--min-dp", "10", gz))
+			fromStore := identityRows(runVcf(t, "vcf-varquery", "--variant", region, "--min-dp", "10", store))
+			if fromVcf != fromStore {
+				t.Errorf("backends disagree for %s:\nvcf:   %s\nstore: %s", region, fromVcf, fromStore)
+			}
+		})
+	}
+
+	// And the spanning records really are found, so the test above cannot pass by
+	// both backends agreeing on nothing.
+	for _, tc := range []struct{ region, wantPos string }{
+		{"chr1:1400-1600", "1000"},
+		{"chr1:3100-3150", "3000"},
+	} {
+		got := runVcf(t, "vcf-varquery", "--variant", tc.region, "--min-dp", "10", store)
+		if !strings.Contains(got, "\t"+tc.wantPos+"\t") {
+			t.Errorf("%s did not return the record at %s:\n%s", tc.region, tc.wantPos, got)
+		}
+	}
+}

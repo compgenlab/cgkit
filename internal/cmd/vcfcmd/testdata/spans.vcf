@@ -1,0 +1,12 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=100000>
+##ALT=<ID=DEL,Description="Deletion">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position">
+##INFO=<ID=SVLEN,Number=A,Type=Integer,Description="SV length">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	100	.	ACGT	A	.	PASS	.	GT	0/1
+chr1	200	.	ACGTACGT	AC	.	PASS	.	GT	0/1
+chr1	300	.	A	ACCC	.	PASS	.	GT	0/1
+chr1	400	.	N	<DEL>	.	PASS	SVTYPE=DEL;END=1400	GT	0/1
+chr1	1500	.	N	<DEL>	.	PASS	SVTYPE=DEL;SVLEN=-250	GT	0/1

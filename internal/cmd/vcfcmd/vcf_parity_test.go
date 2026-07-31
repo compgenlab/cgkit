@@ -68,6 +68,14 @@ func TestParityWithNgsutilsj(t *testing.T) {
 		args []string
 	}{
 		{"samples", []string{"vcf-samples", vcf}},
+		// These three still match ngsutilsj, but only because testdata/sample.vcf
+		// happens to contain no multi-base-REF deletion. We deliberately DIVERGE on
+		// those: ngsutilsj ends a plain deletion at POS+len(REF), one base past the
+		// bases REF actually covers, and collapses a deletion whose ALT is longer
+		// than one base to a single base. See TestVcfToBedSpans for the corrected
+		// values. If a deletion is ever added to sample.vcf, these cases will fail
+		// and the right response is to accept the new output, not to restore the
+		// off-by-one.
 		{"tobed", []string{"vcf-tobed", vcf}},
 		{"tobed-passing", []string{"vcf-tobed", "--passing", vcf}},
 		{"tobed-includepos-pad", []string{"vcf-tobed", "--include-pos", "--padding", "5", vcf}},
