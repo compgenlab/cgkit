@@ -20,12 +20,47 @@ with no `varstore` involved:
 | `chr1:1400-1600` | `chr1:1000 N <DEL>`, `SVTYPE=DEL;END=2000` | **no** |
 | `chr1:4900-5100` | `chr1:5000 G>C` plain SNV (control) | yes |
 
-### What htslib actually does
+### What the format actually specifies
 
-The `.tbi` header's `col_end` is `0` for the VCF preset, which is easy to read as "VCF
-records have no end". That is not how htslib treats it: `col_end` is consulted only for
-`TBX_GENERIC`, and each preset derives its own end. From `tbx.c` (`develop`, verified
-by reading the source, not from recall):
+The `.tbi` header's `col_end` is `0` for the VCF preset, which reads naturally as "VCF
+records have no end". The TBI spec (`hts-specs/tabix.tex`) has two separate rules, and
+the distinction is the whole thing:
+
+> For the SAM format, the end of a region equals `POS` plus the reference length in the
+> alignment, inferred from `CIGAR`. For the VCF format, the end of a region equals `POS`
+> plus the size of the deletion.
+>
+> Field `col_beg` may equal `col_end`, and in this case, the end of a region is
+> `end`=`beg+1`.
+
+The second rule is conditioned on **`col_beg == col_end`**, not on `col_end == 0`. For
+VCF, `tbx_conf_vcf = { TBX_VCF, 1, 2, 0, '#', 0 }` gives `col_beg = 2`, `col_end = 0`,
+so they are unequal and that rule does not apply; the first rule does. htslib matches:
+`tbx.c:136` reads `if (conf->bc <= conf->ec) intv->end = intv->beg;`, which for VCF is
+`2 <= 0` — false — so the end is deliberately left unset at the POS column and filled
+in from REF later.
+
+Both bullets are byte-identical to the original 2010 commit that added the spec
+(`385b4743`); the file has had five commits ever, none touching this text. So this is
+not a rule that changed under anyone.
+
+**Two fair criticisms of the spec, since they explain why this is easy to get wrong.**
+It states a format-specific coordinate rule as an unnumbered note rather than in the
+`col_end` field description, where a reader looking up `col_end = 0` would actually
+find it. And "the size of the deletion" is vague — it means the reference span,
+`len(REF)`, which also covers MNPs and is `1` for an insertion.
+
+**One caveat worth keeping straight.** The spec documents only the `len(REF)` case. It
+says nothing about `INFO/END`, `SVLEN` or `FORMAT/LEN`; those are htslib behaviour
+beyond the written spec. So matching the spec fixes long indels, while matching htslib
+is what makes SV and gVCF work — and only the former can be justified from the spec
+alone. Anything reading a `.tbi` written by htslib has to match the implementation, not
+the document.
+
+### What htslib implements
+
+`col_end` is consulted only for `TBX_GENERIC`; each other preset derives its own end.
+From `tbx.c` on `develop`, read directly:
 
 | preset | line | end is computed from |
 |---|---|---|
