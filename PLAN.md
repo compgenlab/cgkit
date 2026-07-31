@@ -6,79 +6,87 @@ isn't redone and so the reasoning behind deferred decisions survives.
 
 ---
 
-## 1. Spanning VCF records are mis-indexed and mis-filtered (bug, blocks §2)
+## 1. cghts's tabix layer treats every VCF record as one base wide (bug, blocks §2)
 
-**Status: confirmed by reproduction, not yet fixed. Lives in `cghts/htsio/tabix`.**
+**Status: confirmed against htslib source. Lives in `cghts/htsio/tabix`.**
 
-A tabix region query misses any VCF record whose span extends past its first base.
-Reproduced end to end with `cgkit`-built indexes, and isolated to the tabix layer
-(`tabix.Reader.Query` alone, with no `varstore` involved):
+A region query misses any VCF record whose span extends past its first base.
+Reproduced end to end with cgkit-built indexes, then isolated to `tabix.Reader.Query`
+with no `varstore` involved:
 
 | query | record it should find | found |
 |---|---|---|
-| `chr1:1400-1600` | `chr1:1000 N <DEL>` with `SVTYPE=DEL;END=2000` | **no** |
-| `chr1:3100-3150` | `chr1:3000` 200 bp deletion, explicit `REF` | **no** |
+| `chr1:3100-3150` | `chr1:3000`, 200 bp deletion, explicit `REF` | **no** |
+| `chr1:1400-1600` | `chr1:1000 N <DEL>`, `SVTYPE=DEL;END=2000` | **no** |
 | `chr1:4900-5100` | `chr1:5000 G>C` plain SNV (control) | yes |
 
-### Where it actually goes wrong
+### What htslib actually does
 
-**The reader is the primary cause.** `htsio/tabix/reader.go:502-509` computes
-`end := beg + 1` for VCF (overridden only `if meta.ColEnd != 0`, and the VCF preset
-sets `colEnd = 0`), and `reader.go:458` filters on it: `if rec.End <= start`. A record
-whose true span reaches into the query region is therefore discarded by the overlap
-test regardless of what the index says. This is why the reproduction above fails, and
-it is **independent of how the file was indexed** — a bcftools-built `.tbi` would not
-help.
+The `.tbi` header's `col_end` is `0` for the VCF preset, which is easy to read as "VCF
+records have no end". That is not how htslib treats it: `col_end` is consulted only for
+`TBX_GENERIC`, and each preset derives its own end. From `tbx.c` (`develop`, verified
+by reading the source, not from recall):
 
-**The writer is a second, distance-dependent cause.** `writer.go:513-520` bins by
-`Reg2Bin(l.start, recEnd)` with the same `recEnd = l.start + 1`. But tabix's smallest
-bin covers 16 kb, so for the cases above a point and a span land in the *same* bin
-(both `4681`) and the chunk is still examined:
+| preset | line | end is computed from |
+|---|---|---|
+| `TBX_GENERIC` | 153-156 | the `col_end` **column** — the only preset that reads one |
+| `TBX_SAM` | 170 | `intv->end = intv->beg + l`, `l` summed over **CIGAR** `M`/`D`/`N` |
+| `TBX_VCF` | 174 | `intv->end = intv->beg + (i - b)` — i.e. `len(REF)` |
+| `TBX_VCF` | 230 | `intv->end = end` from **`INFO/END=`** (ignored, with a warning, if `END <= POS`) |
+| `TBX_VCF` | 206-300 | `INFO/SVLEN` for symbolic ALTs, and `FORMAT/LEN` for `<*>`/`<NON_REF>` — the ALT scan at line 197 is commented `//note gvcf` |
+| `TBX_VCF` | 304-309 | reconciles them: `max(reflen, svlen, fmtlen) + beg`, then keeps whichever is larger, that or the `INFO/END` value |
 
-| interval | bin |
-|---|---|
-| 200 bp del @3000 binned as a point | 4681 |
-| same, binned by `len(REF)` | 4681 |
-| query `3100-3150` | 4681 |
-| a 100 kb del @1000 binned as a point | 4681 |
-| query `90000-90100` | **4686** |
+So a calculated end is the rule for the structured presets, not the exception —
+`TBX_GENERIC` is the only one that reads an end column at all. SAM is the clearest
+case: a CIGAR-derived end is not a column value under any reading. Line 310 even notes
+the calculation is kept in sync with `vcf.c:get_rlen`.
 
-So point-binning only loses a record once its span crosses a 16 kb window — a large
-SV or a long gVCF block. Fixing the reader alone would repair the reproduced cases;
-fixing both is required for spans over 16 kb.
+**This applies to `.tbi` specifically, not just `.csi`.** `tbx_index()` line 493 takes
+`min_shift == 0` → `n_lvls = 5, fmt = HTS_FMT_TBI`; line 532 then calls
+`hts_idx_push(tbx->idx, intv.tid, intv.beg, intv.end, …)` with that same computed
+`intv.end` in **both** the TBI and CSI branches. The choice only changes bin geometry
+(`min_shift`, `n_lvls`) and the on-disk container — never the interval being indexed.
+`tbx_readrec` (line 371) hands the same `intv.end` to the iterator, so the read-side
+overlap test uses it too.
 
-### The span's two sources
+### Where cghts diverges
 
-- **`len(REF)`.** htslib indexes a VCF record's end as `beg + len(REF)`; cghts uses
-  `beg + 1`. This affects **plain long deletions and MNPs**, with no symbolic ALT and
-  no `INFO/END` anywhere — the `chr1:3100-3150` reproduction is exactly this case.
-- **`INFO/END`**, for symbolic ALTs (`<DEL>`, `<DUP>`, `<CNV>`) and gVCF reference
-  blocks.
+cghts implemented the `TBX_GENERIC` column path and never added the preset-specific
+derivation, in either direction:
 
-> **Open question — worth settling before implementing.** Marcus's read is that tabix
-> cannot carry an end differing from a column value, which would mean the `INFO/END`
-> half is not htslib-compatible behaviour to match. My reading of htslib's `tbx.c`
-> `get_intv` is that the `.tbi` `format` field selects preset-specific end derivation:
-> `TBX_SAM` computes the end from the **CIGAR** (not a column under any reading), and
-> `TBX_VCF` uses `len(REF)` and scans INFO for `END=`. `col_end = 0` for VCF is what
-> makes that logic necessary rather than what forbids it. **Unverified here** — no
-> `tabix`/`bgzip`/`bcftools` in this environment, so this rests on source knowledge,
-> not a measurement. Settle it by indexing the same SV VCF with htslib and diffing
-> query results. Note the `len(REF)` half stands either way, so §1 is a real bug
-> regardless of how this resolves.
+- **Reader — the cause that always bites.** `reader.go:502-509` computes
+  `end := beg + 1`, overridden only `if meta.ColEnd != 0`, and `reader.go:458` filters
+  on it (`if rec.End <= start`). So a spanning record is dropped by the overlap test
+  **regardless of how the file was indexed** — an htslib-built `.tbi` would not help.
+- **Writer — secondary, distance-dependent.** `writer.go:513-520` bins by
+  `Reg2Bin(l.start, recEnd)` with the same understated `recEnd`. But TBI's smallest bin
+  covers 16 kb, so a point and a short span usually land in the *same* bin and the
+  chunk is still examined:
+
+  | interval | bin |
+  |---|---|
+  | 200 bp del @3000 as a point | 4681 |
+  | same, by `len(REF)` | 4681 |
+  | query `3100-3150` | 4681 |
+  | 100 kb del @1000 as a point | 4681 |
+  | query `90000-90100` | **4686** |
+
+  So point-binning only loses a record once its span crosses a 16 kb window — a large
+  SV, or a long gVCF block.
 
 This is not only a gVCF prerequisite. It is a present-day correctness bug for
-long-indel VCFs — and, if the `INFO/END` reading holds, for structural-variant VCFs,
-which are a supported input class here (`vcf-svtofasta`, `vcf-tobedpe`). Every path
-writing a VCF `.tbi` is affected: `vcf-filter --tbi`, `vcf-varquery --tbi`,
-`vcf-split`, `tab-index`, `tab-sort`.
+long-indel and structural-variant VCFs, which are a supported input class here
+(`vcf-svtofasta`, `vcf-tobedpe`). Every path writing or reading a VCF `.tbi` is
+affected: `vcf-filter --tbi`, `vcf-varquery --tbi`, `vcf-split`, `tab-index`,
+`tab-sort`.
 
-Worth noting what this is *not*: the end-of-record machinery already exists and the
-BED preset exercises it. The fix supplies a VCF-shaped source for the value rather
-than building interval support from scratch.
+Worth noting what this is *not*: the end-of-record machinery already exists and the BED
+preset exercises it. The fix supplies a VCF-shaped source for the value rather than
+building interval support from scratch.
 
 **Fix order:** reader first — it is the cause that always bites, and it is what makes
-externally-built indexes usable. Then the writer, for spans over 16 kb. Then
+externally-built indexes usable. Then the writer, for spans over 16 kb. Match htslib's
+precedence (`len(REF)`, then `INFO/END` when greater than POS, then `SVLEN`/`LEN`), and
 differential-test against an htslib-produced `.tbi` on the same file. Note
 `htsio/tabix/` has had other work in flight — check for overlap before starting.
 
