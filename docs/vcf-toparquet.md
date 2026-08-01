@@ -123,7 +123,7 @@ Every store records `cgkit.span_semantics`:
 | value | meaning |
 |---|---|
 | `sites` | intervals mark catalog sites only. All a plain VCF can support. |
-| `blocks` | intervals came from gVCF reference blocks — positive statements about spans. Not yet produced by any converter. |
+| `blocks` | intervals came from gVCF reference blocks — positive statements about spans. Not yet produced by any converter -- `vcf-toparquet` **refuses** a gVCF rather than mis-storing one. Query a gVCF directly with `vcf-varquery`, which reads reference blocks as coverage. |
 
 Only a `blocks` store could answer for a position absent from the catalog. Stores predating the key are read as `sites`, the conservative reading.
 
@@ -140,7 +140,7 @@ warning: chr1:250:A:G is not in the source; reporting not-assayed for every samp
 chrom	pos	ref	alt	sample	gt	dp	min_dp	ad_ref	ad_alt	gq
 ```
 
-This is a property of the *input*, not a limitation of Parquet. A gVCF, whose reference blocks carry `END` and `MIN_DP`, makes positive statements about spans and is what would license answering off-catalog positions.
+This is a property of the *input*, not a limitation of Parquet. A gVCF, whose reference blocks carry `END` and `MIN_DP`, makes positive statements about spans -- and `vcf-varquery` now reads one directly, answering for positions no variant record mentions. What is not yet possible is *storing* that: conversion refuses a gVCF, because a block in this schema would become a `<NON_REF>` catalog site with its span discarded.
 
 ### What counts as "called"
 

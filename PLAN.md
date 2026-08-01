@@ -37,86 +37,52 @@ What shipped:
   `vcf-tobed` reports true spans and skips reference blocks; `vcf-toparquet`
   records the span.
 
-## 2. gVCF support — NOT started; §1 was the prerequisite, not the feature
+## 2. gVCF support — querying DONE; conversion deliberately refused
 
-**Status: the plumbing is in place, gVCF as a data source is not.** §1 means a gVCF
-can now be indexed, region-queried and passed through `vcf-strip` without being
-silently destroyed. It does not mean the store understands reference blocks.
-
-Converting a gVCF today **appears to work and is wrong**. From
-`testdata/sample.g.vcf`:
+**`vcf-varquery` reads gVCFs.** A reference block asserts that a sample was called
+reference across a span at at least `MIN_DP`, and that is now what it reports:
 
 ```
-$ vcf-toparquet --out g/ sample.g.vcf     # 2 blocks + 1 variant
-wrote g/: 1 calls, 4 sites, 1 callable runs over 1 samples
-
-$ vcf-varquery --variant chr1 --hom-ref g/
-chr1  100   A  <NON_REF>  S1  0/0  .   10  ...
-chr1  5001  A  G          S1  0/1  44  44  ...
-chr1  5002  C  <NON_REF>  S1  0/0  .   10  ...
+$ vcf-varquery --variant chr1:2000-2100 --hom-ref --min-dp 10 sample.g.vcf.gz
+chrom  pos  ref  alt  sample  gt   dp  min_dp  ad_ref  ad_alt  gq
+chr1   100  A    .    S1      0/0  .   28      .       .       60
 ```
 
-Four things wrong there, and none is a crash:
+`alt` is `.` because a block names no alternate; `min_dp` is the block's own
+`MIN_DP`, not the query threshold; `dp` is `.` because a block measures no single
+base; `gq` carries `RGQ`. One row per block per sample — never one per base.
 
-1. **`<NON_REF>` enters the sites catalog as a variant.** A reference block becomes
-   a pseudo-site with an ALT of `<NON_REF>`, so the catalog — which is supposed to
-   be the exact boundary of what is answerable — is polluted with non-variants, and
-   `AC`/`AN` count a block allele as an allele.
-2. **`span_semantics` is still `sites`.** `varstore.SpansBlocks` exists and
-   `Classify` already branches on it, but nothing sets it, so an off-catalog
-   position is `not_assayed` even though the gVCF explicitly asserted coverage
-   there.
-3. **`MIN_DP` is ignored.** `min_dp` reports the conversion `--min-dp` (10), not the
-   block's own `MIN_DP` (28). This is what a query-time depth threshold needs.
-4. **The block reads as a variant call.** Because §1 landed, a query *inside* a
-   block does now return it by overlap — `--variant chr1:2000-2100` yields the row
-   at 100 — which is accidentally useful and semantically wrong: it is reported as
-   a `<NON_REF>` variant rather than as reference across a span.
+The boundary still holds. A **gap** between blocks was never reported, so it stays
+unanswerable, and a block below the gate is excluded. `Gate.Admits` prefers `MinDP`
+over `DP` for that reason: `Missing` passes every gate by design, so a block-derived
+call with no `DP` would otherwise be admitted unconditionally — the gate silently
+doing nothing on exactly the state gVCF makes trustworthy.
 
-So the work remaining is about **meaning**, not retrieval:
+**`vcf-toparquet` refuses a gVCF.** It used to convert one happily and produce a
+store wrong in three ways nothing downstream could detect: `<NON_REF>` in the sites
+catalog, `AC`/`AN` counting a block allele as an allele, and every block reduced to
+its first base.
 
-- `vcf-toparquet` recognises a gVCF (`isGvcfHeader` already exists in `vcfcmd`, used
-  only by `vcf-strip`) and treats a reference block as coverage rather than as a
-  variant: no catalog site, no allele counts, no ALT call.
-- `regions.parquet` records block spans, and the store declares `SpansBlocks`.
-- `Classify` and reference-call reconstruction treat block coverage as an
-  observation, which is the only way `non_carrier` becomes observed rather than
-  inferred from adjacent variant sites.
-- `MIN_DP`/`RGQ` drive the gate, enabling a query-time `--min-dp` that need not
-  match the conversion value.
-- A mixed record (`G,<NON_REF>`) keeps its real allele and drops the block one.
-  `vcf.IsRefBlockAlt` exists for exactly this.
+### What conversion would still need
 
-### Why it is worth doing
+Deferred, not forgotten. A blocks store needs block spans in `regions.parquet` with
+a per-block `MIN_DP` column, `SpansBlocks` set, `Classify`'s off-catalog branch wired
+to the regions scan (it already tests `s.spans != SpansBlocks`), and `callsWithRef`
+given a second emission source — it is driven by the sites catalog, so it emits
+nothing off-catalog no matter what the metadata says.
 
-A plain VCF asserts nothing about the positions between its records, so a missing
-row cannot be told from an unsequenced one. A gVCF's blocks are positive statements
-about spans, which is what turns "absence of evidence" into "evidence of absence" —
-the difference between *"not reported"* and *"confidently reference at depth 30"*.
-That distinction is the whole question for a polygenic score, where treating an
-absent variant as `0/0` biases the result and treating it as missing drops a term,
-with nothing reporting either.
+Merging N gVCFs is a separate problem again: they are single-sample, so a cohort is N
+inputs each bringing a *different* sample. That inverts the converter's same-samples
+rule, breaks `checkOrder` (they all start at chr1:1), needs an N-way merge to keep
+the `(chrom,pos)` sort every pruning bound depends on, and raises AC/AN denominators
+across inputs — which is joint genotyping, and out of scope.
 
-### Traps already identified
+### The testing note that changed
 
-- **The cross-backend equivalence tests cannot cover this.** A blocks-store
-  answering off-catalog has no VCF-backed equivalent to compare against, so the
-  mechanism that caught the sibling-allele bug is blind. It needs independent ground
-  truth (bcftools/GATK on the same gVCF).
-- **Run intervals in a `SpansSites` store must keep meaning what they mean.** The
-  risk is a change that makes `regions.parquet` look like coverage for *all* stores,
-  retroactively licensing claims the source never made.
-- **`SpansSites` stays the default** for anything lacking the key. Do not upgrade
-  old stores by inference.
-- Conversion reads sequentially, so it never needed §1. A `--region`-bounded
-  conversion would, and cannot simply seek to the region: a block overlapping the
-  region's start begins before it.
-
-### Not in scope
-
-Writing gVCF output; emitting reference blocks from `vcf-tobed` or
-`vcf-varquery --format vcf`; joint genotyping or merging N gVCFs (that is
-GATK/GenomicsDB's job — we consume its output); per-base depth.
+An earlier version of this plan recorded that a blocks store answering off-catalog
+would have no VCF-backed equivalent, leaving the cross-backend harness structurally
+blind. Making `VcfStore` the *first* block-aware backend inverts that: a gVCF read
+directly is now the ground truth a future blocks store gets checked against.
 
 ## 3. Bytes-read / row-groups-decoded counters (optional)
 
