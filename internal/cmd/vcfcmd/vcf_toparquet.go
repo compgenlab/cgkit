@@ -143,9 +143,23 @@ could answer off-catalog positions.
 			return err
 		}
 		samples := first.header.Samples()
+		gvcf := isGvcfHeader(first.header)
 		first.close()
 		if len(samples) == 0 {
 			return fmt.Errorf("%s has no samples; a genotype store needs per-sample calls", args[0])
+		}
+		// A gVCF converts without complaint today and the result is wrong in ways
+		// nothing downstream can detect, so refuse rather than write it. Query the
+		// gVCF directly instead: vcf-varquery understands reference blocks.
+		if gvcf {
+			return fmt.Errorf("%s looks like a gVCF, and converting one is not supported yet\n"+
+				"       Its reference blocks would be stored as if they were variants:\n"+
+				"         - <NON_REF> would enter the sites catalog, which is meant to be\n"+
+				"           the exact boundary of what the store can answer\n"+
+				"         - AC/AN would count a reference-block allele as an allele\n"+
+				"         - each block's span would be discarded, keeping only its first base\n"+
+				"       Query the gVCF directly with vcf-varquery, which reads blocks as the\n"+
+				"       coverage they are.", args[0])
 		}
 
 		// Refuse to clobber an existing store before opening anything: the

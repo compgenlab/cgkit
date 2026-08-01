@@ -3,6 +3,7 @@ package vcfcmd
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1113,4 +1114,70 @@ func TestSpanningRecordBackendsAgree(t *testing.T) {
 			t.Errorf("%s did not return the record at %s:\n%s", tc.region, tc.wantPos, got)
 		}
 	}
+}
+
+// TestToParquetRefusesGvcf pins the guard. Converting a gVCF used to succeed and
+// produce a store that was wrong in ways nothing downstream could detect:
+// <NON_REF> in the sites catalog, AC/AN counting a block allele, and every block
+// reduced to its first base. Refusing is the only honest outcome until a blocks
+// store exists.
+func TestToParquetRefusesGvcf(t *testing.T) {
+	err := runVcfErr(t, "vcf-toparquet", "--out",
+		filepath.Join(t.TempDir(), "g")+string(os.PathSeparator), "testdata/gvcf.vcf")
+	if err == nil {
+		t.Fatal("converting a gVCF should be refused")
+	}
+	for _, want := range []string{"gVCF", "sites catalog", "vcf-varquery"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q; got: %v", want, err)
+		}
+	}
+}
+
+// TestGvcfQueryAnswersOffCatalog is the CLI-level contract for gVCF support.
+func TestGvcfQueryAnswersOffCatalog(t *testing.T) {
+	gz := filepath.Join(t.TempDir(), "g.vcf.gz")
+	runVcf(t, "vcf-filter", "-o", gz, "--tbi", "testdata/gvcf.vcf")
+
+	t.Run("a block answers for a position no variant reports", func(t *testing.T) {
+		got := tsvDataRows(runVcf(t, "vcf-varquery", "--variant", "chr1:2000-2100",
+			"--hom-ref", "--min-dp", "10", gz))
+		// alt is "." and min_dp is the block's own MIN_DP, not the query threshold;
+		// dp is "." because a block measures no single base.
+		want := []string{"chr1\t100\tA\t.\tS1\t0/0\t.\t28\t.\t.\t60"}
+		if !slices.Equal(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a gap stays unanswerable", func(t *testing.T) {
+		if got := tsvDataRows(runVcf(t, "vcf-varquery", "--variant", "chr1:10000-10100",
+			"--hom-ref", "--min-dp", "10", gz)); len(got) != 0 {
+			t.Errorf("a gap between blocks must yield nothing, got %q", got)
+		}
+	})
+
+	t.Run("a block below the gate is excluded", func(t *testing.T) {
+		if got := tsvDataRows(runVcf(t, "vcf-varquery", "--variant", "chr1:12500-12600",
+			"--hom-ref", "--min-dp", "10", gz)); len(got) != 0 {
+			t.Errorf("a block with MIN_DP 3 must not pass --min-dp 10, got %q", got)
+		}
+		// ...and appears when the gate allows it, so the exclusion above is the gate's
+		// doing rather than the block being invisible.
+		got := tsvDataRows(runVcf(t, "vcf-varquery", "--variant", "chr1:12500-12600",
+			"--hom-ref", "--min-dp", "1", gz))
+		if len(got) != 1 || !strings.Contains(got[0], "\t3\t") {
+			t.Errorf("ungated, the MIN_DP 3 block should appear, got %q", got)
+		}
+	})
+
+	t.Run("a variant record keeps only its real allele", func(t *testing.T) {
+		got := tsvDataRows(runVcf(t, "vcf-varquery", "--variant", "chr1:5001", gz))
+		if len(got) != 1 || !strings.Contains(got[0], "\tG\t") {
+			t.Fatalf("want the G call, got %q", got)
+		}
+		if strings.Contains(got[0], "NON_REF") {
+			t.Error("reported the block allele as an alternate")
+		}
+	})
 }

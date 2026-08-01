@@ -1,0 +1,13 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=100000>
+##ALT=<ID=NON_REF,Description="any possible alternative allele">
+##INFO=<ID=END,Number=1,Type=Integer,Description="Stop position">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="GQ">
+##FORMAT=<ID=MIN_DP,Number=1,Type=Integer,Description="Min DP in block">
+##FORMAT=<ID=RGQ,Number=1,Type=Integer,Description="Ref GQ">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+chr1	100	.	A	<NON_REF>	.	.	END=5000	GT:DP:MIN_DP:RGQ	0/0:40:28:60
+chr1	5001	rs1	A	G,<NON_REF>	500	PASS	.	GT:DP:GQ	0/1:44:99
+chr1	12000	.	T	<NON_REF>	.	.	END=13000	GT:DP:MIN_DP:RGQ	0/0:9:3:20
