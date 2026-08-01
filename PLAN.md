@@ -63,19 +63,41 @@ store wrong in three ways nothing downstream could detect: `<NON_REF>` in the si
 catalog, `AC`/`AN` counting a block allele as an allele, and every block reduced to
 its first base.
 
-### What conversion would still need
+### Conversion is a cohort operation — deferred to the next cgkit release
 
-Deferred, not forgotten. A blocks store needs block spans in `regions.parquet` with
-a per-block `MIN_DP` column, `SpansBlocks` set, `Classify`'s off-catalog branch wired
-to the regions scan (it already tests `s.spans != SpansBlocks`), and `callsWithRef`
-given a second emission source — it is driven by the sites catalog, so it emits
-nothing off-catalog no matter what the metadata says.
+Not a stopgap, and not a single-file feature we simply have not written yet. **The
+unit of gVCF conversion is a *set* of gVCFs, converted together.** A gVCF is
+single-sample by construction, so converting one produces a one-sample store — which
+answers nothing a direct `vcf-varquery` against that gVCF does not already answer,
+faster and with no conversion step. The value of a store is the cohort: many samples
+at one locus, which is exactly what one gVCF cannot give.
 
-Merging N gVCFs is a separate problem again: they are single-sample, so a cohort is N
-inputs each bringing a *different* sample. That inverts the converter's same-samples
-rule, breaks `checkOrder` (they all start at chr1:1), needs an N-way merge to keep
-the `(chrom,pos)` sort every pruning bound depends on, and raises AC/AN denominators
-across inputs — which is joint genotyping, and out of scope.
+That reframes the work. It is not "teach the converter about blocks" plus "later,
+handle several inputs" — handling several inputs *is* the feature, and the block
+handling is a detail inside it.
+
+What it needs, in rough order of difficulty:
+
+- **An N-way coordinate merge.** N single-sample gVCFs all start at chr1:1, so
+  today's `checkOrder` rejects them outright, and simply concatenating would break
+  the `(chrom, pos)` sort that every row-group pruning bound depends on.
+- **A union roster.** The converter requires every input to carry the *same* samples;
+  for gVCFs each input brings a different one. The mechanical part is small (both
+  positional uses already route through `perm`), and the new error is the opposite of
+  today's: the same sample appearing in two inputs, which would double-count.
+- **A decision on AC/AN.** A site row is written the moment its record is read, and
+  there is no cross-input accumulator. Merging allele counts across N gVCFs at a
+  shared locus is joint genotyping. Either compute them over the merged cohort or
+  refuse to emit them — but not the current behaviour, which would report a
+  per-sample count as if it were a cohort count.
+- **The block schema**: block spans in `regions.parquet` with a per-block `MIN_DP`
+  column, `SpansBlocks` set, `Classify`'s off-catalog branch wired to the regions
+  scan (it already tests `s.spans != SpansBlocks`), and `callsWithRef` given a second
+  emission source — it is driven by the sites catalog, so it emits nothing
+  off-catalog no matter what the metadata says.
+
+Until then `vcf-toparquet` refuses a gVCF, which is the right answer rather than a
+placeholder: the store it would write is wrong in ways nothing downstream can detect.
 
 ### The testing note that changed
 
