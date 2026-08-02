@@ -99,6 +99,18 @@ What it needs, in rough order of difficulty:
 Until then `vcf-toparquet` refuses a gVCF, which is the right answer rather than a
 placeholder: the store it would write is wrong in ways nothing downstream can detect.
 
+The refusal keys on **a reference block record**, not on the header. It once used
+`isGvcfHeader` and rejected ordinary cohort VCFs for it: a DRAGEN msVCF is a
+joint-genotyped callset — precisely this command's input — and still carries the
+`##ALT=<ID=NON_REF>` line it inherited from the gVCFs it was built from, as do many
+GATK-derived callsets. `##ALT=<ID=*>` is worse than incidental: VCF 4.5 gives the
+gVCF unspecified allele and the ordinary spanning-deletion allele the same ALT ID,
+so no header test can separate them even in principle. `vcf-strip` still has to
+decide from the header, because it writes its output header before reading a record;
+`vcf-toparquet` does not, and a failed conversion `Discard()`s, so reading first
+costs nothing recoverable. A mixed `G,<NON_REF>` record is a variant record and
+converts, with the block allele masked out the way any non-focal alternate is.
+
 ### The testing note that changed
 
 An earlier version of this plan recorded that a blocks store answering off-catalog
