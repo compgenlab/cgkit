@@ -142,6 +142,8 @@ chrom	pos	ref	alt	sample	gt	dp	min_dp	ad_ref	ad_alt	gq
 
 This is a property of the *input*, not a limitation of Parquet. A gVCF, whose reference blocks carry `END` and `MIN_DP`, makes positive statements about spans -- and `vcf-varquery` now reads one directly, answering for positions no variant record mentions. What is not yet possible is *storing* that: conversion refuses a gVCF, because a block in this schema would become a `<NON_REF>` catalog site with its span discarded.
 
+The refusal fires on **a reference block record**, not on anything in the header. A joint-genotyped cohort VCF — a DRAGEN msVCF, a GATK callset out of `GenotypeGVCFs` — routinely keeps the `##ALT=<ID=NON_REF>` declaration it inherited from its source gVCFs without containing a single block, and `##ALT=<ID=*>` declares the ordinary spanning-deletion allele. Those files convert. A record whose alternates are *all* block alleles (`<NON_REF>`, `<*>`, or a bare `.`) is what stops the conversion, and the error names the offending record. A record carrying the block allele beside a real one (`G,<NON_REF>`) is a variant record: it converts, and `<NON_REF>` is masked out of the catalog and the allele counts the way any non-focal alternate is. `-v` reports how many were masked.
+
 ### What counts as "called"
 
 A site counts as callable for a sample only when the caller **actually made a call** there *and* depth clears `--min-dp`. Depth alone is not enough: a `./.` genotype at DP 40 means the caller saw reads and still declined, which is not the positive observation a callable region asserts. Both fixtures below exercise this:

@@ -1,0 +1,13 @@
+##fileformat=VCFv4.5
+##ALT=<ID=NON_REF,Description="Represents any possible alternative allele at this location">
+##ALT=<ID=*,Description="Represents allele(s) other than observed.">
+##FORMAT=<ID=MIN_DP,Number=1,Type=Integer,Description="Minimum depth, inherited from the source gVCFs">
+##INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count in genotypes">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Approximate read depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">
+##contig=<ID=chr8,length=145138636>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2
+chr8	1000	.	A	G	500	PASS	.	GT:DP:GQ	0/1:30:99	0/0:31:99
+chr8	2000	.	CTT	C,*	500	PASS	.	GT:DP:GQ	1/2:40:99	0/1:35:99
+chr8	3000	.	T	A,<NON_REF>	500	PASS	.	GT:DP:GQ	0/1:22:99	1/1:28:99

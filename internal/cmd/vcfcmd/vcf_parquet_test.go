@@ -1134,6 +1134,64 @@ func TestToParquetRefusesGvcf(t *testing.T) {
 	}
 }
 
+// TestToParquetConvertsMsVcf is the other half of the guard, and the reason it
+// keys on records rather than the header.
+//
+// testdata/msvcf.vcf is shaped like a DRAGEN msVCF: a joint-genotyped cohort
+// callset -- exactly what this command is for -- that still declares
+// ##ALT=<ID=NON_REF> inherited from the gVCFs it was built from, plus the ordinary
+// ##ALT=<ID=*> for spanning deletions and a vestigial FORMAT/MIN_DP. Every one of
+// those tripped the old header test, so real cohort VCFs were refused with an
+// argument about reference blocks the file does not contain.
+func TestToParquetConvertsMsVcf(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "ms") + string(os.PathSeparator)
+	runVcf(t, "vcf-toparquet", "--out", store, "testdata/msvcf.vcf")
+
+	got := runVcf(t, "vcf-varquery", "--variant", "chr8", store)
+	// The block allele is masked out of a mixed "A,<NON_REF>" record the way any
+	// non-focal alternate is: the record is a variant record and converts, but
+	// <NON_REF> is not an allele anyone carries, so it must not reach the catalog.
+	if strings.Contains(got, "NON_REF") {
+		t.Errorf("<NON_REF> reached the sites catalog:\n%s", got)
+	}
+	for _, want := range []string{
+		"chr8\t1000\tA\tG\tS1\t0/1",
+		// A 1/2 sample carries both alternates, including the spanning deletion.
+		"chr8\t2000\tCTT\tC\tS1\t1/.",
+		"chr8\t2000\tCTT\t*\tS1\t./1",
+		"chr8\t3000\tT\tA\tS2\t1/1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestToParquetDiscardsOnNoDP covers a store left behind by a failure.
+//
+// The "no DP field" check used to run after Writer.Close(), so the error left all
+// three members on disk -- and they then tripped the overwrite guard on the
+// --no-callable retry the error message itself asks for, leaving the user stuck
+// between two refusals.
+func TestToParquetDiscardsOnNoDP(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, "s") + string(os.PathSeparator)
+	// sample.vcf carries no DP, so callable runs cannot be built.
+	if err := runVcfErr(t, "vcf-toparquet", "--out", store, "testdata/sample.vcf"); err == nil {
+		t.Fatal("converting a VCF with no DP should fail without --no-callable")
+	}
+	left, err := os.ReadDir(store)
+	if err == nil && len(left) > 0 {
+		var names []string
+		for _, e := range left {
+			names = append(names, e.Name())
+		}
+		t.Errorf("failed conversion left a store behind: %v", names)
+	}
+	// The retry the error message asks for must not be blocked by the wreckage.
+	runVcf(t, "vcf-toparquet", "--no-callable", "--out", store, "testdata/sample.vcf")
+}
+
 // TestGvcfQueryAnswersOffCatalog is the CLI-level contract for gVCF support.
 func TestGvcfQueryAnswersOffCatalog(t *testing.T) {
 	gz := filepath.Join(t.TempDir(), "g.vcf.gz")
