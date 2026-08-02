@@ -12,9 +12,9 @@ import (
 // isGvcfHeader reports whether a header describes a gVCF -- a file carrying
 // reference blocks, not just variants.
 //
-// Detection has to work from the header alone, because the commands that need it
-// write their output header before reading the first record, so a record-level
-// answer arrives too late to act on. None of these markers is mandated by the
+// Detection has to work from the header alone, because `vcf-strip` writes its
+// output header before reading the first record, so a record-level answer arrives
+// too late to keep the ##INFO declaration. None of these markers is mandated by the
 // spec, so any one is taken as sufficient:
 //
 //   - a declared <NON_REF> (GATK) or <*> (VCF 4.5) alternate
@@ -24,6 +24,15 @@ import (
 //
 // A gVCF that declares none of these is possible, which is why callers should also
 // fail safe when they meet a reference block they were not expecting.
+//
+// None of these markers is *evidence* of reference blocks, only of a file whose
+// header has at some point described them, so this is far too weak a basis for a
+// refusal -- see gvcfRefBlockError. A DRAGEN msVCF, which is a joint-genotyped
+// cohort callset and the exact input vcf-toparquet is for, keeps the
+// ##ALT=<ID=NON_REF> line it inherited from the gVCFs it was built from. VCF 4.5
+// makes the <*> case worse than incidental: the gVCF unspecified allele and the
+// ordinary spanning-deletion allele are the same ALT ID, so no header-level test
+// can separate them even in principle.
 func isGvcfHeader(h *vcf.VcfHeader) bool {
 	if h == nil {
 		return false
@@ -44,6 +53,30 @@ func isGvcfHeader(h *vcf.VcfHeader) bool {
 		}
 	}
 	return false
+}
+
+// gvcfRefBlockError refuses a conversion that has met an actual reference block.
+//
+// vcf-toparquet asks this of records rather than of the header, unlike vcf-strip,
+// and the difference is not a preference: the header says only what a file's
+// ancestry declared, while a record is the thing the store would get wrong. A
+// header-based refusal rejected ordinary cohort VCFs -- any callset carrying a
+// vestigial ##ALT=<ID=NON_REF>, or a plain ##ALT=<ID=*> for spanning deletions --
+// with the store's three-way wrongness argued about a file that has no blocks in it.
+// Reading first costs nothing recoverable, because a failed conversion Discards.
+//
+// The test is IsRefBlock, so it is the *block* that is refused, not the allele: a
+// mixed "G,<NON_REF>" record is a variant record and converts, with the block
+// allele masked out the way any non-focal alternate is.
+func gvcfRefBlockError(path string, rec *vcf.VcfRecord) error {
+	return fmt.Errorf("%s contains gVCF reference blocks (%s:%d %s>%s), and converting one is not supported yet\n"+
+		"       They would be stored as if they were variants:\n"+
+		"         - <NON_REF> would enter the sites catalog, which is meant to be\n"+
+		"           the exact boundary of what the store can answer\n"+
+		"         - AC/AN would count a reference-block allele as an allele\n"+
+		"         - each block's span would be discarded, keeping only its first base\n"+
+		"       Query the gVCF directly with vcf-varquery, which reads blocks as the\n"+
+		"       coverage they are.", path, rec.Chrom, rec.Pos, rec.Ref, rec.AltOrig())
 }
 
 // warnStrippingGvcfEnd explains what removing INFO/END from a gVCF would do.

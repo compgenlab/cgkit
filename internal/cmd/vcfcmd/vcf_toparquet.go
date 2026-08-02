@@ -143,24 +143,12 @@ could answer off-catalog positions.
 			return err
 		}
 		samples := first.header.Samples()
-		gvcf := isGvcfHeader(first.header)
 		first.close()
 		if len(samples) == 0 {
 			return fmt.Errorf("%s has no samples; a genotype store needs per-sample calls", args[0])
 		}
-		// A gVCF converts without complaint today and the result is wrong in ways
-		// nothing downstream can detect, so refuse rather than write it. Query the
-		// gVCF directly instead: vcf-varquery understands reference blocks.
-		if gvcf {
-			return fmt.Errorf("%s looks like a gVCF, and converting one is not supported yet\n"+
-				"       Its reference blocks would be stored as if they were variants:\n"+
-				"         - <NON_REF> would enter the sites catalog, which is meant to be\n"+
-				"           the exact boundary of what the store can answer\n"+
-				"         - AC/AN would count a reference-block allele as an allele\n"+
-				"         - each block's span would be discarded, keeping only its first base\n"+
-				"       Query the gVCF directly with vcf-varquery, which reads blocks as the\n"+
-				"       coverage they are.", args[0])
-		}
+		// A gVCF is refused, but on the evidence of a reference block record rather
+		// than of the header -- see gvcfRefBlockError in gvcf.go.
 
 		// Refuse to clobber an existing store before opening anything: the
 		// writer truncates all three members, so this is the last moment the
@@ -220,15 +208,20 @@ could answer off-catalog positions.
 			w.Discard()
 			return err
 		}
-		if err := w.Close(); err != nil {
-			return err
-		}
-
+		// Before Close, and discarding: this used to run after the store was
+		// written, so the failure left all three members on disk -- which then
+		// tripped the overwrite guard on the --no-callable retry the message
+		// itself asks for.
 		if conv.sawDP == 0 && !vcfToParquetNoCallable {
+			w.Discard()
 			return fmt.Errorf("no DP field found in %s, so callable regions cannot be built\n"+
 				"       re-run with --no-callable to accept a store that cannot distinguish\n"+
 				"       non-carrier from not-assayed", strings.Join(args, ", "))
 		}
+		if err := w.Close(); err != nil {
+			return err
+		}
+
 		if vcfToParquetVerbose {
 			conv.report(cmd.ErrOrStderr(), vcfToParquetOut, time.Since(started))
 		}
@@ -347,6 +340,11 @@ func convertOne(cmd *cobra.Command, conv *parquetConverter, path string, canonic
 			conv.nFiltered++
 			continue
 		}
+		// The store has no way to represent a span of reference, so refuse the
+		// moment one turns up rather than silently keeping its first base.
+		if rec.IsRefBlock() {
+			return gvcfRefBlockError(path, rec)
+		}
 		if err := conv.checkOrder(rec, path); err != nil {
 			return err
 		}
@@ -390,6 +388,7 @@ type parquetConverter struct {
 	nFiltered     int64
 	nMultiAllelic int64
 	nExtraRows    int64
+	nBlockAlts    int64
 	sawGQ         int64
 	sawAD         int64
 	nGenotypes    int64
@@ -438,9 +437,23 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 	// symbolic ALT or a gVCF block -- and a region query then misses the record.
 	refEnd := int32(rec.RefSpanEnd())
 	nAlts := len(alts)
-	if nAlts > 1 {
+	// A gVCF-derived callset writes the block allele beside a real one
+	// ("G,<NON_REF>"). The record is a variant record -- a pure block was refused
+	// upstream in convertOne -- but <NON_REF> is not an allele anyone carries, so it
+	// is masked out the way any non-focal alternate is. Counted for the -v summary
+	// because a store missing it is a question worth being able to answer. Indices
+	// into alts stay as the record wrote them, since acCounts is addressed by GT
+	// allele number.
+	nReal := 0
+	for _, alt := range alts {
+		if !vcf.IsRefBlockAlt(alt) {
+			nReal++
+		}
+	}
+	c.nBlockAlts += int64(nAlts - nReal)
+	if nReal > 1 {
 		c.nMultiAllelic++
-		c.nExtraRows += int64(nAlts - 1)
+		c.nExtraRows += int64(nReal - 1)
 	}
 	carriers := make([]int32, nAlts)
 	acCounts := make([]int32, nAlts)
@@ -501,6 +514,9 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 
 		name := c.samples[c.sampleAt(i)]
 		for j, alt := range alts {
+			if vcf.IsRefBlockAlt(alt) {
+				continue
+			}
 			call, ok := varstore.CallFor(rec, name, sf, j+1, alt)
 			if !ok {
 				continue
@@ -514,6 +530,9 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 	}
 
 	for j, alt := range alts {
+		if vcf.IsRefBlockAlt(alt) {
+			continue
+		}
 		if err := c.w.WriteSite(varstore.Site{
 			Chrom:     chrom,
 			Pos:       pos,
@@ -583,6 +602,10 @@ func (c *parquetConverter) report(out io.Writer, base string, elapsed time.Durat
 	}
 	fmt.Fprintf(out, "  multiallelic records  %d (split into %d extra rows)\n",
 		c.nMultiAllelic, c.nExtraRows)
+	if c.nBlockAlts > 0 {
+		fmt.Fprintf(out, "  <NON_REF> alts masked %d  (block alleles beside a real one; not stored as alleles)\n",
+			c.nBlockAlts)
+	}
 	fmt.Fprintf(out, "  chromosomes           %s\n", strings.Join(c.chroms, ", "))
 	fmt.Fprintf(out, "  genotypes examined    %d\n", c.nGenotypes)
 
