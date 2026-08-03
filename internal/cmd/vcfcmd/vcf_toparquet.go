@@ -398,20 +398,31 @@ type parquetConverter struct {
 }
 
 // note records a per-chromosome transition for the verbose summary.
-func (c *parquetConverter) note(chrom string) {
+//
+// The first coordinate is reported because tick only speaks every 100,000 records,
+// so a contig holding fewer than that would otherwise name itself and then go
+// silent -- and on a per-chromosome callset that is most of them.
+func (c *parquetConverter) note(chrom string, pos int) {
 	c.chroms = append(c.chroms, chrom)
 	if c.verbose {
-		fmt.Fprintf(c.progress, "  %s: starting\n", chrom)
+		fmt.Fprintf(c.progress, "  %s: starting at %d\n", chrom, pos)
 	}
 }
 
 // tick emits periodic progress, which matters because a whole-chromosome
 // conversion streams for minutes with nothing else to show for it.
-func (c *parquetConverter) tick() {
+//
+// The coordinate is the point of it. A record count says the process is alive but
+// not how far along it is, and the two are not interchangeable on a sparse input:
+// counts advance at the rate variants are called, so a quiet centromere or a
+// callset thinned by --passing looks identical to a stall. A position is checkable
+// against the contig length, and it is what a run interrupted midway has to be
+// resumed or reasoned about from.
+func (c *parquetConverter) tick(pos int) {
 	const every = 100_000
 	if c.verbose && c.nRecords%every == 0 {
-		fmt.Fprintf(c.progress, "  %s: %d records, %d calls so far\n",
-			c.curChrom, c.nRecords, c.w.NCalls)
+		fmt.Fprintf(c.progress, "  %s:%d  %d records, %d calls so far\n",
+			c.curChrom, pos, c.nRecords, c.w.NCalls)
 	}
 }
 
@@ -425,10 +436,10 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 			return err
 		}
 		c.curChrom = chrom
-		c.note(chrom)
+		c.note(chrom, rec.Pos)
 	}
 	c.nRecords++
-	c.tick()
+	c.tick(rec.Pos)
 
 	alts := rec.Alt()
 	pos := int32(rec.Pos)
