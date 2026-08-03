@@ -1167,6 +1167,23 @@ func TestToParquetConvertsMsVcf(t *testing.T) {
 	}
 }
 
+// TestToParquetProgressReportsPosition pins a coordinate into the -v progress
+// stream.
+//
+// A record count says the conversion is alive but not how far along it is, and on
+// a sparse input the two diverge: counts advance at the rate variants are called,
+// so a quiet stretch of a contig looks the same as a stall. The chromosome
+// transition carries the coordinate too, because the periodic tick only speaks
+// every 100,000 records -- a contig smaller than that would name itself and then
+// say nothing, which on a per-chromosome callset is most of them.
+func TestToParquetProgressReportsPosition(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "p") + string(os.PathSeparator)
+	out := runVcf(t, "vcf-toparquet", "-v", "--out", store, "testdata/msvcf.vcf")
+	if !strings.Contains(out, "chr8: starting at 1000") {
+		t.Errorf("progress did not report the first coordinate:\n%s", out)
+	}
+}
+
 // TestToParquetDiscardsOnNoDP covers a store left behind by a failure.
 //
 // The "no DP field" check used to run after Writer.Close(), so the error left all
