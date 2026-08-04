@@ -8,7 +8,6 @@ import (
 	"github.com/compgenlab/cgkit/internal/cmd/bedcmd"
 	"github.com/compgenlab/cgkit/internal/cmd/fastacmd"
 	"github.com/compgenlab/cgkit/internal/cmd/fastqcmd"
-	"github.com/compgenlab/cgkit/internal/cmd/ontcmd"
 	"github.com/compgenlab/cgkit/internal/cmd/samcmd"
 	"github.com/compgenlab/cgkit/internal/cmd/seqcmd"
 	"github.com/compgenlab/cgkit/internal/cmd/tabcmd"
@@ -73,7 +72,6 @@ func init() {
 	rootCmd.SetHelpTemplate(helpBody + "\ncgkit " + versionString() +
 		" https://compgenlab.org/cgkit\n")
 
-	ontcmd.InitCmd(rootCmd)
 	bedcmd.InitCmd(rootCmd)
 	fastacmd.InitCmd(rootCmd)
 	fastqcmd.InitCmd(rootCmd)
