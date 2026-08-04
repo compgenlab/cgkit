@@ -1,6 +1,7 @@
 package vcfcmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -195,13 +196,17 @@ func TestVcfToParquetNoCallableRefuses(t *testing.T) {
 	}
 }
 
-// TestVarQueryHomRefRefusesWithoutRegions pins the loud-failure contract: an
-// incomplete store must error, never report everyone as reference.
+// TestVarQueryHomRefRefusesWithoutRegions pins the loud-failure contract: a
+// store that never tracked coverage must error, never report everyone as
+// reference.
+//
+// The fixture is --no-callable rather than a deleted regions file. Deleting a
+// member is corruption, and since the manifest records what each member held it
+// is now caught at open with a different (also correct) error; this test is
+// about the store that legitimately has no callable runs.
 func TestVarQueryHomRefRefusesWithoutRegions(t *testing.T) {
-	base := convert(t, "testdata/coverage.vcf")
-	if err := os.Remove(varstore.RegionsPath(base)); err != nil {
-		t.Fatal(err)
-	}
+	base := filepath.Join(t.TempDir(), "store")
+	runVcf(t, "vcf-toparquet", "--no-callable", "--out", base, "testdata/coverage.vcf")
 	err := runVcfErr(t, "vcf-varquery", "--variant", "1:100:A:G", "--hom-ref", base)
 	if err == nil {
 		t.Fatal("expected an error when the regions file is missing")
@@ -395,7 +400,7 @@ func TestOffCatalogAgreesAcrossBackends(t *testing.T) {
 	}
 
 	for _, in := range []string{"testdata/coverage.vcf", base} {
-		store, err := openVarStore(in, "")
+		store, err := openVarStore(context.Background(), in, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -828,14 +833,17 @@ func TestStoreDirAcceptedEveryWay(t *testing.T) {
 	}
 }
 
-// TestStorePathHelpers pins the two shapes at the unit level, including that the
-// directory form introduces no dot.
+// TestStorePathHelpers pins the layout at the unit level: a store is a
+// directory, and the trailing separator is optional noise.
 func TestStorePathHelpers(t *testing.T) {
 	cases := []struct{ base, calls, sites, regions string }{
-		{"cohort", "cohort.calls.parquet", "cohort.sites.parquet", "cohort.regions.parquet"},
+		{"cohort", "cohort/calls.parquet", "cohort/sites.parquet", "cohort/regions.parquet"},
 		{"cohort/", "cohort/calls.parquet", "cohort/sites.parquet", "cohort/regions.parquet"},
 		{"a/b/", "a/b/calls.parquet", "a/b/sites.parquet", "a/b/regions.parquet"},
-		{"a/b", "a/b.calls.parquet", "a/b.sites.parquet", "a/b.regions.parquet"},
+		{"a/b", "a/b/calls.parquet", "a/b/sites.parquet", "a/b/regions.parquet"},
+		// A locator keeps its scheme; filepath.Join would eat the "//".
+		{"s3://bucket/cohort", "s3://bucket/cohort/calls.parquet",
+			"s3://bucket/cohort/sites.parquet", "s3://bucket/cohort/regions.parquet"},
 	}
 	for _, tc := range cases {
 		if got := varstore.CallsPath(tc.base); got != tc.calls {
@@ -899,24 +907,32 @@ func TestStoreOverwriteRefusesOnPartialSet(t *testing.T) {
 	}
 }
 
-// TestStorePrefixNamingADirectory pins the ambiguous case: "--out cohort" where
-// cohort/ already exists almost certainly means the slash was forgotten.
-func TestStorePrefixNamingADirectory(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "cohort")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	err := runVcfErr(t, "vcf-toparquet", "--out", dir, "testdata/coverage.vcf")
-	if err == nil {
-		t.Fatal("expected a refusal when the prefix names an existing directory")
-	}
-	if !strings.Contains(err.Error(), "is a directory") {
-		t.Errorf("error should explain the ambiguity, got: %v", err)
-	}
-	// --force accepts it as a genuine filename prefix.
-	runVcf(t, "vcf-toparquet", "--force", "--out", dir, "testdata/coverage.vcf")
-	if _, err := os.Stat(dir + ".calls.parquet"); err != nil {
-		t.Errorf("--force should have written the prefix form: %v", err)
+// TestStoreOutSlashIsOptional pins that the trailing separator carries no
+// meaning. It used to decide between a directory and a filename prefix, which
+// is why "--out cohort" against an existing cohort/ had to be refused as
+// probably-a-forgotten-slash. With one layout the question does not arise, and
+// both spellings name the same store.
+func TestStoreOutSlashIsOptional(t *testing.T) {
+	for _, suffix := range []string{"", string(os.PathSeparator)} {
+		dir := filepath.Join(t.TempDir(), "cohort")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		runVcf(t, "vcf-toparquet", "--out", dir+suffix, "testdata/coverage.vcf")
+		for _, p := range []string{
+			varstore.CallsPath(dir), varstore.SitesPath(dir),
+			varstore.RegionsPath(dir), varstore.ManifestPath(dir),
+		} {
+			if _, err := os.Stat(p); err != nil {
+				t.Errorf("--out %q: %s missing: %v", dir+suffix, filepath.Base(p), err)
+			}
+		}
+		// And it reads back under either spelling.
+		for _, spelling := range []string{dir, dir + string(os.PathSeparator)} {
+			if out := runVcf(t, "vcf-varquery", "--variant", "1:100:A:G", spelling); out == "" {
+				t.Errorf("reading back as %q produced nothing", spelling)
+			}
+		}
 	}
 }
 
