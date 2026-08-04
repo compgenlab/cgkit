@@ -11,6 +11,7 @@ import (
 	"github.com/compgenlab/cghts/varstore"
 	"github.com/compgenlab/cghts/vcf"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -137,6 +138,12 @@ could answer off-catalog positions.
 		}
 		if vcfToParquetOut == "" {
 			return fmt.Errorf("you must specify an output store directory with --out")
+		}
+		// Before CheckStoreTarget: its os.Stat fails harmlessly on a URL, and the
+		// writer would then reach os.Create("s3://...") and report a bewildering
+		// not-found against a path nobody typed.
+		if err := locator.CheckLocalOutput("--out", vcfToParquetOut); err != nil {
+			return err
 		}
 		if vcfToParquetMinDP < 0 {
 			return fmt.Errorf("--min-dp must not be negative")

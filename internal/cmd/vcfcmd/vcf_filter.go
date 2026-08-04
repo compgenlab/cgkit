@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/compgenlab/cghts/vcf/filter"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -207,6 +208,9 @@ func (s *filterStats) tally(codes []string) {
 }
 
 func (s *filterStats) write(filename string) error {
+	if err := locator.CheckLocalOutput("--stats", filename); err != nil {
+		return err
+	}
 	out, err := os.Create(filename)
 	if err != nil {
 		return err

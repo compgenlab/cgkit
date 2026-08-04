@@ -7,6 +7,7 @@ import (
 	"github.com/compgenlab/cghts/bed"
 	"github.com/compgenlab/cghts/seqio"
 	"github.com/compgenlab/cghts/support/sequtils"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -52,6 +53,9 @@ is ignored and the plus-strand sequence is always returned.`,
 		if bedToFastaOutput == "" || bedToFastaOutput == "-" {
 			writer = seqio.NewFastaWriter(cmd.OutOrStdout(), opts)
 		} else {
+			if err := locator.CheckLocalOutput("-o/--output", bedToFastaOutput); err != nil {
+				return err
+			}
 			writer, err = seqio.OpenFastaWriter(bedToFastaOutput, opts)
 			if err != nil {
 				return err

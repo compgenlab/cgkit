@@ -2,6 +2,7 @@ package vcfcmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -64,7 +65,7 @@ Progress is reported on stderr only when stderr is an interactive terminal.`,
 			return fmt.Errorf("--threads must be >= 1")
 		}
 
-		sites, err := collectGtSites(args[1:], vcfGtCountSites)
+		sites, err := collectGtSites(cmd.Context(), args[1:], vcfGtCountSites)
 		if err != nil {
 			return err
 		}
@@ -89,7 +90,7 @@ Progress is reported on stderr only when stderr is an interactive terminal.`,
 
 		var done int64
 		stopProgress := startGtProgress(int64(len(sites)), &done)
-		streamErr := streamGtCounts(args[0], sites, threads, vcfGtCountPassing, bw, &done)
+		streamErr := streamGtCounts(cmd.Context(), args[0], sites, threads, vcfGtCountPassing, bw, &done)
 		stopProgress()
 		if streamErr != nil {
 			return streamErr
@@ -126,8 +127,8 @@ type gtRow struct {
 // sites, through the same target grammar vcf-varquery --variant uses -- so one
 // file works with both commands, and a VCF or a colon-delimited list works here
 // too. One grammar, one parser, nothing to drift.
-func collectGtSites(loci []string, sitesFiles []string) ([]gtSite, error) {
-	t, err := parseTargets(append(append([]string{}, loci...), sitesFiles...))
+func collectGtSites(ctx context.Context, loci []string, sitesFiles []string) ([]gtSite, error) {
+	t, err := parseTargets(ctx, append(append([]string{}, loci...), sitesFiles...))
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +176,10 @@ type gtResult struct {
 // indexed reader since a tabix reader is not safe for concurrent use) and writes
 // the rendered rows to out in site order as they complete. done is incremented
 // per processed site for progress reporting.
-func streamGtCounts(filename string, sites []gtSite, threads int, passingOnly bool, out *bufio.Writer, done *int64) error {
+// A tabix reader is not safe for concurrent use, so each worker opens its own.
+// For a remote input that means --threads N fetches the index N times; the
+// alternative is serializing every query behind one reader, which costs more.
+func streamGtCounts(ctx context.Context, filename string, sites []gtSite, threads int, passingOnly bool, out *bufio.Writer, done *int64) error {
 	workCh := make(chan gtJob, threads)
 	orderCh := make(chan chan gtResult, threads)
 
@@ -184,7 +188,7 @@ func streamGtCounts(filename string, sites []gtSite, threads int, passingOnly bo
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ir, err := vcf.NewIndexedVcfReader(filename)
+			ir, err := vcf.OpenIndexedVcfReader(ctx, filename)
 			if err != nil {
 				// Opening failed (bad path / missing index); surface the error
 				// for every job this worker takes so the collector reports it.
