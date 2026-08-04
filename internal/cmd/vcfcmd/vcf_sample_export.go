@@ -15,7 +15,6 @@ var (
 	vcfSampleExportGT      bool
 	vcfSampleExportID      bool
 	vcfSampleExportPassing bool
-	vcfSampleExportQuiet   bool
 )
 
 var vcfSampleExportCmd = &cobra.Command{
@@ -153,5 +152,4 @@ func init() {
 	f.BoolVar(&vcfSampleExportGT, "gt", false, "Export GT and convert to ref/alt bases")
 	f.BoolVar(&vcfSampleExportID, "id", false, "Include the ID column")
 	f.BoolVar(&vcfSampleExportPassing, "passing", false, "Only export passing variants")
-	f.BoolVarP(&vcfSampleExportQuiet, "quiet", "q", false, "Quiet output (no progress)")
 }

@@ -72,6 +72,11 @@ var ontTagsCmd = &cobra.Command{
 		if ontThreads == 0 {
 			ontThreads = runtime.GOMAXPROCS(0)
 		}
+		// A negative value reaches make(chan, n) below and panics rather than
+		// erroring, which is not a way to report a bad flag.
+		if ontThreads < 0 {
+			return fmt.Errorf("-t/--threads must be >= 0 (0 means one per CPU)")
+		}
 
 		var ontPrimers seqio.SeqReader
 		var err error
