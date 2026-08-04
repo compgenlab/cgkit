@@ -5,28 +5,37 @@ A columnar, sparse on-disk format for cohort genotypes, written by `cgkit vcf-to
 ## Usage
 
 ```
-cgkit vcf-toparquet --out BASE <input.vcf> [input2.vcf ...]
-cgkit vcf-varquery [--variant LOCUS | --sample NAME] <input.vcf | store-base>
+cgkit vcf-toparquet --out DIR <input.vcf> [input2.vcf ...]
+cgkit vcf-varquery [--variant LOCUS | --sample NAME] <input.vcf | store>
+cgkit vcf-varsummary <input.vcf | store>
 ```
 
 ## What it is
 
-Three Parquet files derived from one base name. **All three are one inseparable set** — the reasoning is in [Why three files](#why-three-files-and-not-one).
-
-| file | one row per | purpose |
-|---|---|---|
-| `BASE.calls.parquet` | ALT-carrying genotype | the genotypes themselves |
-| `BASE.sites.parquet` | interrogated site | what was looked at, and allele counts |
-| `BASE.regions.parquet` | run of called sites, per sample | which samples were callable where |
-
-Ending `--out` with a `/` names a **directory** instead of a filename prefix, and the members go inside it under bare names:
+**A store is a directory**, and its members are one inseparable set — the reasoning is in [Why three files](#why-three-files-and-not-one).
 
 ```
---out cohort      ->  cohort.calls.parquet, cohort.sites.parquet, cohort.regions.parquet
---out cohort/     ->  cohort/calls.parquet, cohort/sites.parquet, cohort/regions.parquet
+cohort/
+  calls.parquet      one row per ALT-carrying genotype
+  sites.parquet      one row per interrogated site, with allele counts
+  regions.parquet    one row per run of called sites, per sample
+  manifest.json.gz   written last; the store is unreadable without it
 ```
 
-The directory form keeps the set as a single thing to copy, move or delete, which matters precisely because the three files are only meaningful together. `vcf-varquery` accepts either form, the bare directory name without the slash, or any single member path.
+A trailing `/` on `--out` is optional and means nothing: `cohort` and `cohort/`
+name the same store, and `vcf-varquery` also accepts any member path within it.
+There used to be a second, filename-prefix form (`cohort.calls.parquet`); it is
+gone, because keeping both meant every path decision first had to guess which
+was meant — and the guess required a filesystem check, which cannot work for a
+remote locator at all.
+
+A directory is also what every Parquet tool expects, so DuckDB or pyarrow can be
+pointed straight at `cohort/calls.parquet`.
+
+> **Migrating.** Two breaking changes land together: stores are directories, and
+> the manifest is required. A store written by an earlier cgkit has neither and
+> must be re-converted. `cgkit vcf-varsummary <store>` reports why one is
+> refused.
 
 ### Schemas
 
@@ -321,7 +330,26 @@ and at query time, `--min-dp` over DP-less data warns rather than quietly return
 
 There is deliberately **no `--min-gq`**. GQ is recorded per ALT call, but callable runs are built from depth alone, so no GQ survives for a reference call — a store could not honor the gate there while a VCF would, and the two backends would silently disagree about which samples are reference. The `gq` column is in the output, so filter on it downstream.
 
-### Incomplete stores refuse rather than degrade
+### Unfinished stores are unreadable
+
+A store carries a `manifest.json.gz`, written after every member is closed. Its presence is the claim that the conversion reached the end; without it the store is refused:
+
+```
+Error: cohort/ has no readable manifest.json.gz, so it cannot be shown to be a
+       complete store
+       it is from an interrupted conversion, or predates manifests; re-convert
+       it, or inspect it with vcf-varsummary
+```
+
+Nothing else can answer this. The parquet footers prove each member was *finished* — a footer is written only by the writer's close — but a set of finished members says nothing about how much of the input went into them. Worse, the metadata in the calls file actively misleads: `cgkit.source` and `cgkit.contigs` are stamped before the first record is read, so a store holding three chromosomes of a 22-input conversion names all 22 inputs and declares all 22 contigs. It opens cleanly, queries cleanly, and reports `not_assayed` for the rest — exactly what a complete store reports for a position the source never mentioned.
+
+So the manifest also records what was *written*: per-member row counts, checked at open against each member's own footer, and a per-chromosome census of sites and calls. That census is the one field that can contradict the rest, and `vcf-varsummary --counts` prints it.
+
+There is no escape hatch, and a store written before manifests must be re-converted.
+
+Note this is a different thing from the section below, which is about a store that was finished but tracked no coverage.
+
+### Stores that cannot classify refuse rather than degrade
 
 If `sites.parquet` or `regions.parquet` is missing, or the store was built with `--no-callable`, then `--hom-ref` returns `ErrNotClassifiable` instead of an answer:
 
@@ -411,9 +439,9 @@ Measurement says the layout is not even the main cost: the same store reads in 2
 
 Two failure modes are guarded structurally rather than by care.
 
-**Conversion refuses to overwrite an existing store.** If any of the three members is already present under `--out`, or a prefix-form base names an existing directory, conversion stops and asks for `--force`. Writing truncates all three, and a half-replaced set is worse than either keeping or replacing the old one. The guard keys on the members, so an existing directory holding unrelated files is fine and its contents are left alone.
+**Conversion refuses to overwrite an existing store.** If any member is already present under `--out`, conversion stops and asks for `--force`. Writing truncates them all, and a half-replaced set is worse than either keeping or replacing the old one. The guard keys on the members, so an existing directory holding unrelated files is fine and its contents are left alone.
 
-**A failed conversion leaves nothing behind.** Any error calls `Writer.Discard()`, removing the partial members — otherwise they would look like a store, be truncated or incomplete, and (because of the guard above) block the retry.
+**A conversion that cannot finish must not leave something that looks finished.** Every error path calls `Writer.Discard()`, which unlinks the members *without* finalizing them — closing a parquet writer writes a complete, valid footer, so finalizing files that are about to be removed meant a process killed mid-discard left behind exactly the well-formed partial store this prevents. `Close` likewise stops at the first failure instead of finishing the other members: three structurally valid files of which one is silently short is the one outcome a reader cannot detect. A failed removal is reported, because what survives is what blocks the retry.
 
 ## Multiple inputs
 
@@ -429,7 +457,7 @@ Inputs must **not overlap**: a chromosome cannot be revisited once left, and pos
 
 | flag | default | description |
 |---|---|---|
-| `--out BASE` | *required* | base name for the three files, or `DIR/` (created) |
+| `--out DIR` | *required* | the store directory, created if needed |
 | `--force` | off | overwrite an existing store at `--out` |
 | `--min-dp N` | `10` | depth at or above which a site counts as callable |
 | `--no-callable` | off | accept a source with no DP field; regions will be empty |
@@ -452,6 +480,20 @@ Inputs must **not overlap**: a chromosome cannot be revisited once left, and pos
 | `--store KIND` | infer | force the backend: `vcf` or `parquet` |
 | `-o`, `--output` | `-` | output filename |
 | `-v`, `--verbose` | off | backend, provenance, per-variant AC/AN/AF, gate effect (all to stderr) |
+
+### vcf-varsummary
+
+| flag | default | description |
+|---|---|---|
+| `--samples` | off | list the sample roster, one per line |
+| `--sites` | off | stream the variant catalog (a full pass for a VCF) |
+| `--counts` | off | totals and the per-chromosome census (a full pass for a VCF) |
+| `--format F` | `text` | `text`, or `json` to emit a store's manifest verbatim |
+| `--store KIND` | infer | force the backend: `vcf` or `parquet` |
+| `-o`, `--output` | `-` | output filename |
+| `-v`, `--verbose` | off | note what is being read, and what a scan will cost |
+
+The default report reads no records at all — it is O(header) on both backends, so it is instant against a whole-genome VCF. Everything requiring a pass over the data is opt-in. A store answers from its manifest; a VCF has none, since it is not a conversion, and the report says so rather than inventing a `--min-dp` it cannot know. For an indexed VCF the contigs that carry records come from the tabix index for free.
 
 All verbose output goes to stderr, so the tabular stream stays parseable.
 
