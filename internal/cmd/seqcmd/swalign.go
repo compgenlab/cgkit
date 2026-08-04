@@ -24,10 +24,32 @@ var swalignCmd = &cobra.Command{
 			return fmt.Errorf("cannot use clipping penalties with global alignment")
 		}
 
+		// --gap-open/--gap-extend set both strands' penalties; the -ins/-del
+		// forms override whichever they name. Both were registered and never
+		// read, so passing --gap-open changed nothing at all.
+		openIns, openDel := swalignGapOpenIns, swalignGapOpenDel
+		extendIns, extendDel := swalignGapExtendIns, swalignGapExtendDel
+		if f := cmd.Flags(); f.Changed("gap-open") {
+			if !f.Changed("gap-open-ins") {
+				openIns = swalignGapOpen
+			}
+			if !f.Changed("gap-open-del") {
+				openDel = swalignGapOpen
+			}
+		}
+		if f := cmd.Flags(); f.Changed("gap-extend") {
+			if !f.Changed("gap-extend-ins") {
+				extendIns = swalignGapExtend
+			}
+			if !f.Changed("gap-extend-del") {
+				extendDel = swalignGapExtend
+			}
+		}
+
 		opts := align.DnaAlignmentDefaults().
 			ScoringMatrix(align.MatchMismatchScoring(swalignMatchScore, swalignMismatchPenalty)).
-			GapPenaltyIns(swalignGapOpenIns, swalignGapExtendIns).
-			GapPenaltyDel(swalignGapOpenDel, swalignGapExtendDel).
+			GapPenaltyIns(openIns, extendIns).
+			GapPenaltyDel(openDel, extendDel).
 			HomopolymerDiscount(swalignHPOpenScale, swalignHPOpenCap, swalignHPExtendScale, swalignHPExtendCap).
 			Verbose(swalignVerbose)
 
@@ -86,8 +108,8 @@ func init() {
 	swalignCmd.Flags().Float32Var(&swalignGapOpenDel, "gap-open-del", 6, "Deletion gap open penalty")
 	swalignCmd.Flags().Float32Var(&swalignGapExtendDel, "gap-extend-del", 1, "Deletion gap extension penalty")
 
-	swalignCmd.Flags().Float32Var(&swalignGapOpen, "gap-open", 6, "Indel gap open penalty")
-	swalignCmd.Flags().Float32Var(&swalignGapExtend, "gap-extend", 1, "Indel gap extension penalty")
+	swalignCmd.Flags().Float32Var(&swalignGapOpen, "gap-open", 6, "Gap open penalty for both insertions and deletions (--gap-open-ins/-del override)")
+	swalignCmd.Flags().Float32Var(&swalignGapExtend, "gap-extend", 1, "Gap extension penalty for both insertions and deletions (--gap-extend-ins/-del override)")
 
 	swalignCmd.Flags().BoolVar(&swalignUseClipping, "clip", false, "Enable clipping penalties")
 	swalignCmd.Flags().Float32Var(&swalignClipOpen, "clip-open", 5, "Clipping gap open penalty (used only when --clip is set)")

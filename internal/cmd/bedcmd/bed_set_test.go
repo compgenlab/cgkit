@@ -1,12 +1,9 @@
 package bedcmd
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/spf13/cobra"
 )
 
 // resetBedSetFlags restores bed-set's package-global flags to their defaults so
@@ -22,12 +19,7 @@ func resetBedSetFlags() {
 
 // runBedErr executes a bed subcommand and returns (stdout, error).
 func runBedErr(args ...string) (string, error) {
-	root := &cobra.Command{Use: "cgkit"}
-	InitCmd(root)
-	var buf bytes.Buffer
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs(args)
+	root, buf := bedTestRoot(args...)
 	err := root.Execute()
 	return buf.String(), err
 }

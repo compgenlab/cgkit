@@ -8,6 +8,7 @@ import (
 
 	"github.com/compgenlab/cghts/align"
 	"github.com/compgenlab/cghts/seqio"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -99,6 +100,9 @@ var msaCmd = &cobra.Command{
 		// Open output — file or stdout.
 		var out io.Writer = os.Stdout
 		if msaOutput != "" && msaOutput != "-" {
+			if err := locator.CheckLocalOutput("-o/--output", msaOutput); err != nil {
+				return err
+			}
 			f, err := os.Create(msaOutput)
 			if err != nil {
 				return fmt.Errorf("opening output: %w", err)

@@ -2,6 +2,7 @@ package vcfcmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -9,8 +10,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/compgenlab/cghts/iosource"
 	"github.com/compgenlab/cghts/varstore"
 	"github.com/compgenlab/cghts/vcf"
+	"github.com/compgenlab/cgkit/internal/locator"
 )
 
 // Target parsing for vcf-varquery's --variant, which is deliberately the ONLY
@@ -22,9 +25,18 @@ import (
 //	chr1:1000:A:T            one exact variant
 //	panel.vcf|.bed|.txt      a file, format detected from its content
 //
-// A value is a path when os.Stat says so, and an inline selector otherwise. That
-// order matters for error quality: a mistyped locus is not a file, so it still
-// gets a locus error rather than "no such file".
+// A value is a file when it carries a URI scheme, or when os.Stat says one
+// exists by that name; otherwise it is an inline selector. That order matters
+// for error quality: a mistyped locus is not a file, so it still gets a locus
+// error rather than "no such file".
+//
+// The scheme test comes first because a URL cannot be stat'd, and a stat-first
+// rule would quietly demote one to an inline selector -- which then parses as a
+// contig name and matches nothing, reporting an empty result instead of an
+// error. Only values containing "://" past the first character change meaning,
+// and nothing in the selector grammar can look like that: a mistyped locus like
+// "chr1:100:A" or "chr1:1O0-2000" takes exactly the path it always did, and a
+// contig name carrying colons ("HLA-A*01:01:01:01") is untouched.
 //
 // The site-list grammar is the same one vcf-gtcount's --sites accepts -- whitespace
 // separated "chrom pos [ref alt]", '#' comments, blank lines skipped -- so one file
@@ -74,11 +86,11 @@ func (t *targetSet) addSpan(sp varstore.Span) {
 }
 
 // parseTargets resolves every --variant value into query selectors.
-func parseTargets(vals []string) (*targetSet, error) {
+func parseTargets(ctx context.Context, vals []string) (*targetSet, error) {
 	t := &targetSet{Counts: map[targetFormat]int{}, Files: map[string]targetFormat{}}
 	for _, v := range vals {
-		if st, err := os.Stat(v); err == nil && !st.IsDir() {
-			if err := t.addFile(v); err != nil {
+		if isTargetFile(v) {
+			if err := t.addFile(ctx, v); err != nil {
 				return nil, err
 			}
 			continue
@@ -88,6 +100,17 @@ func parseTargets(vals []string) (*targetSet, error) {
 		}
 	}
 	return t, nil
+}
+
+// isTargetFile reports whether a --variant or --sample value names a file
+// rather than an inline selector. See the package comment above for why the
+// scheme test has to precede the stat.
+func isTargetFile(v string) bool {
+	if locator.IsRemote(v) {
+		return true
+	}
+	st, err := os.Stat(v)
+	return err == nil && !st.IsDir()
 }
 
 // addInline parses one command-line selector.
@@ -166,8 +189,8 @@ func isNum(s string) bool {
 }
 
 // addFile detects a target file's format and reads it.
-func (t *targetSet) addFile(path string) error {
-	format, err := detectTargetFile(path)
+func (t *targetSet) addFile(ctx context.Context, path string) error {
+	format, err := detectTargetFile(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -175,11 +198,11 @@ func (t *targetSet) addFile(path string) error {
 	before := len(t.Loci) + len(t.Spans)
 	switch format {
 	case targetVCF:
-		err = t.addVcfFile(path)
+		err = t.addVcfFile(ctx, path)
 	case targetBED:
-		err = t.addBedFile(path)
+		err = t.addBedFile(ctx, path)
 	default:
-		err = t.addSiteList(path)
+		err = t.addSiteList(ctx, path)
 	}
 	if err != nil {
 		return err
@@ -198,8 +221,8 @@ func (t *targetSet) addFile(path string) error {
 // column is an end coordinate and always numeric, where a site list's is a REF
 // allele and never is. Fewer than three columns can only be a site list, since a
 // BED interval needs three.
-func detectTargetFile(path string) (targetFormat, error) {
-	f, err := os.Open(path)
+func detectTargetFile(ctx context.Context, path string) (targetFormat, error) {
+	f, err := iosource.OpenReader(ctx, path)
 	if err != nil {
 		return "", err
 	}
@@ -235,8 +258,8 @@ func detectTargetFile(path string) (targetFormat, error) {
 
 // addVcfFile takes one target per ALT allele, matching how a store splits a
 // multiallelic record into one row per alternate.
-func (t *targetSet) addVcfFile(path string) error {
-	r, err := vcf.NewVcfFile(path)
+func (t *targetSet) addVcfFile(ctx context.Context, path string) error {
+	r, err := vcf.OpenVcfFile(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -266,8 +289,8 @@ func (t *targetSet) addVcfFile(path string) error {
 }
 
 // addBedFile reads 0-based half-open intervals, which is what Span already is.
-func (t *targetSet) addBedFile(path string) error {
-	return eachTargetLine(path, func(fields []string, where string) error {
+func (t *targetSet) addBedFile(ctx context.Context, path string) error {
+	return eachTargetLine(ctx, path, func(fields []string, where string) error {
 		if len(fields) < 3 {
 			return fmt.Errorf("%s: expected 'chrom start end'", where)
 		}
@@ -286,8 +309,8 @@ func (t *targetSet) addBedFile(path string) error {
 
 // addSiteList reads 1-based "chrom pos [ref alt]" lines. Without ref and alt the
 // line names a position rather than a variant, which becomes a one-base span.
-func (t *targetSet) addSiteList(path string) error {
-	return eachTargetLine(path, func(fields []string, where string) error {
+func (t *targetSet) addSiteList(ctx context.Context, path string) error {
+	return eachTargetLine(ctx, path, func(fields []string, where string) error {
 		// One field is a colon-delimited selector -- the same grammar as the command
 		// line -- so a file may simply list the tokens you would otherwise type, and
 		// may mix them with columnar lines.
@@ -324,8 +347,8 @@ func (t *targetSet) addSiteList(path string) error {
 
 // eachTargetLine walks a whitespace-separated file, skipping blanks, '#' comments
 // and BED track lines. Any whitespace separates, not only tabs.
-func eachTargetLine(path string, fn func(fields []string, where string) error) error {
-	f, err := os.Open(path)
+func eachTargetLine(ctx context.Context, path string, fn func(fields []string, where string) error) error {
+	f, err := iosource.OpenReader(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -386,7 +409,7 @@ type sampleSet struct {
 //
 // Names are deduplicated, first occurrence winning, because a repeated sample would
 // otherwise appear twice as a column in --format vcf output.
-func parseSampleArgs(vals []string) (*sampleSet, error) {
+func parseSampleArgs(ctx context.Context, vals []string) (*sampleSet, error) {
 	set := &sampleSet{Files: map[string]string{}}
 	seen := map[string]bool{}
 	add := func(name string) {
@@ -397,12 +420,11 @@ func parseSampleArgs(vals []string) (*sampleSet, error) {
 	}
 
 	for _, v := range vals {
-		st, err := os.Stat(v)
-		if err != nil || st.IsDir() {
+		if !isTargetFile(v) {
 			add(v)
 			continue
 		}
-		names, how, err := readSampleFile(v)
+		names, how, err := readSampleFile(ctx, v)
 		if err != nil {
 			return nil, err
 		}
@@ -419,8 +441,8 @@ func parseSampleArgs(vals []string) (*sampleSet, error) {
 
 // readSampleFile reads a sample roster: a VCF's header, or whitespace-separated
 // names with '#' comments.
-func readSampleFile(path string) (names []string, how string, err error) {
-	f, err := os.Open(path)
+func readSampleFile(ctx context.Context, path string) (names []string, how string, err error) {
+	f, err := iosource.OpenReader(ctx, path)
 	if err != nil {
 		return nil, "", err
 	}
@@ -429,7 +451,7 @@ func readSampleFile(path string) (names []string, how string, err error) {
 	f.Close()
 
 	if isVcf {
-		r, err := vcf.NewVcfFile(path)
+		r, err := vcf.OpenVcfFile(ctx, path)
 		if err != nil {
 			return nil, "", err
 		}
@@ -441,7 +463,7 @@ func readSampleFile(path string) (names []string, how string, err error) {
 		return h.Samples(), "a VCF header", nil
 	}
 
-	err = eachTargetLine(path, func(fields []string, _ string) error {
+	err = eachTargetLine(ctx, path, func(fields []string, _ string) error {
 		names = append(names, fields...)
 		return nil
 	})

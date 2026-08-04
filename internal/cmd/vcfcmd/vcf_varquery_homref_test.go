@@ -1,7 +1,8 @@
 package vcfcmd
 
 import (
-	"os"
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -115,7 +116,7 @@ func TestHomRefIsStricterThanNonCarrier(t *testing.T) {
 
 		// Classify still calls S2 a non-carrier, so hom-ref really is the stricter
 		// question rather than a redefinition of non_carrier.
-		store, err := openVarStore(in, "")
+		store, err := openVarStore(context.Background(), in, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -246,17 +247,19 @@ func TestHomRefOffCatalogReportsNothing(t *testing.T) {
 // cannot tell a reference call from an unassayed position must error in both
 // modes rather than silently report nobody as reference.
 func TestHomRefRefusesIncompleteStore(t *testing.T) {
-	base := convert(t, "testdata/coverage.vcf")
-	if err := os.Remove(varstore.RegionsPath(base)); err != nil {
-		t.Fatal(err)
-	}
+	// --no-callable rather than a deleted regions file: removing a member the
+	// manifest vouched for is corruption and is caught at open with a different
+	// (also correct) error. What this pins is the store that never tracked
+	// coverage in the first place.
+	base := filepath.Join(t.TempDir(), "store")
+	runVcf(t, "vcf-toparquet", "--no-callable", "--out", base, "testdata/coverage.vcf")
 	for _, args := range [][]string{
 		{"vcf-varquery", "--variant", "1:100:A:G", "--hom-ref", base},
 		{"vcf-varquery", "--sample", "S1", "--hom-ref", base},
 	} {
 		err := runVcfErr(t, args...)
 		if err == nil {
-			t.Fatalf("%v: expected an error when the regions file is missing", args)
+			t.Fatalf("%v: expected an error from a store with no callable runs", args)
 		}
 		if !strings.Contains(err.Error(), "non-carrier from not-assayed") {
 			t.Errorf("%v: error should name the classification limit, got %v", args, err)

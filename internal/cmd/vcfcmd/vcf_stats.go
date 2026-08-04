@@ -43,7 +43,7 @@ comma-separated.`,
 		infoFields := splitAll(vcfStatsInfoTally)
 		presentFields := splitAll(vcfStatsInfoPresent)
 
-		var count, passing, filtered, refonly, tsCount, tvCount, indel int64
+		var count, passing, filtered, refonly, tsCount, tvCount, indel, snv int64
 		filterCounts := map[string]int64{}
 		fullFilterCounts := map[string]int64{}
 		infoTally := make([]map[string]int64, len(infoFields))
@@ -85,6 +85,8 @@ comma-separated.`,
 				refonly++
 			} else if rec.IsIndel() {
 				indel++
+			} else {
+				snv++
 			}
 
 			switch rec.CalcTsTv() {
@@ -115,7 +117,11 @@ comma-separated.`,
 		fmt.Fprintf(out, "Filtered variants:\t%d\n", filtered)
 		fmt.Fprintf(out, "Passing variants:\t%d\n", passing)
 		fmt.Fprintln(out)
-		fmt.Fprintf(out, "SNV:\t%d\n", count-indel-refonly)
+		// Counted directly rather than as count-indel-refonly. That subtraction
+		// was wrong under --passing: count includes every record, while indel and
+		// refonly are only reached for records that survive the skip above, so
+		// every filtered record was reported as an SNV.
+		fmt.Fprintf(out, "SNV:\t%d\n", snv)
 		fmt.Fprintf(out, "Indels:\t%d\n", indel)
 		fmt.Fprintf(out, "Reference-only:\t%d\n", refonly)
 		fmt.Fprintln(out)

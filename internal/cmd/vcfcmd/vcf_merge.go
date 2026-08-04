@@ -91,7 +91,14 @@ input is an error.`,
 		}
 		// Every secondary must be exhausted too.
 		for si, sec := range secondaries {
-			if _, err := sec.next(); err != io.EOF {
+			switch _, err := sec.next(); {
+			case err == io.EOF:
+				// Exhausted, as required.
+			case err != nil:
+				// A read failure is not a record-count mismatch, and reporting
+				// it as one sent the reader looking at the wrong thing.
+				return fmt.Errorf("reading %s: %w", args[si+1], err)
+			default:
 				return fmt.Errorf("%s has more variants than the primary input", args[si+1])
 			}
 		}
