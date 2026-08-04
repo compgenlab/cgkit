@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/compgenlab/cghts/vcf"
 	"github.com/spf13/cobra"
@@ -80,19 +81,19 @@ keeping the output in VCF format.
 			removeFilter = append(removeFilter, "*")
 			removeSample = append(removeSample, "*")
 		}
-		infoSet, err := newStripSet(removeInfo, vcfStripKeepInfo)
+		infoSet, err := newStripSet("info", removeInfo, vcfStripKeepInfo)
 		if err != nil {
 			return err
 		}
-		formatSet, err := newStripSet(removeFormat, vcfStripKeepFormat)
+		formatSet, err := newStripSet("format", removeFormat, vcfStripKeepFormat)
 		if err != nil {
 			return err
 		}
-		filterSet, err := newStripSet(removeFilter, vcfStripKeepFilter)
+		filterSet, err := newStripSet("filter", removeFilter, vcfStripKeepFilter)
 		if err != nil {
 			return err
 		}
-		sampleSet, err := newStripSet(removeSample, vcfStripKeepSample)
+		sampleSet, err := newStripSet("sample", removeSample, vcfStripKeepSample)
 		if err != nil {
 			return err
 		}
@@ -236,35 +237,53 @@ func stripRecord(rec *vcf.VcfRecord, infoSet, formatSet, filterSet stripSet, kep
 	return nil
 }
 
-// newStripSet resolves a remove/keep flag pair, expanding any value that names
-// an existing file into that file's lines.
-func newStripSet(remove, keep []string) (stripSet, error) {
-	r, err := expandStripValues(remove)
+// newStripSet resolves a remove/keep flag pair, expanding any "@path" value
+// into that file's lines. flag names the removing flag, for error messages.
+func newStripSet(flag string, remove, keep []string) (stripSet, error) {
+	r, err := expandStripValues(flag, remove)
 	if err != nil {
 		return stripSet{}, err
 	}
-	k, err := expandStripValues(keep)
+	k, err := expandStripValues("keep-"+flag, keep)
 	if err != nil {
 		return stripSet{}, err
 	}
 	return stripSet{remove: r, keep: k}, nil
 }
 
-func expandStripValues(vals []string) ([]string, error) {
+// expandStripValues resolves each --info/--format/--filter/--sample value,
+// reading "@path" as a file of names and taking anything else literally.
+//
+// The "@" is required, though the help has always documented it. The code used
+// to probe with os.Stat instead, so the documented syntax did not work at all
+// -- "@fields.txt" was taken as a field literally named "@fields.txt" -- while
+// an undocumented bare filename did. Worse, that probe made behaviour depend on
+// the working directory: these values are short tokens like AC or DP, so a file
+// with such a name sitting nearby silently turned a field removal into a list
+// read, with nothing said either way.
+//
+// A bare value naming an existing file is therefore an error rather than a
+// silent literal, so anyone relying on the old form is told what to type.
+func expandStripValues(flag string, vals []string) ([]string, error) {
 	if len(vals) == 0 {
 		return nil, nil
 	}
 	var out []string
 	for _, v := range vals {
-		if fi, err := os.Stat(v); err == nil && !fi.IsDir() {
-			lines, err := readLines(v)
+		if name, ok := strings.CutPrefix(v, "@"); ok {
+			lines, err := readLines(name)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("--%s %s: %w", flag, v, err)
 			}
 			out = append(out, lines...)
-		} else {
-			out = append(out, v)
+			continue
 		}
+		if fi, err := os.Stat(v); err == nil && !fi.IsDir() {
+			return nil, fmt.Errorf("--%s %q names an existing file; write --%s @%s to "+
+				"read the names from it, or move the file if you meant the literal name",
+				flag, v, flag, v)
+		}
+		out = append(out, v)
 	}
 	return out, nil
 }
