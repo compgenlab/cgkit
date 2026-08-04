@@ -13,6 +13,7 @@ import (
 	_ "github.com/compgenlab/cghts/htsio/bam"
 	_ "github.com/compgenlab/cghts/htsio/cram"
 	_ "github.com/compgenlab/cghts/htsio/sam"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -160,7 +161,7 @@ Both files must be sorted by coordinate.`,
 		if umiLookupCramRef != "" {
 			opts.RefPath(umiLookupCramRef)
 		}
-		reader, err := htsio.NewSamReader(bamFile, opts)
+		reader, err := htsio.OpenSamReader(cmd.Context(), bamFile, opts)
 		if err != nil {
 			return err
 		}
@@ -168,6 +169,9 @@ Both files must be sorted by coordinate.`,
 
 		var out io.Writer = os.Stdout
 		if umiLookupOutput != "" && umiLookupOutput != "-" {
+			if err := locator.CheckLocalOutput("-o/--output", umiLookupOutput); err != nil {
+				return err
+			}
 			f, err := os.Create(umiLookupOutput)
 			if err != nil {
 				return err
@@ -282,5 +286,5 @@ func init() {
 	ontUmiLookupCmd.Flags().IntVar(&umiLookupEditDist, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to match a UMI")
 	ontUmiLookupCmd.Flags().BoolVar(&umiLookupMatchOneEnd, "match-one-end", false, "Match if EITHER 5' or 3' ends overlap (default: require BOTH)")
 	ontUmiLookupCmd.Flags().BoolVar(&umiLookupNoStrand, "no-strand", false, "Ignore strand when matching positions")
-	ontUmiLookupCmd.Flags().StringVar(&umiLookupCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
+	ontUmiLookupCmd.Flags().StringVar(&umiLookupCramRef, "cram-ref", "", "Reference FASTA for CRAM files (path, http(s):// URL, or s3://)")
 }

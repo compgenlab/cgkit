@@ -13,6 +13,7 @@ import (
 	"github.com/compgenlab/cghts/align"
 	"github.com/compgenlab/cghts/htsio/bgzf"
 	"github.com/compgenlab/cghts/seqio"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +23,9 @@ import (
 // instead, which is compatible with tabix indexing.
 // The returned closer must be called when done.
 func openWriter(filename string, preferBGZip bool) (io.Writer, func() error, error) {
+	if err := locator.CheckLocalOutput("output", filename); err != nil {
+		return nil, nil, err
+	}
 	if filename == "" {
 		return nil, func() error { return nil }, nil
 	}
@@ -161,6 +165,9 @@ var ontTagsCmd = &cobra.Command{
 		// Open passing/failed FASTQ writers.
 		var passingWriter *seqio.FastqWriter
 		if ontPassingFQFilename != "" {
+			if err := locator.CheckLocalOutput("--passing-fastq", ontPassingFQFilename); err != nil {
+				return err
+			}
 			passingWriter, err = seqio.OpenFastqWriter(ontPassingFQFilename)
 			if err != nil {
 				return fmt.Errorf("opening passing-fastq: %w", err)
@@ -173,6 +180,9 @@ var ontTagsCmd = &cobra.Command{
 		}
 		var failedWriter *seqio.FastqWriter
 		if ontFailedFQFilename != "" {
+			if err := locator.CheckLocalOutput("--failed-fastq", ontFailedFQFilename); err != nil {
+				return err
+			}
 			failedWriter, err = seqio.OpenFastqWriter(ontFailedFQFilename)
 			if err != nil {
 				return fmt.Errorf("opening failed-fastq: %w", err)

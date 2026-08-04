@@ -12,6 +12,7 @@ import (
 	"github.com/compgenlab/cghts/seqio"
 	"github.com/compgenlab/cghts/support/sequtils"
 	"github.com/compgenlab/cghts/support/stringutils"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -55,7 +56,7 @@ func runSamToFastx(cmd *cobra.Command, args []string, fastq bool, readerFlags sa
 	tags := normalizeTags(writeTags)
 
 	inputFile := args[0]
-	reader, err := htsio.NewSamReader(inputFile, opts)
+	reader, err := htsio.OpenSamReader(cmd.Context(), inputFile, opts)
 	if err != nil {
 		return err
 	}
@@ -66,6 +67,9 @@ func runSamToFastx(cmd *cobra.Command, args []string, fastq bool, readerFlags sa
 
 	if len(args) > 1 {
 		outputFile := args[1]
+		if err := locator.CheckLocalOutput("output", outputFile); err != nil {
+			return err
+		}
 		if fastq {
 			fastqWriter, err = seqio.OpenFastqWriter(outputFile)
 			if err != nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/compgenlab/cghts/htsio/cram"
 	"github.com/compgenlab/cghts/htsio/sam"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -39,12 +40,15 @@ var samFilterCmd = &cobra.Command{
 			outputFile = args[1]
 		}
 
+		if err := locator.CheckLocalOutput("output", outputFile); err != nil {
+			return err
+		}
 		format, err := resolveSamFilterFormat(outputFile)
 		if err != nil {
 			return err
 		}
 
-		reader, err := htsio.NewSamReader(inputFile, opts)
+		reader, err := htsio.OpenSamReader(cmd.Context(), inputFile, opts)
 		if err != nil {
 			return err
 		}

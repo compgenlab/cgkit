@@ -1,6 +1,7 @@
 package vcfcmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,7 +53,7 @@ func TestTargetFormatDetection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := detectTargetFile(writeFile(t, tc.name, tc.content))
+			got, err := detectTargetFile(context.Background(), writeFile(t, tc.name, tc.content))
 			if err != nil {
 				t.Fatalf("detect: %v", err)
 			}
@@ -80,7 +81,7 @@ func TestTargetBedIsZeroBased(t *testing.T) {
 
 	// The same interval written as a site list means one position, not a range.
 	list := writeFile(t, "p.txt", "chr1 99 300\n")
-	if f, err := detectTargetFile(list); err != nil || f != targetBED {
+	if f, err := detectTargetFile(context.Background(), list); err != nil || f != targetBED {
 		t.Fatalf("a three-column numeric line is a BED by construction; got %q %v", f, err)
 	}
 }
@@ -117,7 +118,7 @@ func TestTargetColonContigsAreNotLoci(t *testing.T) {
 		"HLA-B*07:02:01",    // three fields
 		"chr1:100:A",        // a locus missing a field lands here too
 	} {
-		set, err := parseTargets([]string{name})
+		set, err := parseTargets(context.Background(), []string{name})
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -130,7 +131,7 @@ func TestTargetColonContigsAreNotLoci(t *testing.T) {
 	}
 
 	// A real locus is still a locus, including an indel whose alleles are long.
-	set, err := parseTargets([]string{"chr1:300:G:GATTACA"})
+	set, err := parseTargets(context.Background(), []string{"chr1:300:G:GATTACA"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +188,7 @@ func TestSiteListWorksForBothCommands(t *testing.T) {
 	list := writeFile(t, "shared.txt",
 		"# shared site list\nchr1 100 A G\nchr1 500 A T\nchr2:300:G:C\n")
 
-	targets, err := parseTargets([]string{list})
+	targets, err := parseTargets(context.Background(), []string{list})
 	if err != nil {
 		t.Fatalf("target parser: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestSiteListWorksForBothCommands(t *testing.T) {
 		t.Fatalf("want 3 loci from the shared list, got %d", len(targets.Loci))
 	}
 
-	sites, err := collectGtSites(nil, []string{list})
+	sites, err := collectGtSites(context.Background(), nil, []string{list})
 	if err != nil {
 		t.Fatalf("vcf-gtcount rejected the shared list: %v", err)
 	}
@@ -252,7 +253,7 @@ func TestSampleFileForms(t *testing.T) {
 	}
 
 	// Names dedupe, first occurrence winning, so a repeat cannot become two columns.
-	set, err := parseSampleArgs([]string{"S2", list, "S2"})
+	set, err := parseSampleArgs(context.Background(), []string{"S2", list, "S2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +323,7 @@ func TestDosageColumn(t *testing.T) {
 // parseNames is parseSampleArgs reduced to the names it resolved.
 func parseNames(t *testing.T, arg string) []string {
 	t.Helper()
-	set, err := parseSampleArgs([]string{arg})
+	set, err := parseSampleArgs(context.Background(), []string{arg})
 	if err != nil {
 		t.Fatalf("parseSampleArgs(%s): %v", arg, err)
 	}

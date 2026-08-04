@@ -9,6 +9,7 @@ package ontcmd
 //     them via t.Cleanup.
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -272,7 +273,7 @@ func runPolyaTSV(t *testing.T, records []*htsio.SamRecord) [][]string {
 	makeTestBAM(t, bamPath, records)
 
 	polyaOutput = outPath
-	if err := runPolya(bamPath); err != nil {
+	if err := runPolya(context.Background(), bamPath); err != nil {
 		t.Fatalf("runPolya: %v", err)
 	}
 

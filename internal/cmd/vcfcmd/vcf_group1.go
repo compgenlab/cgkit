@@ -8,6 +8,7 @@ import (
 
 	"github.com/compgenlab/cghts/htsio/tabix"
 	"github.com/compgenlab/cghts/vcf"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -50,6 +51,9 @@ func openVcfWriter(cmd *cobra.Command, output string) (*vcf.VcfWriter, func() er
 	}
 	if vcfTbi && !strings.HasSuffix(output, ".gz") && !strings.HasSuffix(output, ".bgz") {
 		return nil, nil, fmt.Errorf("--tbi requires a bgzip output name ending in .gz or .bgz, got %q", output)
+	}
+	if err := locator.CheckLocalOutput("-o/--output", output); err != nil {
+		return nil, nil, err
 	}
 	w, err := vcf.OpenVcfWriter(output)
 	if err != nil {

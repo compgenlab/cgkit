@@ -24,7 +24,7 @@ var (
 )
 
 func init() {
-	samStatsCmd.Flags().StringVar(&samStatsCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
+	samStatsCmd.Flags().StringVar(&samStatsCramRef, "cram-ref", "", "Reference FASTA for CRAM files (path, http(s):// URL, or s3://)")
 	samStatsCmd.Flags().StringVar(&samStatsRgid, "rgid", "", "Only count reads from this read group (RG tag)")
 	samStatsCmd.Flags().StringVar(&samStatsTags, "tags", "", "Tally tag value distributions (comma-list, e.g. NH:i,RG:Z,MAPQ)")
 	samStatsCmd.Flags().BoolVar(&samStatsCalcInsert, "calc-insert", false, "Calculate the median insert size of proper pairs")
@@ -51,7 +51,7 @@ and (optionally) tag value distributions and insert-size median.`,
 		if samStatsCramRef != "" {
 			opts.RefPath(samStatsCramRef)
 		}
-		reader, err := htsio.NewSamReader(args[0], opts)
+		reader, err := htsio.OpenSamReader(cmd.Context(), args[0], opts)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", args[0], err)
 		}

@@ -175,7 +175,7 @@ written where nothing is known would assert a depth the data never had.`,
 			return fmt.Errorf("unknown format %q (use tsv, json, vcf, or list)", format)
 		}
 
-		q, targets, samples, err := buildQuery()
+		q, targets, samples, err := buildQuery(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -287,6 +287,7 @@ func provenance(out *bufio.Writer, source string) {
 // question the store can answer consistently, and the two backends will stop
 // agreeing. That is invisible without being told.
 func describeStore(cmd *cobra.Command, store varstore.Store, path string, g varstore.Gate) {
+	ctx := cmd.Context()
 	out := cmd.ErrOrStderr()
 	switch s := store.(type) {
 	case *varstore.ParquetStore:
@@ -323,7 +324,7 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 	case *varstore.VcfStore:
 		names, _ := s.Samples()
 		kind := "vcf"
-		if isGvcfPath(path) {
+		if isGvcfPath(ctx, path) {
 			kind = "gvcf"
 		}
 		fmt.Fprintf(out, "store    %s %s (%d samples)\n", kind, path, len(names))
@@ -343,8 +344,8 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 // Re-reading the header costs one open, and only under -v. The alternative is
 // threading the header out of the store, which would put a gVCF-shaped hole in the
 // Store interface for the sake of a verbose line.
-func isGvcfPath(path string) bool {
-	r, err := vcf.NewVcfFile(path)
+func isGvcfPath(ctx context.Context, path string) bool {
+	r, err := vcf.OpenVcfFile(ctx, path)
 	if err != nil {
 		return false
 	}
@@ -379,18 +380,18 @@ func warnUnknownSites(cmd *cobra.Command, store varstore.Store, q varstore.Query
 // legal: naming both is the variants-by-samples question that used to be a hard
 // error, naming only --region asks for a window, and naming only --sample asks
 // what that subject carries.
-func buildQuery() (varstore.Query, *targetSet, *sampleSet, error) {
+func buildQuery(ctx context.Context) (varstore.Query, *targetSet, *sampleSet, error) {
 	q := varstore.Query{
 		Gate:       varstore.Gate{MinDP: int32(vcfVarQueryMinDP)},
 		IncludeRef: vcfVarQueryHomRef,
 	}
-	t, err := parseTargets(vcfVarQueryVariants)
+	t, err := parseTargets(ctx, vcfVarQueryVariants)
 	if err != nil {
 		return q, nil, nil, err
 	}
 	q.Loci, q.Spans = t.Loci, t.Spans
 
-	ss, err := parseSampleArgs(vcfVarQuerySamples)
+	ss, err := parseSampleArgs(ctx, vcfVarQuerySamples)
 	if err != nil {
 		return q, t, nil, err
 	}
