@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/compgenlab/cghts/htsio"
+	"github.com/compgenlab/cgkit/internal/cmdtest"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +27,7 @@ func TestSamFilterProvenance(t *testing.T) {
 
 	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
+	cmdtest.ResetFlags(root)
 	root.SetArgs([]string{"sam-filter", in, out})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("sam-filter: %v", err)

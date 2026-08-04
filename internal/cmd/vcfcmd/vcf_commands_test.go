@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/compgenlab/cgkit/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/cmdtest"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 )
 
 // runVcf executes a vcf subcommand against a fresh root and returns its stdout.
@@ -34,24 +34,11 @@ func runVcfErr(t *testing.T, args ...string) error {
 func vcfTestRoot(args ...string) (*cobra.Command, *bytes.Buffer) {
 	root := &cobra.Command{Use: "cgkit"}
 	InitCmd(root)
-	for _, c := range root.Commands() {
-		c.Flags().VisitAll(func(f *pflag.Flag) {
-			// Slice flags APPEND on Set, so Set(DefValue) would add the literal
-			// "[]" as an element rather than clearing them. That bug was latent for
-			// a long time: an extra bogus --sample is a harmless no-op selector,
-			// but an extra bogus --region restricts the site axis and silently
-			// filters every row away. Replace empties them properly, and does so
-			// for every slice flag rather than the hand-kept list below, which is
-			// exactly the kind of list a new flag gets forgotten from.
-			if sv, ok := f.Value.(pflag.SliceValue); ok {
-				_ = sv.Replace(nil)
-				f.Changed = false
-				return
-			}
-			_ = f.Value.Set(f.DefValue)
-			f.Changed = false
-		})
-	}
+	// Slice flags need Replace rather than Set(DefValue); see cmdtest.ResetFlags.
+	// That mattered here beyond tidiness: an extra bogus --sample is a harmless
+	// no-op selector, but an extra bogus --region restricts the site axis and
+	// silently filters every row away.
+	cmdtest.ResetFlags(root)
 	// Custom chain-valued flags do not implement pflag.SliceValue, so they still
 	// need clearing by hand.
 	vcfExportInfo = nil
