@@ -70,3 +70,26 @@ func TestExportSampleSelection(t *testing.T) {
 			"all should be wider", oneH, allH)
 	}
 }
+
+// selectByGlob filters --key against the header's declared FORMAT ids, so a key
+// the header never declared yielded no column and said nothing -- and the "at
+// least one field" guard has already passed by then, leaving a table of locus
+// columns and nothing else. A warning, not an error: a glob matching nothing is
+// reasonable across files with differing headers, and the keys that did match
+// still export.
+func TestSampleExportWarnsOnAnUndeclaredKey(t *testing.T) {
+	warn := captureStderr(t, "vcf-sample-export", "--key", "NOSUCH", "testdata/sample.vcf")
+	if !strings.Contains(warn, "NOSUCH") {
+		t.Errorf("no warning naming the unmatched key:\n%s", warn)
+	}
+
+	// A key the header does declare must not warn.
+	if w := captureStderr(t, "vcf-sample-export", "--key", "GT", "testdata/sample.vcf"); strings.Contains(w, "warning") {
+		t.Errorf("warned about a declared key:\n%s", w)
+	}
+
+	// Nor must a glob that matched something.
+	if w := captureStderr(t, "vcf-sample-export", "--key", "A*", "testdata/sample.vcf"); strings.Contains(w, "warning") {
+		t.Errorf("warned about a glob that matched:\n%s", w)
+	}
+}

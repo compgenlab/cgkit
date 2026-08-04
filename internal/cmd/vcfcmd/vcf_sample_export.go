@@ -58,6 +58,14 @@ variant. Columns: chrom, pos, [ID], ref, alt, sample, then each exported key.
 		samples := selectByGlob(header.Samples(), vcfSampleExportSamples)
 		keys := selectByGlob(header.FormatIDs(), validKeys)
 
+		// selectByGlob filters against the header's declared FORMAT ids, so a
+		// --key naming a field the header never declared -- common in
+		// hand-assembled or tool-truncated VCFs -- yielded no column and no
+		// word about it. The "at least one field" guard above has already
+		// passed by then, so the result was a table of locus columns and
+		// nothing else.
+		warnUnmatchedKeys(cmd, validKeys, keys)
+
 		out := cmd.OutOrStdout()
 		var hdr []string
 		hdr = append(hdr, "chrom", "pos")
@@ -152,4 +160,57 @@ func init() {
 	f.BoolVar(&vcfSampleExportGT, "gt", false, "Export GT and convert to ref/alt bases")
 	f.BoolVar(&vcfSampleExportID, "id", false, "Include the ID column")
 	f.BoolVar(&vcfSampleExportPassing, "passing", false, "Only export passing variants")
+}
+
+// warnUnmatchedKeys reports requested keys that matched no declared FORMAT id.
+//
+// A warning rather than an error: a glob that matches nothing is a reasonable
+// thing to pass across a set of files with differing headers, and the export is
+// still valid for the keys that did match. Silence was the problem.
+func warnUnmatchedKeys(cmd *cobra.Command, requested, matched []string) {
+	if len(requested) == 0 {
+		return
+	}
+	got := make(map[string]bool, len(matched))
+	for _, k := range matched {
+		got[k] = true
+	}
+	var missing []string
+	for _, want := range requested {
+		if got[want] {
+			continue
+		}
+		// A glob is satisfied by anything it matched, so only report one that
+		// matched nothing at all.
+		if isGlobPattern(want) && len(matched) > 0 && globMatchedAny(want, matched) {
+			continue
+		}
+		missing = append(missing, want)
+	}
+	if len(missing) == 0 {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"warning: no FORMAT field declared in the header matches: %s\n",
+		strings.Join(missing, ", "))
+	if len(matched) == 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(),
+			"         the output will carry no per-sample columns")
+	}
+}
+
+// isGlobPattern reports whether a requested key is a pattern rather than a
+// literal id.
+func isGlobPattern(s string) bool {
+	return strings.ContainsAny(s, "*?[")
+}
+
+// globMatchedAny reports whether a pattern accounts for at least one match.
+func globMatchedAny(pattern string, matched []string) bool {
+	for _, m := range matched {
+		if globMatch(m, pattern) {
+			return true
+		}
+	}
+	return false
 }

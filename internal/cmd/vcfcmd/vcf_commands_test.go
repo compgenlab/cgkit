@@ -538,8 +538,13 @@ func TestVcfToBedSpans(t *testing.T) {
 		"chr1\t299\t300\tINS",
 		// Symbolic ALT: END is an absolute 1-based inclusive end.
 		"chr1\t399\t1400\tDEL",
-		// SVLEN is reported negative for a deletion; the span it covers is positive.
-		"chr1\t1499\t1749\tDEL",
+		// SVLEN is reported negative for a deletion; the span it covers is
+		// positive, and covers POS..POS+|SVLEN| inclusive -- VCF 4.4 defines
+		// END = POS + |SVLEN|, so this is 1500..1750, or [1499, 1750) in BED.
+		// It used to end at 1749, which disagreed with the END-spelled deletion
+		// above it in this same fixture: POS 400 with END=1400 is 1001 bases,
+		// while POS 1500 with SVLEN=-250 was 250 rather than 251.
+		"chr1\t1499\t1750\tDEL",
 		"",
 	}, "\n")
 	if got != want {
