@@ -186,6 +186,31 @@ Both files must be sorted by coordinate.`,
 			"umi", "match", "mi", "representative_umi",
 		}, "\t"))
 
+		// Both inputs are in the BAM's reference order, so the sweep has to
+		// compare contigs that way rather than lexicographically. It used to use
+		// Go string comparison, and "chr9" < "chr10" is false -- so the moment
+		// the BAM crossed from chr9 to chr10 the cursor stopped advancing and the
+		// candidate scan broke immediately, reporting every read on chr10 and
+		// beyond as unmatched. A plausible-looking negative result, with no warning.
+		header, err := reader.Header()
+		if err != nil {
+			return err
+		}
+		refOrd := make(map[string]int, len(header.References()))
+		for i, r := range header.References() {
+			refOrd[r.Name] = i
+		}
+		// A contig the BAM header does not declare sorts last, so it never
+		// advances the cursor past a read nor cuts a scan short; such records
+		// simply never match, which is the honest answer for a counts file
+		// naming a contig this BAM does not have.
+		ordOf := func(chrom string) int {
+			if i, ok := refOrd[chrom]; ok {
+				return i
+			}
+			return len(refOrd)
+		}
+
 		// Sweep through BAM and counts in coordinate order.
 		// recordIdx tracks the start of the window of candidate records.
 		recordIdx := 0
@@ -219,7 +244,7 @@ Both files must be sorted by coordinate.`,
 			// any current or future read (sorted input assumption).
 			for recordIdx < len(records) {
 				r := &records[recordIdx]
-				if r.chrom < rec.RefName {
+				if ordOf(r.chrom) < ordOf(rec.RefName) {
 					recordIdx++
 					continue
 				}
@@ -237,7 +262,7 @@ Both files must be sorted by coordinate.`,
 			for i := recordIdx; i < len(records); i++ {
 				r := &records[i]
 				// Past this read's possible range — stop scanning.
-				if r.chrom > rec.RefName {
+				if ordOf(r.chrom) > ordOf(rec.RefName) {
 					break
 				}
 				if r.chrom == rec.RefName && r.start-umiLookupOverlap > readStart {

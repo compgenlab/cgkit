@@ -86,7 +86,19 @@ var ontUmiClusterCmd = &cobra.Command{
 		// TabixWriter with BED preset for sorted, indexed output.
 		// For plain text, use a simple io.Writer.
 		var countsWriter lineWriter
+		if umiClusterCountsFilename != "" && umiClusterWholeGenome {
+			// Whole-genome mode never builds the counts, so it would create the
+			// file (and an index over nothing) and leave it empty. Refusing is
+			// better than a silently empty result the caller has to notice.
+			return fmt.Errorf("--summary-counts is not supported with --whole-genome")
+		}
 		if umiClusterCountsFilename != "" {
+			// Before the branch, so both output kinds are guarded. The check used
+			// to sit only in the plain-text arm, so a .gz name skipped it and
+			// failed later inside the tabix writer's os.Create instead.
+			if err := locator.CheckLocalOutput("--summary-counts", umiClusterCountsFilename); err != nil {
+				return err
+			}
 			if strings.HasSuffix(umiClusterCountsFilename, ".gz") || strings.HasSuffix(umiClusterCountsFilename, ".bgz") {
 				opts := tabix.NewWriterOpts().BED().Meta('#')
 				if !umiClusterNoCountsIndex {
@@ -95,9 +107,6 @@ var ontUmiClusterCmd = &cobra.Command{
 				tw := tabix.NewWriter(umiClusterCountsFilename, opts)
 				countsWriter = &tabixLineWriter{tw: tw}
 			} else {
-				if err := locator.CheckLocalOutput("--summary-counts", umiClusterCountsFilename); err != nil {
-					return err
-				}
 				f, err := os.Create(umiClusterCountsFilename)
 				if err != nil {
 					return fmt.Errorf("opening umi-counts: %w", err)
