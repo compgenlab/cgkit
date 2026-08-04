@@ -218,6 +218,12 @@ var ontTagsCmd = &cobra.Command{
 		} else if passingWriter == nil && ontTrimFlanking {
 			fmt.Fprintln(os.Stderr, "warning: --trim-flanking has no effect without --passing-fastq")
 		}
+		// Sense correction is applied only where a read is trimmed, so without
+		// --trim-flanking the flag does nothing. Every other inert combination
+		// here is warned about; this one was missed.
+		if ontSenseCorrect && (passingWriter == nil || !ontTrimFlanking) {
+			fmt.Fprintln(os.Stderr, "warning: --sense-correct has no effect without --passing-fastq and --trim-flanking")
+		}
 
 		fqReader, err := seqio.NewFastqFile(args[0])
 		if err != nil {
@@ -632,7 +638,7 @@ func init() {
 	ontTagsCmd.Flags().BoolVar(&ontWriteUMI, "add-umi", false, "Add UMI= tag to FASTQ comment when writing output")
 	ontTagsCmd.Flags().BoolVar(&ontUMISepT, "umi-sep-t", false, "Separate UMI groups with T bases instead of dashes (e.g. AAAATTAAAATTAAAA)")
 	ontTagsCmd.Flags().BoolVar(&ontTrimFlanking, "trim-flanking", false, "Trim VNP/SSP sequences from passing reads before writing")
-	ontTagsCmd.Flags().BoolVar(&ontSenseCorrect, "sense-correct", false, "Correct the read to be in the sense orientation (SSP+/VNP-)")
+	ontTagsCmd.Flags().BoolVar(&ontSenseCorrect, "sense-correct", false, "Correct trimmed reads to the sense orientation (SSP+/VNP-); requires --trim-flanking")
 	ontTagsCmd.Flags().StringVar(&ontStatusTag, "add-status-tag", "", "Add a SAM-style tag (two-letter name) with pass/fail status to FASTQ comments (e.g. CO)")
 
 	ontTagsCmd.Flags().BoolVar(&ontFilterVNPSSPPair, "filter-pair", false, "Require paired VNP/SSP (flanking on opposite strands)")

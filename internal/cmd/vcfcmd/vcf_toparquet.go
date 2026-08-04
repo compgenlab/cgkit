@@ -685,7 +685,7 @@ func (c *parquetConverter) report(out io.Writer, base string, elapsed time.Durat
 
 func init() {
 	f := vcfToParquetCmd.Flags()
-	f.StringVar(&vcfToParquetOut, "out", "", "Base output name; BASE.calls.parquet etc, or DIR/ for DIR/calls.parquet etc (the directory is created)")
+	f.StringVar(&vcfToParquetOut, "out", "", "Store directory, created if needed (DIR/calls.parquet etc)")
 	f.StringVar(&vcfToParquetRegion, "region", "", "Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
 	f.IntVar(&vcfToParquetMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
 	f.BoolVar(&vcfToParquetNoCallable, "no-callable", false, "Accept a source with no DP field; callable regions will be empty")
