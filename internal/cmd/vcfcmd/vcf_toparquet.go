@@ -11,6 +11,7 @@ import (
 	"github.com/compgenlab/cghts/varstore"
 	"github.com/compgenlab/cghts/vcf"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -51,25 +52,38 @@ position statistics stay tighter, and a locus lookup then skips more of the
 file. Measured on a two-chromosome store, supplying them out of order cost
 about 1.8x on a locus query (166ms against 298ms).
 
-Three files are written from --out, and they form one inseparable set:
+The store is written to --out, and its members form one inseparable set:
 
-  BASE.calls.parquet     one row per ALT-carrying genotype
-  BASE.sites.parquet     one row per interrogated site, with AC/AN and counts
-  BASE.regions.parquet   contiguous runs of adequately-covered sites, per sample
+  cohort/
+    calls.parquet      one row per ALT-carrying genotype
+    sites.parquet      one row per interrogated site, with AC/AN and counts
+    regions.parquet    contiguous runs of adequately-covered sites, per sample
+    manifest.json.gz   written last; the store is unreadable without it
 
-Ending --out with a "/" instead names a directory, which is created if needed,
-and the members go inside it under their bare names:
+A store is a directory, created if needed; a trailing "/" on --out is optional
+and means nothing. The members are only meaningful together, so this keeps the
+set as one thing to copy, move or delete, and it is the layout every Parquet
+tool expects -- DuckDB or pyarrow can be pointed straight at a member.
+vcf-varquery accepts the directory, with or without the slash, or any member
+path within it.
 
-  --out cohort/   ->  cohort/calls.parquet, cohort/sites.parquet, cohort/regions.parquet
+The manifest is what makes a store readable rather than merely present. It is
+written after every member is closed, so its presence means the conversion
+reached the end -- which nothing else can tell you. The parquet footers prove
+each member was finished, but a set of finished members says nothing about how
+much of the input went into them, and a store that covered three of twenty-two
+chromosomes answers "not assayed" for the rest, exactly as a complete store
+answers for a position the source never reported. So the manifest also records
+what was written: per-chromosome site and call counts, per-member row counts,
+the sample roster. Read it with vcf-varsummary.
 
-That keeps the set as a single thing to copy, move or delete -- worth having,
-since the three files are only meaningful together. vcf-varquery accepts either
-form, and either member path within it.
+A store written by an older cgkit has no manifest and must be re-converted.
 
-Conversion refuses to overwrite an existing store: if any of the three members
-is already present under --out, or if a prefix-form base names an existing
-directory, it stops and asks for --force. Writing truncates all three, and a
-half-replaced set is worse than either keeping or replacing the old one.
+Conversion refuses to overwrite an existing store: if any member is already
+present under --out it stops and asks for --force. Writing truncates them all,
+and a half-replaced set is worse than either keeping or replacing the old one.
+The check keys on the members, so an existing directory holding unrelated files
+is a fine target and its contents are left alone.
 
 The sites file carries both allele counts (AC, AN) and sample counts
 (n_carriers, n_called, n_lowdp). They are not interchangeable: a 1/1 genotype is
@@ -108,7 +122,7 @@ calls, even where run intervals appear to bracket it. Only a gVCF, whose
 reference blocks carry END and MIN_DP, makes positive statements about spans and
 could answer off-catalog positions.
 
-  --out BASE            base name for the three output files, or DIR/ (required)
+  --out DIR             the store directory, created if needed (required)
   --force               overwrite an existing store at --out
   --min-dp N            depth at or above which a site counts as callable
   --no-callable         proceed when the input has no DP field at all
@@ -123,7 +137,13 @@ could answer off-catalog positions.
 			return nil
 		}
 		if vcfToParquetOut == "" {
-			return fmt.Errorf("you must specify a base output name with --out")
+			return fmt.Errorf("you must specify an output store directory with --out")
+		}
+		// Before CheckStoreTarget: its os.Stat fails harmlessly on a URL, and the
+		// writer would then reach os.Create("s3://...") and report a bewildering
+		// not-found against a path nobody typed.
+		if err := locator.CheckLocalOutput("--out", vcfToParquetOut); err != nil {
+			return err
 		}
 		if vcfToParquetMinDP < 0 {
 			return fmt.Errorf("--min-dp must not be negative")
@@ -180,7 +200,7 @@ could answer off-catalog positions.
 			NoCallable:   vcfToParquetNoCallable,
 			Program:      buildinfo.String(),
 			Command:      buildinfo.CommandLine(),
-			Source:       strings.Join(args, ", "),
+			Sources:      args,
 			Contigs:      contigs,
 		})
 		if err != nil {
@@ -200,26 +220,28 @@ could answer off-catalog positions.
 
 		for _, path := range args {
 			if err := convertOne(cmd, conv, path, samples); err != nil {
-				w.Discard()
-				return err
+				return discarding(w, err)
 			}
 		}
 		if err := conv.finish(); err != nil {
-			w.Discard()
-			return err
+			return discarding(w, err)
 		}
 		// Before Close, and discarding: this used to run after the store was
 		// written, so the failure left all three members on disk -- which then
 		// tripped the overwrite guard on the --no-callable retry the message
 		// itself asks for.
 		if conv.sawDP == 0 && !vcfToParquetNoCallable {
-			w.Discard()
-			return fmt.Errorf("no DP field found in %s, so callable regions cannot be built\n"+
+			return discarding(w, fmt.Errorf("no DP field found in %s, so callable regions cannot be built\n"+
 				"       re-run with --no-callable to accept a store that cannot distinguish\n"+
-				"       non-carrier from not-assayed", strings.Join(args, ", "))
+				"       non-carrier from not-assayed", strings.Join(args, ", ")))
 		}
-		if err := w.Close(); err != nil {
-			return err
+		// Finish closes the members and writes the manifest that marks the store
+		// complete; without it the store is unreadable by design. Discard on
+		// failure: this was the one error path that returned without cleaning up,
+		// and Close is exactly where a full disk shows up -- leaving members that
+		// look like a store and then block the retry through the overwrite guard.
+		if err := w.Finish(); err != nil {
+			return discarding(w, err)
 		}
 
 		if vcfToParquetVerbose {
@@ -326,7 +348,6 @@ func convertOne(cmd *cobra.Command, conv *parquetConverter, path string, canonic
 		}
 		fmt.Fprintf(conv.progress, "reading %s (%d samples)%s\n", path, len(canonical), note)
 	}
-	conv.nFiles++
 
 	for {
 		rec, err := src.next()
@@ -379,7 +400,6 @@ type parquetConverter struct {
 	// ordering cursor, to keep the concatenation coordinate sorted
 	lastPos   int32
 	seenChrom map[string]bool
-	nFiles    int
 
 	// verbose reporting
 	verbose       bool
@@ -665,7 +685,7 @@ func (c *parquetConverter) report(out io.Writer, base string, elapsed time.Durat
 
 func init() {
 	f := vcfToParquetCmd.Flags()
-	f.StringVar(&vcfToParquetOut, "out", "", "Base output name; BASE.calls.parquet etc, or DIR/ for DIR/calls.parquet etc (the directory is created)")
+	f.StringVar(&vcfToParquetOut, "out", "", "Store directory, created if needed (DIR/calls.parquet etc)")
 	f.StringVar(&vcfToParquetRegion, "region", "", "Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
 	f.IntVar(&vcfToParquetMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
 	f.BoolVar(&vcfToParquetNoCallable, "no-callable", false, "Accept a source with no DP field; callable regions will be empty")
@@ -773,4 +793,17 @@ func collectContigs(cmd *cobra.Command, inputs []string, region string) ([]strin
 		out = append(out, byID[id].line)
 	}
 	return out, nil
+}
+
+// discarding removes the half-written store and returns why the conversion
+// failed, mentioning the cleanup only when that failed too.
+//
+// A failed removal matters enough to say: what survives looks like a store, so
+// the overwrite guard will refuse to replace it, and the retry the error asks
+// for cannot run until it is deleted by hand.
+func discarding(w *varstore.Writer, err error) error {
+	if derr := w.Discard(); derr != nil {
+		return fmt.Errorf("%w\n       the partial store could not be removed: %v", err, derr)
+	}
+	return err
 }

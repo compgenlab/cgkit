@@ -1,6 +1,7 @@
 package ontcmd
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -260,7 +261,7 @@ func TestUmiDedup_BasicSelection(t *testing.T) {
 	umiDedupMarkDuplicates = false
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
-	if err := runUmiDedup(inPath, selectors, nil); err != nil {
+	if err := runUmiDedup(context.Background(), inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -297,7 +298,7 @@ func TestUmiDedup_MarkDuplicates(t *testing.T) {
 	umiDedupMarkDuplicates = true
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
-	if err := runUmiDedup(inPath, selectors, nil); err != nil {
+	if err := runUmiDedup(context.Background(), inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -337,7 +338,7 @@ func TestUmiDedup_ChainedSelectorsIntegration(t *testing.T) {
 		&tagSelector{tag: "NM", ascending: true},
 	}
 
-	if err := runUmiDedup(inPath, selectors, nil); err != nil {
+	if err := runUmiDedup(context.Background(), inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -367,7 +368,7 @@ func TestUmiDedup_NoMIPassthrough(t *testing.T) {
 	umiDedupMarkDuplicates = false
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
-	if err := runUmiDedup(inPath, selectors, nil); err != nil {
+	if err := runUmiDedup(context.Background(), inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -403,7 +404,7 @@ func TestUmiDedup_SecondarySupplementaryDropped(t *testing.T) {
 	umiDedupMarkDuplicates = false
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
-	if err := runUmiDedup(inPath, selectors, nil); err != nil {
+	if err := runUmiDedup(context.Background(), inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -441,7 +442,7 @@ func TestUmiDedup_MultipleChromosomes(t *testing.T) {
 	umiDedupMarkDuplicates = false
 	selectors := []selector{&tagSelector{tag: "AS", ascending: false}}
 
-	if err := runUmiDedup(inPath, selectors, nil); err != nil {
+	if err := runUmiDedup(context.Background(), inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -478,7 +479,7 @@ func TestUmiDedup_LongestOnly(t *testing.T) {
 	umiDedupMarkDuplicates = false
 	selectors := []selector{&longestSelector{}}
 
-	if err := runUmiDedup(inPath, selectors, nil); err != nil {
+	if err := runUmiDedup(context.Background(), inPath, selectors, nil); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 
@@ -520,7 +521,7 @@ func TestUmiDedup_StatsReport(t *testing.T) {
 		&tagSelector{tag: "NM", ascending: true},
 	}
 
-	if err := runUmiDedup(inPath, selectors, []string{"AS", "NM"}); err != nil {
+	if err := runUmiDedup(context.Background(), inPath, selectors, []string{"AS", "NM"}); err != nil {
 		t.Fatalf("runUmiDedup: %v", err)
 	}
 

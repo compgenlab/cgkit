@@ -1,6 +1,7 @@
 package vcfcmd
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -43,7 +44,7 @@ func TestGtColumnOrder(t *testing.T) {
 // grammar as vcf-varquery --variant, and that it refuses the shapes it cannot
 // answer rather than silently taking the first base of a range.
 func TestGtCountSiteGrammar(t *testing.T) {
-	got, err := collectGtSites([]string{"chr1:100", "chr1:300:G:GA"}, nil)
+	got, err := collectGtSites(context.Background(), []string{"chr1:100", "chr1:300:G:GA"}, nil)
 	if err != nil {
 		t.Fatalf("collectGtSites: %v", err)
 	}
@@ -61,13 +62,13 @@ func TestGtCountSiteGrammar(t *testing.T) {
 
 	// A range has no single position, so it is refused rather than approximated.
 	for _, bad := range []string{"chr1:100-200", "chr1"} {
-		if _, err := collectGtSites([]string{bad}, nil); err == nil {
+		if _, err := collectGtSites(context.Background(), []string{bad}, nil); err == nil {
 			t.Errorf("%q names a range; vcf-gtcount should refuse it", bad)
 		}
 	}
 	// A malformed locus is not silently a contig here either, since a contig is a
 	// range and ranges are refused.
-	if _, err := collectGtSites([]string{"chr1:abc"}, nil); err == nil {
+	if _, err := collectGtSites(context.Background(), []string{"chr1:abc"}, nil); err == nil {
 		t.Error("chr1:abc should be refused")
 	}
 }

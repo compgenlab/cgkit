@@ -2,6 +2,7 @@ package ontcmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -288,7 +289,7 @@ type polyaStats struct {
 	clamped int
 }
 
-func runPolya(inputFile string) error {
+func runPolya(ctx context.Context, inputFile string) error {
 	params := polyaParams{
 		window:   polyaWindow,
 		minAFrac: polyaMinAFrac,
@@ -303,7 +304,7 @@ func runPolya(inputFile string) error {
 	if polyaThreads > 1 {
 		opts.Threads(polyaThreads)
 	}
-	reader, err := htsio.NewSamReader(inputFile, opts)
+	reader, err := htsio.OpenSamReader(ctx, inputFile, opts)
 	if err != nil {
 		return err
 	}
@@ -525,7 +526,7 @@ Examples:
 		if polyaAdapterIdent <= 0 || polyaAdapterIdent > 1 {
 			return fmt.Errorf("--adapter-min-ident must be greater than 0 and at most 1")
 		}
-		return runPolya(args[0])
+		return runPolya(cmd.Context(), args[0])
 	},
 }
 
@@ -558,5 +559,5 @@ func init() {
 	ontPolyaCmd.Flags().Var(&tagArrayValue{values: &polyaTags}, "tag", "Append a column with this SAM tag's value; repeatable (e.g. --tag pt)")
 	ontPolyaCmd.Flags().BoolVar(&polyaNoNA, "no-na", false, "Omit rows for reads with no poly(A) call")
 	ontPolyaCmd.Flags().IntVarP(&polyaThreads, "threads", "t", 1, "Number of BGZF decompression threads")
-	ontPolyaCmd.Flags().StringVar(&polyaCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
+	ontPolyaCmd.Flags().StringVar(&polyaCramRef, "cram-ref", "", "Reference FASTA for CRAM files (path, http(s):// URL, or s3://)")
 }

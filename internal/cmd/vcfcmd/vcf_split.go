@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/compgenlab/cghts/vcf"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -30,6 +31,9 @@ BASE.2.vcf.gz, and so on. Recombine them with "vcf-concat --chunks BASE.1.vcf.gz
 		if len(args) == 0 {
 			cmd.Help()
 			return nil
+		}
+		if err := locator.CheckLocalOutput("--out", vcfSplitOut); err != nil {
+			return err
 		}
 		if vcfSplitOut == "" {
 			return fmt.Errorf("you must specify a base output name with --out")

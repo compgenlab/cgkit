@@ -10,6 +10,7 @@ import (
 	_ "github.com/compgenlab/cghts/htsio/bam"
 	_ "github.com/compgenlab/cghts/htsio/cram"
 	_ "github.com/compgenlab/cghts/htsio/sam"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -72,7 +73,7 @@ var samExportCmd = &cobra.Command{
 		}
 
 		inputFile := args[0]
-		reader, err := htsio.NewSamReader(inputFile, opts)
+		reader, err := htsio.OpenSamReader(cmd.Context(), inputFile, opts)
 		if err != nil {
 			return err
 		}
@@ -80,6 +81,9 @@ var samExportCmd = &cobra.Command{
 
 		var out io.Writer = os.Stdout
 		if samExportOutput != "" && samExportOutput != "-" {
+			if err := locator.CheckLocalOutput("-o/--output", samExportOutput); err != nil {
+				return err
+			}
 			f, err := os.Create(samExportOutput)
 			if err != nil {
 				return err

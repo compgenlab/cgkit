@@ -9,6 +9,7 @@ import (
 	"github.com/compgenlab/cghts/htsio/cram"
 	"github.com/compgenlab/cghts/htsio/sam"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -39,12 +40,15 @@ var samFilterCmd = &cobra.Command{
 			outputFile = args[1]
 		}
 
+		if err := locator.CheckLocalOutput("output", outputFile); err != nil {
+			return err
+		}
 		format, err := resolveSamFilterFormat(outputFile)
 		if err != nil {
 			return err
 		}
 
-		reader, err := htsio.NewSamReader(inputFile, opts)
+		reader, err := htsio.OpenSamReader(cmd.Context(), inputFile, opts)
 		if err != nil {
 			return err
 		}
@@ -112,7 +116,10 @@ var samFilterCmd = &cobra.Command{
 					return fmt.Errorf("write record: %w", err)
 				}
 			}
-			return nil
+			// Close, not just the deferred one: this is where the final flush and
+			// the BGZF EOF block are written, so it is where a full disk shows up.
+			// Discarding that error exits 0 having produced a truncated file.
+			return writer.Close()
 		}
 
 		// No region — stream all records.
@@ -125,7 +132,7 @@ var samFilterCmd = &cobra.Command{
 			}
 		}
 
-		return nil
+		return writer.Close()
 	},
 }
 

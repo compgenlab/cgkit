@@ -10,6 +10,7 @@ import (
 	"github.com/compgenlab/cghts/htsio"
 	"github.com/compgenlab/cghts/vcf"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -25,12 +26,22 @@ func stampVcfProvenance(h *vcf.VcfHeader, cmdName string) {
 }
 
 // openVcfInput opens a streaming VCF reader for filename, reading from stdin
-// when filename is "-". Input is transparently gunzipped.
+// when filename is "-". Input is transparently gunzipped, and may be a local
+// path or a remote locator (http(s)://, s3://).
+//
+// Note that a streaming read of a remote object transfers the whole thing;
+// there is no index to skip with. Commands taking --region seek instead.
 func openVcfInput(cmd *cobra.Command, filename string) (*vcf.VcfReader, error) {
 	if filename == "-" {
 		return vcf.NewVcfReader(cmd.InOrStdin())
 	}
-	return vcf.NewVcfFile(filename)
+	r, err := vcf.OpenVcfFile(cmd.Context(), filename)
+	if err != nil {
+		// The locator is worth repeating: for a remote read the underlying
+		// error is an HTTP status or an SDK message with no path in it.
+		return nil, fmt.Errorf("opening %s: %w", filename, err)
+	}
+	return r, nil
 }
 
 // openOutput returns the writer for output, using stdout when output is "" or
@@ -38,6 +49,10 @@ func openVcfInput(cmd *cobra.Command, filename string) (*vcf.VcfReader, error) {
 func openOutput(cmd *cobra.Command, output string) (io.Writer, func() error, error) {
 	if output == "" || output == "-" {
 		return cmd.OutOrStdout(), nil, nil
+	}
+	// After the stdout check, never before it: "-" is not a locator.
+	if err := locator.CheckLocalOutput("-o/--output", output); err != nil {
+		return nil, nil, err
 	}
 	f, err := os.Create(output)
 	if err != nil {
@@ -70,7 +85,7 @@ func openRecordSource(cmd *cobra.Command, filename, region string) (*recordSourc
 		if end < 0 {
 			end = math.MaxInt32
 		}
-		ir, err := vcf.NewIndexedVcfReader(filename)
+		ir, err := vcf.OpenIndexedVcfReader(cmd.Context(), filename)
 		if err != nil {
 			return nil, err
 		}

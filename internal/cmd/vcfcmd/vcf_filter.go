@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/compgenlab/cghts/vcf/filter"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -51,6 +52,13 @@ By default every variant is written (with FILTER updated). --passing writes only
 variants that pass all filters; --failing writes only variants that fail one.
 --stats FILE writes per-filter-combination counts (tab-separated).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Mutually exclusive: together they drop every record and produce a
+		// header-only file with exit 0. Sibling commands check their own
+		// exclusive pairs (vcf-strip --only-snvs/--only-indels, vcf-chrfix
+		// --ucsc/--ensembl); this pair was missed.
+		if vcfFilterPassing && vcfFilterFailing {
+			return fmt.Errorf("--passing and --failing are mutually exclusive")
+		}
 		if len(args) == 0 {
 			cmd.Help()
 			return nil
@@ -207,6 +215,9 @@ func (s *filterStats) tally(codes []string) {
 }
 
 func (s *filterStats) write(filename string) error {
+	if err := locator.CheckLocalOutput("--stats", filename); err != nil {
+		return err
+	}
 	out, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -217,7 +228,9 @@ func (s *filterStats) write(filename string) error {
 			return err
 		}
 	}
-	return nil
+	// Close explicitly: the deferred one discards its error, and an os.File's
+	// Close is where a deferred write error surfaces.
+	return out.Close()
 }
 
 // splitFilterArg parses a KEY:VAL[:SAMPLE[:ALLELE]] filter argument.

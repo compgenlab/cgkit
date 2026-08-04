@@ -1,6 +1,7 @@
 package ontcmd
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/compgenlab/cghts/htsio"
 	"github.com/compgenlab/cghts/htsio/bam"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -62,6 +64,9 @@ func (s *dedupStats) recordGroup(primaries []*htsio.SamRecord, bestIdx int, tagN
 
 // writeReport writes the stats report to the given path.
 func (s *dedupStats) writeReport(path string) error {
+	if err := locator.CheckLocalOutput("--stats", path); err != nil {
+		return err
+	}
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("creating stats file: %w", err)
@@ -395,16 +400,16 @@ Examples:
 			}
 		}
 
-		return runUmiDedup(args[0], selectors, statTags)
+		return runUmiDedup(cmd.Context(), args[0], selectors, statTags)
 	},
 }
 
-func runUmiDedup(inputFile string, selectors []selector, statTags []string) error {
+func runUmiDedup(ctx context.Context, inputFile string, selectors []selector, statTags []string) error {
 	opts := htsio.NewSamReaderOpts()
 	if umiDedupCramRef != "" {
 		opts.RefPath(umiDedupCramRef)
 	}
-	reader, err := htsio.NewSamReader(inputFile, opts)
+	reader, err := htsio.OpenSamReader(ctx, inputFile, opts)
 	if err != nil {
 		return err
 	}
@@ -423,6 +428,9 @@ func runUmiDedup(inputFile string, selectors []selector, statTags []string) erro
 
 	header.AddPGLine("ont-umi-dedup", "cgkit", buildinfo.String(), "DS:UMI deduplication")
 
+	if err := locator.CheckLocalOutput("-o/--output", umiDedupOutput); err != nil {
+		return err
+	}
 	writer, err := bam.NewSortedWriter(umiDedupOutput, header, true)
 	if err != nil {
 		return err
@@ -601,5 +609,5 @@ func init() {
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupMITag, "tag-mi", "MI", "SAM tag containing molecule group ID")
 	ontUmiDedupCmd.Flags().StringVar(&umiDedupStatsFile, "stats", "", "Write deduplication statistics to this file")
 	ontUmiDedupCmd.Flags().IntVarP(&umiDedupThreads, "threads", "t", 1, "Number of BGZF compression threads for output writing")
-	ontUmiDedupCmd.Flags().StringVar(&umiDedupCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
+	ontUmiDedupCmd.Flags().StringVar(&umiDedupCramRef, "cram-ref", "", "Reference FASTA for CRAM files (path, http(s):// URL, or s3://)")
 }

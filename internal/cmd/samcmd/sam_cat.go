@@ -14,7 +14,7 @@ import (
 var samCatCramRef string
 
 func init() {
-	samCatCmd.Flags().StringVar(&samCatCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
+	samCatCmd.Flags().StringVar(&samCatCramRef, "cram-ref", "", "Reference FASTA for CRAM files (path, http(s):// URL, or s3://)")
 }
 
 var samCatCmd = &cobra.Command{
@@ -29,7 +29,7 @@ var samCatCmd = &cobra.Command{
 		if samCatCramRef != "" {
 			opts.RefPath(samCatCramRef)
 		}
-		reader, err := htsio.NewSamReader(args[0], opts)
+		reader, err := htsio.OpenSamReader(cmd.Context(), args[0], opts)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", args[0], err)
 		}
@@ -55,6 +55,8 @@ var samCatCmd = &cobra.Command{
 				return fmt.Errorf("write record: %w", err)
 			}
 		}
-		return nil
+		// Close explicitly: the deferred one discards its error, and this is
+		// where the final flush happens.
+		return writer.Close()
 	},
 }

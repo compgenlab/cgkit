@@ -46,7 +46,9 @@ var fastaWrapCmd = &cobra.Command{
 				return err
 			}
 		}
-		return nil
+		// Close explicitly: the deferred one discards its error, and this is
+		// where the buffered output is flushed.
+		return writer.Close()
 	},
 }
 

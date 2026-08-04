@@ -177,7 +177,19 @@ func buildExportChain(header *vcf.VcfHeader, missing string) ([]exporter, error)
 			spec.ids = header.MatchFormatIDs(spec.key)
 			spec.samples = header.Samples()
 			if spec.sample != "" {
-				spec.sampleIdx = header.SampleIndex(spec.sample)
+				// -1 is this file's sentinel for "every sample", and it is also
+				// what SampleIndex returns for a name it does not know. Left
+				// unchecked, an unknown name emitted one column in the header
+				// and one value per sample in each row -- a table whose every
+				// column index is shifted, with nothing reported. An
+				// out-of-range positional selector ("DP:9" on a 3-sample file)
+				// is rejected here too, since SampleIndex resolves a numeric
+				// name to n-1 without a bounds check.
+				idx := header.SampleIndex(spec.sample)
+				if idx < 0 || idx >= len(spec.samples) {
+					return nil, fmt.Errorf("--format %s: no such sample %q", val, spec.sample)
+				}
+				spec.sampleIdx = idx
 			} else {
 				spec.sampleIdx = -1
 			}

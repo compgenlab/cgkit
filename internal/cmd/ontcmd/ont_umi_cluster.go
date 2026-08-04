@@ -1,6 +1,7 @@
 package ontcmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +17,7 @@ import (
 	_ "github.com/compgenlab/cghts/htsio/sam"
 	"github.com/compgenlab/cghts/htsio/tabix"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -84,7 +86,19 @@ var ontUmiClusterCmd = &cobra.Command{
 		// TabixWriter with BED preset for sorted, indexed output.
 		// For plain text, use a simple io.Writer.
 		var countsWriter lineWriter
+		if umiClusterCountsFilename != "" && umiClusterWholeGenome {
+			// Whole-genome mode never builds the counts, so it would create the
+			// file (and an index over nothing) and leave it empty. Refusing is
+			// better than a silently empty result the caller has to notice.
+			return fmt.Errorf("--summary-counts is not supported with --whole-genome")
+		}
 		if umiClusterCountsFilename != "" {
+			// Before the branch, so both output kinds are guarded. The check used
+			// to sit only in the plain-text arm, so a .gz name skipped it and
+			// failed later inside the tabix writer's os.Create instead.
+			if err := locator.CheckLocalOutput("--summary-counts", umiClusterCountsFilename); err != nil {
+				return err
+			}
 			if strings.HasSuffix(umiClusterCountsFilename, ".gz") || strings.HasSuffix(umiClusterCountsFilename, ".bgz") {
 				opts := tabix.NewWriterOpts().BED().Meta('#')
 				if !umiClusterNoCountsIndex {
@@ -107,9 +121,9 @@ var ontUmiClusterCmd = &cobra.Command{
 		}
 
 		if umiClusterWholeGenome {
-			return umiClusterWholeGenomeMode(inputFile, skipRefs)
+			return umiClusterWholeGenomeMode(cmd.Context(), inputFile, skipRefs)
 		}
-		return umiClusterOverlapMode(inputFile, countsWriter, skipRefs)
+		return umiClusterOverlapMode(cmd.Context(), inputFile, countsWriter, skipRefs)
 	},
 }
 
@@ -332,9 +346,9 @@ func removeFromBin(bin []*bufferedRead, id int) []*bufferedRead {
 //     sequentially. The entire --threads budget is given to the per-group
 //     UMI clustering step (clusterUMIs), which is the real
 //     bottleneck. samtools sort is cheap and does not need many threads.
-func umiClusterOverlapMode(inputFile string, countsWriter lineWriter, skipRefs []string) error {
+func umiClusterOverlapMode(ctx context.Context, inputFile string, countsWriter lineWriter, skipRefs []string) error {
 	// Read header from the input file.
-	hdrReader, err := htsio.NewSamReader(inputFile, umiClusterReaderOpts())
+	hdrReader, err := htsio.OpenSamReader(ctx, inputFile, umiClusterReaderOpts())
 	if err != nil {
 		return err
 	}
@@ -376,6 +390,9 @@ func umiClusterOverlapMode(inputFile string, countsWriter lineWriter, skipRefs [
 	// Open writer — samtools sort handles merging output. samtools itself
 	// uses very little CPU so we keep writer threads small and leave the
 	// compute budget for clusterUMIs.
+	if err := locator.CheckLocalOutput("-o/--output", umiClusterOutput); err != nil {
+		return err
+	}
 	writer, err := bam.NewSortedWriter(umiClusterOutput, header, true)
 	if err != nil {
 		return err
@@ -397,7 +414,7 @@ func umiClusterOverlapMode(inputFile string, countsWriter lineWriter, skipRefs [
 	// region; otherwise we read the entire file in one pass and let
 	// processReads handle chromosome transitions, skip-ref pass-
 	// through, and unmapped pass-through inline.
-	baseReader, err := htsio.NewSamReader(inputFile, umiClusterReaderOpts())
+	baseReader, err := htsio.OpenSamReader(ctx, inputFile, umiClusterReaderOpts())
 	if err != nil {
 		writer.Close()
 		return err
@@ -1075,9 +1092,9 @@ func processReads(
 
 // umiClusterWholeGenomeMode uses two passes over the entire file:
 // pass 1 collects all UMI counts, pass 2 rewrites with representative UMIs.
-func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
+func umiClusterWholeGenomeMode(ctx context.Context, inputFile string, skipRefs []string) error {
 	// Pass 1: collect all UMIs
-	reader, err := htsio.NewSamReader(inputFile, umiClusterReaderOpts())
+	reader, err := htsio.OpenSamReader(ctx, inputFile, umiClusterReaderOpts())
 	if err != nil {
 		return err
 	}
@@ -1126,7 +1143,7 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 	// Pass 2: rewrite BAM
 	addUMIClusterPGLine(header)
 
-	reader2, err := htsio.NewSamReader(inputFile, umiClusterReaderOpts())
+	reader2, err := htsio.OpenSamReader(ctx, inputFile, umiClusterReaderOpts())
 	if err != nil {
 		return err
 	}
@@ -1134,6 +1151,9 @@ func umiClusterWholeGenomeMode(inputFile string, skipRefs []string) error {
 	// Keep writer threads consistent with overlap mode: always pass 2 so
 	// samtools sort can compress in parallel when it wants to. The cost
 	// at --threads 1 is negligible.
+	if err := locator.CheckLocalOutput("-o/--output", umiClusterOutput); err != nil {
+		return err
+	}
 	writer, err := bam.NewSortedWriter(umiClusterOutput, header, true)
 	if err != nil {
 		reader2.Close()
@@ -2250,5 +2270,5 @@ func init() {
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterNoCountsIndex, "no-summary-counts-index", false, "Disable automatic tabix index generation for the summary counts file")
 	ontUmiClusterCmd.Flags().BoolVar(&umiClusterMatchJunctions, "junction-match", false, "Require compatible splice junctions (CIGAR N ops) when grouping reads")
 	ontUmiClusterCmd.Flags().IntVar(&umiClusterJunctionWindow, "junction-window", 20, "Tolerance (bp) for matching junction positions and merging adjacent junctions")
-	ontUmiClusterCmd.Flags().StringVar(&umiClusterCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
+	ontUmiClusterCmd.Flags().StringVar(&umiClusterCramRef, "cram-ref", "", "Reference FASTA for CRAM files (path, http(s):// URL, or s3://)")
 }

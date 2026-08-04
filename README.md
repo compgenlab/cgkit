@@ -20,6 +20,35 @@ Local development resolves the `cghts` dependency via a `go.work` workspace that
 joins a sibling `cghts` checkout; release builds use the pinned module version in
 `go.mod`.
 
+## Remote inputs
+
+Inputs may be local paths, `http(s)://` URLs, or `s3://` objects:
+
+```bash
+cgkit sam-stats s3://bucket/sample.bam
+cgkit vcf-varquery https://host/cohort.vcf.gz --variant chr1:1000:A:T
+cgkit vcf-varquery s3://bucket/cohort/ --sample NA12878
+```
+
+Indexes (`.bai`, `.crai`, `.tbi`, `.csi`, `.fai`) are resolved over the same
+transport as the data, so an indexed region query still seeks and transfers only
+the byte ranges it needs. `--cram-ref` takes a locator too, independently of
+where the reads live.
+
+S3 credentials come from the standard AWS chain — environment, shared config
+(honouring `AWS_PROFILE`), then an instance or container role; `aws sts
+get-caller-identity` is the check. `AWS_ENDPOINT_URL` points at an S3-compatible
+gateway such as MinIO or Ceph.
+
+Two costs worth knowing. A *streaming* read of a remote object transfers the
+whole thing, because a stream has no index to skip with — commands taking
+`--region`, and any query against a Parquet store, seek instead. And an
+unindexed remote VCF cannot seek at all, so every query re-reads the object;
+`vcf-varsummary` reports whether an index was found.
+
+**Outputs are always local.** A remote `-o` or `--out` is refused by name rather
+than failing inside a writer.
+
 ## CLI commands
 
 Usage: `cgkit [--profile=cpu.prof] <command>`
@@ -111,3 +140,4 @@ command's help shows the cgkit version it was added in.
 | `vcf-toparquet` | Convert a VCF to a sparse Parquet genotype store ([format docs](docs/vcf-toparquet.md)) |
 | `vcf-tstv` | Calculate a Ts/Tv ratio for SNVs |
 | `vcf-varquery` | Query genotypes by site, by sample, or both ([format docs](docs/vcf-toparquet.md)) |
+| `vcf-varsummary` | Describe a store or VCF: samples, contigs, provenance, per-chromosome census |

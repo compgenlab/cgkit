@@ -13,6 +13,7 @@ import (
 	_ "github.com/compgenlab/cghts/htsio/bam"
 	_ "github.com/compgenlab/cghts/htsio/cram"
 	_ "github.com/compgenlab/cghts/htsio/sam"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -160,7 +161,7 @@ Both files must be sorted by coordinate.`,
 		if umiLookupCramRef != "" {
 			opts.RefPath(umiLookupCramRef)
 		}
-		reader, err := htsio.NewSamReader(bamFile, opts)
+		reader, err := htsio.OpenSamReader(cmd.Context(), bamFile, opts)
 		if err != nil {
 			return err
 		}
@@ -168,6 +169,9 @@ Both files must be sorted by coordinate.`,
 
 		var out io.Writer = os.Stdout
 		if umiLookupOutput != "" && umiLookupOutput != "-" {
+			if err := locator.CheckLocalOutput("-o/--output", umiLookupOutput); err != nil {
+				return err
+			}
 			f, err := os.Create(umiLookupOutput)
 			if err != nil {
 				return err
@@ -181,6 +185,31 @@ Both files must be sorted by coordinate.`,
 			"read_name", "chrom", "start", "end", "strand",
 			"umi", "match", "mi", "representative_umi",
 		}, "\t"))
+
+		// Both inputs are in the BAM's reference order, so the sweep has to
+		// compare contigs that way rather than lexicographically. It used to use
+		// Go string comparison, and "chr9" < "chr10" is false -- so the moment
+		// the BAM crossed from chr9 to chr10 the cursor stopped advancing and the
+		// candidate scan broke immediately, reporting every read on chr10 and
+		// beyond as unmatched. A plausible-looking negative result, with no warning.
+		header, err := reader.Header()
+		if err != nil {
+			return err
+		}
+		refOrd := make(map[string]int, len(header.References()))
+		for i, r := range header.References() {
+			refOrd[r.Name] = i
+		}
+		// A contig the BAM header does not declare sorts last, so it never
+		// advances the cursor past a read nor cuts a scan short; such records
+		// simply never match, which is the honest answer for a counts file
+		// naming a contig this BAM does not have.
+		ordOf := func(chrom string) int {
+			if i, ok := refOrd[chrom]; ok {
+				return i
+			}
+			return len(refOrd)
+		}
 
 		// Sweep through BAM and counts in coordinate order.
 		// recordIdx tracks the start of the window of candidate records.
@@ -215,7 +244,7 @@ Both files must be sorted by coordinate.`,
 			// any current or future read (sorted input assumption).
 			for recordIdx < len(records) {
 				r := &records[recordIdx]
-				if r.chrom < rec.RefName {
+				if ordOf(r.chrom) < ordOf(rec.RefName) {
 					recordIdx++
 					continue
 				}
@@ -233,7 +262,7 @@ Both files must be sorted by coordinate.`,
 			for i := recordIdx; i < len(records); i++ {
 				r := &records[i]
 				// Past this read's possible range — stop scanning.
-				if r.chrom > rec.RefName {
+				if ordOf(r.chrom) > ordOf(rec.RefName) {
 					break
 				}
 				if r.chrom == rec.RefName && r.start-umiLookupOverlap > readStart {
@@ -282,5 +311,5 @@ func init() {
 	ontUmiLookupCmd.Flags().IntVar(&umiLookupEditDist, "umi-edit-distance", 3, "Maximum Levenshtein edit distance to match a UMI")
 	ontUmiLookupCmd.Flags().BoolVar(&umiLookupMatchOneEnd, "match-one-end", false, "Match if EITHER 5' or 3' ends overlap (default: require BOTH)")
 	ontUmiLookupCmd.Flags().BoolVar(&umiLookupNoStrand, "no-strand", false, "Ignore strand when matching positions")
-	ontUmiLookupCmd.Flags().StringVar(&umiLookupCramRef, "cram-ref", "", "Reference FASTA for CRAM files")
+	ontUmiLookupCmd.Flags().StringVar(&umiLookupCramRef, "cram-ref", "", "Reference FASTA for CRAM files (path, http(s):// URL, or s3://)")
 }

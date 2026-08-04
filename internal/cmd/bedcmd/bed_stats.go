@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -58,6 +59,9 @@ var bedStatsCmd = &cobra.Command{
 
 		out := cmd.OutOrStdout()
 		if bedStatsOutput != "" && bedStatsOutput != "-" {
+			if err := locator.CheckLocalOutput("-o/--output", bedStatsOutput); err != nil {
+				return err
+			}
 			f, err := os.Create(bedStatsOutput)
 			if err != nil {
 				return err
