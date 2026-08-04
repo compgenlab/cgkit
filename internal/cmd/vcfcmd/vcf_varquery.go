@@ -2,10 +2,11 @@ package vcfcmd
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
-	"os"
 	"strings"
 
 	"strconv"
@@ -35,10 +36,13 @@ var vcfVarQueryCmd = &cobra.Command{
 	Short:       "Query genotypes by site, by sample, or both",
 	Long: `Query genotypes without caring which format holds them. The input may be
 a VCF (plain or bgzipped) or a Parquet store written by vcf-toparquet. A store
-may be named by its base ("cohort" for cohort.calls.parquet...), by its
-directory ("cohort/" or "cohort" for cohort/calls.parquet...), or by any one of
-its three member files. The backend is inferred from the path; override with
---store.
+is a directory, and may be named by it ("cohort" or "cohort/") or by any member
+inside it ("cohort/calls.parquet", "cohort/manifest.json.gz"). The backend is
+inferred from the path; override with --store.
+
+A store must carry the manifest vcf-toparquet writes when a conversion
+completes; one written by an older cgkit, or left behind by a conversion that
+was interrupted, is refused rather than queried. Inspect it with vcf-varsummary.
 
 Two independent axes, at least one of which must be given. --variant selects
 sites and --sample selects subjects; they compose rather than exclude.
@@ -187,7 +191,7 @@ written where nothing is known would assert a depth the data never had.`,
 			q.IncludeRef = true
 		}
 
-		store, err := openVarStore(args[0], vcfVarQueryStore)
+		store, err := openVarStore(cmd.Context(), args[0], vcfVarQueryStore)
 		if err != nil {
 			return err
 		}
@@ -253,39 +257,19 @@ written where nothing is known would assert a depth the data never had.`,
 }
 
 // openVarStore picks a backend for path. kind may force "vcf" or "parquet";
-// empty infers from the filename.
-func openVarStore(path, kind string) (varstore.Store, error) {
-	switch strings.ToLower(kind) {
-	case "vcf":
-		return varstore.OpenVcf(path)
-	case "parquet":
-		return varstore.OpenParquet(path)
-	case "":
-	default:
-		return nil, fmt.Errorf("unknown store %q (use vcf or parquet)", kind)
+// empty infers from the locator.
+//
+// The resolution itself lives in varstore, which owns what a store looks like.
+// It used to live here and reached for os.Stat twice, so a remote locator could
+// only ever be recognized by its suffix -- a bare base name or a directory form
+// resolved to nothing. All this adds is the flag advice, which is a CLI concern
+// and the one thing the library should not be spelling out.
+func openVarStore(ctx context.Context, path, kind string) (varstore.Store, error) {
+	store, err := varstore.OpenStore(ctx, path, kind)
+	if err != nil && kind == "" && errors.Is(err, varstore.ErrUnknownStoreKind) {
+		return nil, fmt.Errorf("%w; pass --store vcf or --store parquet", err)
 	}
-
-	// A directory-form store: "cohort/", or the directory itself.
-	if varstore.IsDirBase(path) {
-		return varstore.OpenParquet(path)
-	}
-	if st, err := os.Stat(path); err == nil && st.IsDir() {
-		return varstore.OpenParquet(path)
-	}
-
-	lower := strings.ToLower(path)
-	switch {
-	case strings.HasSuffix(lower, ".parquet"):
-		return varstore.OpenParquet(path)
-	case strings.HasSuffix(lower, ".vcf"), strings.HasSuffix(lower, ".vcf.gz"),
-		strings.HasSuffix(lower, ".vcf.bgz"), strings.HasSuffix(lower, ".bcf"):
-		return varstore.OpenVcf(path)
-	}
-	// A bare base name is a Parquet store when its calls file exists.
-	if _, err := os.Stat(varstore.CallsPath(varstore.TrimStoreSuffix(path))); err == nil {
-		return varstore.OpenParquet(path)
-	}
-	return nil, fmt.Errorf("cannot tell what kind of store %q is; pass --store vcf or --store parquet", path)
+	return store, err
 }
 
 // provenance writes the ## header lines shared by the tabular outputs.
