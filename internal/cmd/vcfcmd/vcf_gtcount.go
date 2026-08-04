@@ -47,9 +47,10 @@ Sites are given as loci on the command line and/or via --sites:
            ('#' comments and blank lines are ignored)
 
 Genotypes are collapsed so unordered/phased calls land in one class: 0/1, 1/0
-and 0|1 all count as 0/1, and 2/1 as 1/2. Missing calls are reported as ./. (and
-absent GT fields count as missing). A requested site with no matching record
-emits a single row with gt '.' and count 0.
+and 0|1 all count as 0/1, and 2/1 as 1/2. A genotype of ./. is reported as ./.,
+while a sample with no GT field at all is reported as '.' -- the two are
+different observations and are counted separately. A requested site with no
+matching record emits a single row with gt '.' and count 0.
 
   --sites FILE     read additional sites from FILE
   --passing        only count records that pass FILTER
