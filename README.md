@@ -1,8 +1,11 @@
 # cgkit
 
 CLI commands for computational genomics: sequence and alignment analysis, VCF
-manipulation, BED/tabix wrangling, and NGS data operations, with particular focus
-on Oxford Nanopore (long-read) sequencing workflows.
+manipulation, BED/tabix wrangling, and NGS data operations.
+
+Oxford Nanopore UMI and poly(A) tooling lives in
+[`nupa`](https://github.com/compgenlab/nupa), a focused toolkit built on the same
+library; the `ont-*` commands that used to be here moved there.
 
 **Module:** `github.com/compgenlab/cgkit`
 
@@ -55,15 +58,6 @@ Usage: `cgkit [--profile=cpu.prof] <command>`
 
 Run `cgkit <command> --help` for per-command flags. A `Since:` line in each
 command's help shows the cgkit version it was added in.
-
-### Oxford Nanopore
-
-| Command | Description |
-|---------|-------------|
-| `ont-polya` | Find poly(A)/cleavage sites from a strand-specific aligned BAM |
-| `ont-tags` | Find and trim common ONT tags from the start of reads in a FASTQ file |
-| `ont-umi-cluster` | Collapse similar UMIs in a coordinate-sorted BAM file ([algorithm docs](docs/ont-umi-cluster.md)) |
-| `ont-umi-dedup` | Deduplicate UMI-clustered reads, keeping one representative per MI group |
 
 ### BED
 
