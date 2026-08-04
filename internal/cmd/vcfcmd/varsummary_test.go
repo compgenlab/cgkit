@@ -1,6 +1,7 @@
 package vcfcmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -153,4 +154,40 @@ func TestVarsummaryExplainsAMissingManifest(t *testing.T) {
 	if !strings.Contains(err.Error(), varstore.ManifestFile) {
 		t.Errorf("the error does not name what is missing: %v", err)
 	}
+}
+
+// Refusing is not enough on its own: with no escape hatch, a user holding an
+// unreadable store has to be able to see what is in it. Diagnosis is not
+// access, so this reports members and row counts and answers nothing about
+// genotypes.
+func TestVarsummaryReportsWhatAnUnreadableStoreContains(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "cohort")
+	runVcf(t, "vcf-toparquet", "--out", base, "testdata/coverage.vcf")
+	if err := os.Remove(varstore.ManifestPath(base)); err != nil {
+		t.Fatal(err)
+	}
+
+	report := captureStderr(t, "vcf-varsummary", base)
+	for _, want := range []string{"could not be opened", "calls", "sites", "regions", "rows"} {
+		if !strings.Contains(report, want) {
+			t.Errorf("the diagnostic omits %q:\n%s", want, report)
+		}
+	}
+	if !strings.Contains(report, "manifest") {
+		t.Errorf("the diagnostic does not point at the missing manifest:\n%s", report)
+	}
+}
+
+// captureStderr runs a command expecting failure and returns what it wrote to
+// stderr, which is where a diagnostic belongs: it is commentary, not output.
+func captureStderr(t *testing.T, args ...string) string {
+	t.Helper()
+	root, _ := vcfTestRoot(args...)
+	var errBuf bytes.Buffer
+	root.SetErr(&errBuf)
+	for _, c := range root.Commands() {
+		c.SetErr(&errBuf)
+	}
+	_ = root.Execute()
+	return errBuf.String()
 }

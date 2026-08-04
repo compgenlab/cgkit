@@ -85,6 +85,13 @@ estimated from it -- they are reported as requiring --counts.
 		ctx := cmd.Context()
 		store, err := openVarStore(ctx, args[0], vcfVarSummaryStore)
 		if err != nil {
+			// A store that cannot be opened is exactly what this command is for.
+			// Since a missing manifest has no escape hatch, refusing with only
+			// the open error would leave a user holding an unreadable store and
+			// no way to learn anything about it -- so report what is on disk.
+			if report, ok := describeUnreadableStore(ctx, args[0], err); ok {
+				fmt.Fprint(cmd.ErrOrStderr(), report)
+			}
 			return err
 		}
 		defer store.Close()
@@ -329,4 +336,46 @@ func init() {
 	f.StringVarP(&vcfVarSummaryOutput, "output", "o", "-", "Output filename")
 	f.BoolVarP(&vcfVarSummaryVerbose, "verbose", "v", false, "Note what is being read, on stderr")
 	f.StringVar(&vcfVarSummaryStore, "store", "", "Force the backend: vcf or parquet")
+}
+
+// describeUnreadableStore reports what a store that failed to open does contain,
+// so the failure can be understood rather than merely obeyed.
+//
+// It reads only footers -- row counts are footer metadata, not a scan -- and
+// deliberately does not answer any genotype question. Diagnosis is not access.
+func describeUnreadableStore(ctx context.Context, path string, openErr error) (string, bool) {
+	base := varstore.TrimStoreSuffix(path)
+	var b strings.Builder
+	fmt.Fprintf(&b, "\nthis store could not be opened; what is present:\n")
+
+	any := false
+	for _, name := range []string{
+		varstore.CallsMember, varstore.SitesMember, varstore.RegionsMember,
+	} {
+		p := varstore.MemberPath(base, name)
+		rows, size, err := varstore.MemberShape(ctx, p)
+		switch {
+		case err != nil:
+			fmt.Fprintf(&b, "  %-9s absent\n", name)
+		case rows < 0:
+			// Present with no footer: the writer never closed it, so this is
+			// where the conversion died.
+			any = true
+			fmt.Fprintf(&b, "  %-9s %14d bytes, NEVER FINALIZED\n", name, size)
+		default:
+			any = true
+			fmt.Fprintf(&b, "  %-9s %12d rows  %14d bytes\n", name, rows, size)
+		}
+	}
+	if _, err := varstore.ReadManifestContext(ctx, base); err != nil {
+		fmt.Fprintf(&b, "  %-9s missing\n", varstore.ManifestMember)
+	}
+	if !any {
+		return "", false
+	}
+	fmt.Fprintf(&b, "\na member with a row count was finalized; one marked NEVER FINALIZED is\n")
+	fmt.Fprintf(&b, "where the conversion stopped. Either way a finished member says nothing\n")
+	fmt.Fprintf(&b, "about how much of the input went into it -- that is what the manifest\n")
+	fmt.Fprintf(&b, "records, and why it is required. Re-convert with vcf-toparquet --force.\n\n")
+	return b.String(), true
 }
