@@ -348,7 +348,6 @@ func convertOne(cmd *cobra.Command, conv *parquetConverter, path string, canonic
 		}
 		fmt.Fprintf(conv.progress, "reading %s (%d samples)%s\n", path, len(canonical), note)
 	}
-	conv.nFiles++
 
 	for {
 		rec, err := src.next()
@@ -401,7 +400,6 @@ type parquetConverter struct {
 	// ordering cursor, to keep the concatenation coordinate sorted
 	lastPos   int32
 	seenChrom map[string]bool
-	nFiles    int
 
 	// verbose reporting
 	verbose       bool
