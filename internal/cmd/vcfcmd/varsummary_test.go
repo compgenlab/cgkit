@@ -182,12 +182,12 @@ func TestVarsummaryReportsWhatAnUnreadableStoreContains(t *testing.T) {
 // stderr, which is where a diagnostic belongs: it is commentary, not output.
 func captureStderr(t *testing.T, args ...string) string {
 	t.Helper()
+	// Only the root: the command objects are package-level and shared between
+	// roots, so calling SetErr on a child would leak this buffer into every
+	// later test. ErrOrStderr walks up to the root when a child has none.
 	root, _ := vcfTestRoot(args...)
 	var errBuf bytes.Buffer
 	root.SetErr(&errBuf)
-	for _, c := range root.Commands() {
-		c.SetErr(&errBuf)
-	}
 	_ = root.Execute()
 	return errBuf.String()
 }
