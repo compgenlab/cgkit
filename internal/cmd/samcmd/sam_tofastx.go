@@ -122,6 +122,14 @@ func runSamToFastx(cmd *cobra.Command, args []string, fastq bool, readerFlags sa
 		}
 	}
 
+	// Close explicitly: the deferred closes discard their errors, and this is
+	// where the buffered output is flushed and any gzip trailer written.
+	if fastqWriter != nil {
+		return fastqWriter.Close()
+	}
+	if fastaWriter != nil {
+		return fastaWriter.Close()
+	}
 	return nil
 }
 

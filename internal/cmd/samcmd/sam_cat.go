@@ -55,6 +55,8 @@ var samCatCmd = &cobra.Command{
 				return fmt.Errorf("write record: %w", err)
 			}
 		}
-		return nil
+		// Close explicitly: the deferred one discards its error, and this is
+		// where the final flush happens.
+		return writer.Close()
 	},
 }
