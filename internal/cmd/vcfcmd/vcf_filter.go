@@ -221,7 +221,9 @@ func (s *filterStats) write(filename string) error {
 			return err
 		}
 	}
-	return nil
+	// Close explicitly: the deferred one discards its error, and an os.File's
+	// Close is where a deferred write error surfaces.
+	return out.Close()
 }
 
 // splitFilterArg parses a KEY:VAL[:SAMPLE[:ALLELE]] filter argument.

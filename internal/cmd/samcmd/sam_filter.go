@@ -116,7 +116,10 @@ var samFilterCmd = &cobra.Command{
 					return fmt.Errorf("write record: %w", err)
 				}
 			}
-			return nil
+			// Close, not just the deferred one: this is where the final flush and
+			// the BGZF EOF block are written, so it is where a full disk shows up.
+			// Discarding that error exits 0 having produced a truncated file.
+			return writer.Close()
 		}
 
 		// No region — stream all records.
@@ -129,7 +132,7 @@ var samFilterCmd = &cobra.Command{
 			}
 		}
 
-		return nil
+		return writer.Close()
 	},
 }
 
