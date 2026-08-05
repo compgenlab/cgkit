@@ -25,7 +25,69 @@ var (
 	vcfToParquetRowGroupSize int
 	vcfToParquetVerbose      bool
 	vcfToParquetForce        bool
+
+	// One string per reserved key, keyed by the key itself, plus the generic
+	// --meta pairs. Both feed one map; see collectMeta.
+	vcfToParquetMetaNamed = map[string]*string{}
+	vcfToParquetMetaPairs []string
 )
+
+// collectMeta folds the named --meta-<key> flags and the generic --meta
+// KEY=VALUE pairs into the single map the store records.
+//
+// A key given twice is an error rather than last-wins, including across the two
+// spellings (--meta-dataset X --meta dataset=Y). A store's metadata is a claim
+// about what it holds, and silently picking one of two conflicting claims is
+// the class of thing this command already refuses elsewhere -- it errors on a
+// sample-set mismatch rather than guessing which roster was meant.
+func collectMeta() (map[string]string, error) {
+	meta := map[string]string{}
+	from := map[string]string{} // key -> the flag that set it, for the error
+
+	set := func(key, val, via string) error {
+		// Checked here as well as by the writer, which validates for every
+		// caller. Doing it in the pre-flight means the run dies before
+		// EnsureStoreDir, so a typo leaves nothing behind, and the message can
+		// name the flag that carried the key -- which the library cannot.
+		if !varstore.ValidMetaKey(key) {
+			return fmt.Errorf("%s: invalid metadata key %q: keys must be non-empty and use "+
+				"only lowercase letters, digits, underscore and hyphen", via, key)
+		}
+		if prev, ok := from[key]; ok {
+			return fmt.Errorf("metadata key %q given twice, by %s and %s: "+
+				"remove one rather than leaving which value is recorded to chance", key, prev, via)
+		}
+		from[key] = via
+		meta[key] = val
+		return nil
+	}
+
+	for _, key := range varstore.ReservedMetaKeys {
+		if p := vcfToParquetMetaNamed[key]; p != nil && *p != "" {
+			if err := set(key, *p, "--meta-"+key); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, pair := range vcfToParquetMetaPairs {
+		key, val, ok := strings.Cut(pair, "=")
+		if !ok {
+			return nil, fmt.Errorf("--meta %q: expected KEY=VALUE", pair)
+		}
+		if key == "" {
+			return nil, fmt.Errorf("--meta %q: empty key", pair)
+		}
+		if err := set(key, val, fmt.Sprintf("--meta %s=...", key)); err != nil {
+			return nil, err
+		}
+	}
+	if len(meta) == 0 {
+		// Nil, not an empty map: the store omits absent metadata entirely, so
+		// that "not stated" stays distinguishable from "stated as nothing".
+		return nil, nil
+	}
+	return meta, nil
+}
 
 var vcfToParquetCmd = &cobra.Command{
 	GroupID:     "vcfcmd",
@@ -130,7 +192,33 @@ could answer off-catalog positions.
   --compression C       zstd (default), snappy, or none
   --row-group-size N    rows per parquet row group
   -v, --verbose         report progress and a conversion summary on stderr,
-                        including which of DP/GQ/AD the input actually carries`,
+                        including which of DP/GQ/AD the input actually carries
+
+Metadata records what the store *is*, as opposed to how it was made. The store
+already knows the latter -- the command, the inputs, the sample roster, when it
+ran -- but nothing about the former. A whole-genome callset arrives as one VCF
+per chromosome and converts into one store, which can then name its 24 input
+filenames but not the release they collectively are; and those filenames stop
+identifying anything once the store moves. The assembly is the same gap: the
+##contig lines carry lengths that imply GRCh37 or GRCh38, but a store read
+against the wrong assumption does not fail, it answers with coordinates that
+mean something else.
+
+  --meta-dataset NAME       the release or callset this store was built from
+  --meta-reference NAME     assembly the calls were made against
+  --meta-caller NAME        variant caller and version
+  --meta-accession ID       study or dataset accession
+  --meta-url URL            where the source data came from
+  --meta-version V          the dataset's own release version
+  --meta-description TEXT   free text
+  --meta KEY=VALUE          anything else (repeatable)
+
+Values are recorded verbatim -- cgkit cannot know whether "GRCh38" is true, and
+normalizing it would turn your claim into its own. Keys are lowercase
+[a-z0-9_-]. A key given twice, by either spelling, is an error rather than
+last-wins: which of two conflicting claims gets recorded should not depend on
+the order the flags were typed. vcf-varsummary prints all of it, and
+--format json emits it verbatim for jq.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			cmd.Help()
@@ -152,6 +240,13 @@ could answer off-catalog positions.
 			return fmt.Errorf("--row-group-size must be a positive number")
 		}
 		codec, err := varstore.CodecFor(vcfToParquetCompression)
+		if err != nil {
+			return err
+		}
+		// Resolved before any input is opened: a conflicting or malformed --meta
+		// is a typo on the command line, and there is no reason to read a
+		// whole-genome callset before reporting one.
+		meta, err := collectMeta()
 		if err != nil {
 			return err
 		}
@@ -202,6 +297,7 @@ could answer off-catalog positions.
 			Command:      buildinfo.CommandLine(),
 			Sources:      args,
 			Contigs:      contigs,
+			Meta:         meta,
 		})
 		if err != nil {
 			return err
@@ -694,6 +790,28 @@ func init() {
 	f.IntVar(&vcfToParquetRowGroupSize, "row-group-size", 250000, "Rows per parquet row group")
 	f.BoolVarP(&vcfToParquetVerbose, "verbose", "v", false, "Report progress and a conversion summary on stderr")
 	f.BoolVar(&vcfToParquetForce, "force", false, "Overwrite an existing store at --out")
+
+	// Generated from the library's own list, so the flag names and the keys they
+	// write cannot drift apart, and a key added upstream shows up here for free.
+	for _, key := range varstore.ReservedMetaKeys {
+		p := new(string)
+		vcfToParquetMetaNamed[key] = p
+		f.StringVar(p, "meta-"+key, "", metaFlagHelp[key])
+	}
+	f.StringArrayVar(&vcfToParquetMetaPairs, "meta", nil,
+		"Record KEY=VALUE in the store's metadata (repeatable; lowercase key of [a-z0-9_-])")
+}
+
+// metaFlagHelp is the one-line help for each reserved metadata key. Keyed by the
+// key rather than positional so a reordering upstream cannot mislabel a flag.
+var metaFlagHelp = map[string]string{
+	varstore.MetaKeyDataset:     "Name of the dataset or release this store was built from",
+	varstore.MetaKeyReference:   "Reference assembly the calls were made against (e.g. GRCh38)",
+	varstore.MetaKeyCaller:      "Variant caller and version that produced the input (e.g. 'GATK 4.2.6.1')",
+	varstore.MetaKeyAccession:   "Study or dataset accession (e.g. phs000000)",
+	varstore.MetaKeyURL:         "Where the source data was retrieved from",
+	varstore.MetaKeyVersion:     "Release version of the dataset itself",
+	varstore.MetaKeyDescription: "Free-text description of the dataset",
 }
 
 // sampleAt maps a genotype column of the file being read to its canonical

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/compgenlab/cghts/varstore"
@@ -157,6 +158,47 @@ func writeSummary(cmd *cobra.Command, out *bufio.Writer, store varstore.Store, p
 	return fmt.Errorf("unknown backend %T", store)
 }
 
+// writeStoreMeta reports the metadata a conversion recorded, or nothing at all
+// when none was.
+//
+// The block is omitted entirely rather than printed empty, matching what the
+// store does: a conversion that stated nothing is not the same as one that
+// stated it holds nothing. Reserved keys come first, in the library's own
+// order, because they are the ones that change how a result should be read;
+// anything else follows alphabetically.
+func writeStoreMeta(out *bufio.Writer, meta map[string]string) {
+	if len(meta) == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	var keys []string
+	for _, k := range varstore.ReservedMetaKeys {
+		if _, ok := meta[k]; ok {
+			keys = append(keys, k)
+			seen[k] = true
+		}
+	}
+	var extra []string
+	for k := range meta {
+		if !seen[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	keys = append(keys, extra...)
+
+	fmt.Fprintf(out, "\nmetadata\n")
+	width := 0
+	for _, k := range keys {
+		if len(k) > width {
+			width = len(k)
+		}
+	}
+	for _, k := range keys {
+		fmt.Fprintf(out, "  %-*s  %s\n", width, k, meta[k])
+	}
+}
+
 func summarizeStore(out *bufio.Writer, errOut interface{ Write([]byte) (int, error) },
 	s *varstore.ParquetStore, path string, samples []string) error {
 	m := s.Manifest()
@@ -184,6 +226,8 @@ func summarizeStore(out *bufio.Writer, errOut interface{ Write([]byte) (int, err
 	} else {
 		fmt.Fprintf(out, "min-dp     %d at conversion\n", p.MinDP)
 	}
+
+	writeStoreMeta(out, m.Meta)
 
 	fmt.Fprintf(out, "\nmembers\n")
 	for _, name := range []string{

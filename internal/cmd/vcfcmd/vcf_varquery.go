@@ -299,6 +299,16 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 		if p.Program != "" {
 			fmt.Fprintf(out, "  by          %s\n", p.Program)
 		}
+		// Only these two of the recorded metadata keys, because only these two
+		// change how the rows below should be read: which callset this is, and
+		// what the coordinates mean. The rest is catalogue -- vcf-varsummary
+		// prints all of it.
+		if v := p.Meta[varstore.MetaKeyDataset]; v != "" {
+			fmt.Fprintf(out, "  dataset     %s\n", v)
+		}
+		if v := p.Meta[varstore.MetaKeyReference]; v != "" {
+			fmt.Fprintf(out, "  reference   %s\n", v)
+		}
 		fmt.Fprintf(out, "  spans       %s", p.Spans)
 		if p.Spans == varstore.SpansSites {
 			fmt.Fprintf(out, "  (answers only for variants in the sites catalog)")
