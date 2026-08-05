@@ -12,11 +12,8 @@ var bedCleanCmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.3.1"},
 	Use:         "bed-clean <input.bed>",
 	Short:       "Clean BED score entries to be integers (expands records to BED6+)",
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		opts := bed.NewBedWriterOpts().ForceScoreInt(true)
 		return streamBed(cmd, args[0], opts, bedCleanOutput)
 	},

@@ -16,11 +16,8 @@ var vcfCheckCmd = &cobra.Command{
 	Short:       "Validate a VCF file",
 	Long: `Validate a VCF file by parsing every record. The command exits with an error
 on the first record that fails to parse, and succeeds silently otherwise.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		reader, err := openVcfInput(cmd, args[0])
 		if err != nil {
 			return err

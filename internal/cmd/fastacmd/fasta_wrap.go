@@ -13,11 +13,8 @@ var fastaWrapCmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.1.0"},
 	Use:         "fasta-wrap <input.fasta>",
 	Short:       "Reformat the sequences in a FASTA file to a specified line width",
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		reader, err := seqio.NewFastaFile(args[0])
 		if err != nil {
 			return err

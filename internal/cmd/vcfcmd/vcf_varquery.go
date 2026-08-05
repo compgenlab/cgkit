@@ -149,11 +149,8 @@ store has no recorded depth, but it came from a run built at the conversion
 --min-dp, so the bound is that threshold -- which is the evidence that the site
 was covered well enough to call. Anything else reports ".", since a threshold
 written where nothing is known would assert a depth the data never had.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		// At least one selector. An empty Query is legal in the library -- it means
 		// the whole store -- but making it the accidental result of a typo at the
 		// command line is not worth the convenience.

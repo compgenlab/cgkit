@@ -56,8 +56,17 @@ than failing inside a writer.
 
 Usage: `cgkit [--profile=cpu.prof] <command>`
 
+`--profile=FILE` writes a CPU profile and may appear anywhere on the command
+line, before or after the subcommand. It is stripped from the recorded
+invocation, so the provenance a run stamps into its output describes a
+reproducible command rather than a profiling one.
+
 Run `cgkit <command> --help` for per-command flags. A `Since:` line in each
 command's help shows the cgkit version it was added in.
+
+A command invoked with no arguments is a usage error on stderr with a non-zero
+exit, not a help page on stdout — so `cgkit vcf-tobed > out.bed && next-step
+out.bed` cannot proceed with help text as its input.
 
 ### BED
 

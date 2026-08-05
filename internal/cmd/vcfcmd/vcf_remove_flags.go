@@ -25,11 +25,8 @@ a comma-separated list (FOO;BAR => FLAGS=FOO,BAR).
 
   --key NAME   name for the new INFO key (default FLAGS)
   --always     always emit the key, using "." when no flags are set`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		reader, err := openVcfInput(cmd, args[0])
 		if err != nil {
 			return err

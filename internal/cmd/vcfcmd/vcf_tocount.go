@@ -36,11 +36,8 @@ row per ALT allele. Counts come from the AD FORMAT field (or RO/AO with
   --total         add a total_count column
   --het           only count heterozygous variants (GT 0/1)
   --passing       only count passing variants`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		reader, err := openVcfInput(cmd, args[0])
 		if err != nil {
 			return err
@@ -56,9 +53,10 @@ row per ALT allele. Counts come from the AD FORMAT field (or RO/AO with
 		}
 		sampleIdx := 0
 		if vcfToCountSample != "" {
-			sampleIdx = header.SampleIndex(vcfToCountSample)
-			if sampleIdx < 0 {
-				return fmt.Errorf("sample not found: %s", vcfToCountSample)
+			var err error
+			sampleIdx, err = resolveSampleIndex(header, "--sample", vcfToCountSample)
+			if err != nil {
+				return err
 			}
 		}
 

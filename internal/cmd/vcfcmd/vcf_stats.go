@@ -29,11 +29,8 @@ breakdown, Ts/Tv counts and ratio, and filter tallies.
 --info-tally counts the distinct values of an INFO field; --info-present counts
 how often a field is present or absent. Both may be repeated or
 comma-separated.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		src, err := openRecordSource(cmd, args[0], vcfStatsRegion)
 		if err != nil {
 			return err

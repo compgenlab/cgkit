@@ -24,11 +24,8 @@ unchanged; only the sample names in the header are updated.
 
   --sample OLD:NEW    rename a sample (OLD may be a 1-based number; repeatable)
   --samples-file, -f  tab-delimited file of "oldname<TAB>newname" lines`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		var oldNames, newNames []string
 		for _, file := range vcfRenameFiles {
 			lines, err := readLines(file)

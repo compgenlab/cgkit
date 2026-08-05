@@ -219,11 +219,8 @@ normalizing it would turn your claim into its own. Keys are lowercase
 last-wins: which of two conflicting claims gets recorded should not depend on
 the order the flags were typed. vcf-varsummary prints all of it, and
 --format json emits it verbatim for jq.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if vcfToParquetOut == "" {
 			return fmt.Errorf("you must specify an output store directory with --out")
 		}

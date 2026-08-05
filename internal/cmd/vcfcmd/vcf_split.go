@@ -27,11 +27,8 @@ BASE.2.vcf.gz, and so on. Recombine them with "vcf-concat --chunks BASE.1.vcf.gz
   --out BASE    base output name (required)
   --num N       variants per output file (required)
   --tbi         also write a tabix index (BASE.N.vcf.gz.tbi) for each chunk`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if err := locator.CheckLocalOutput("--out", vcfSplitOut); err != nil {
 			return err
 		}
