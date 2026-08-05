@@ -2,7 +2,17 @@ BIN_DIR := bin
 GO_SOURCES := $(shell find . -type f -name '*.go')
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null)
-LDFLAGS := -X 'github.com/compgenlab/cgkit/internal/cmd.Version=$(VERSION)' \
+# -s -w drop the symbol table and DWARF debug info, which is 30% of the binary
+# (37.9 MB -> 26.4 MB for linux_amd64, measured). Panic tracebacks are NOT
+# affected: Go's runtime carries its own pclntab for those, so a user-reported
+# crash still names functions and line numbers. What is lost is attaching a
+# debugger to a shipped binary and resolving symbols in a profile -- both of
+# which mean rebuilding from source anyway, since this is a distributed CLI
+# rather than a service anyone attaches to in place. Build without them when
+# you need that: make build LDFLAGS_STRIP=
+LDFLAGS_STRIP ?= -s -w
+LDFLAGS := $(LDFLAGS_STRIP) \
+           -X 'github.com/compgenlab/cgkit/internal/cmd.Version=$(VERSION)' \
            -X 'github.com/compgenlab/cgkit/internal/cmd.GitHash=$(GIT_HASH)'
 
 # Local builds resolve the github.com/compgenlab/cghts dependency via the
