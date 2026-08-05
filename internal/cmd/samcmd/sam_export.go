@@ -2,14 +2,13 @@ package samcmd
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/compgenlab/cghts/htsio"
 	_ "github.com/compgenlab/cghts/htsio/bam"
 	_ "github.com/compgenlab/cghts/htsio/cram"
 	_ "github.com/compgenlab/cghts/htsio/sam"
-	"github.com/compgenlab/cgkit/internal/locator"
+	"github.com/compgenlab/cgkit/internal/cmdio"
 	"github.com/spf13/cobra"
 )
 
@@ -76,21 +75,12 @@ var samExportCmd = &cobra.Command{
 		defer reader.Close()
 
 		out := cmd.OutOrStdout()
-		closeOut := func() error { return nil }
-		if samExportOutput != "" && samExportOutput != "-" {
-			if err := locator.CheckLocalOutput("-o/--output", samExportOutput); err != nil {
-				return err
-			}
-			f, err := os.Create(samExportOutput)
-			if err != nil {
-				return err
-			}
-			// Deferred for the error paths, closed explicitly at the end so the
-			// close error reaches the exit status.
-			defer f.Close()
-			closeOut = f.Close
-			out = f
+		dst, err := cmdio.CreateOutput(cmd, "-o/--output", samExportOutput)
+		if err != nil {
+			return err
 		}
+		defer dst.Close()
+		out = dst.W
 
 		// Write header line.
 		headerParts := make([]string, 0, len(selected)+len(tags))
@@ -119,7 +109,7 @@ var samExportCmd = &cobra.Command{
 			fmt.Fprintln(out, strings.Join(parts, "\t"))
 		}
 
-		return closeOut()
+		return dst.Close()
 	},
 }
 

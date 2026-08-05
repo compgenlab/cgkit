@@ -3,13 +3,12 @@ package vcfcmd
 import (
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/compgenlab/cghts/vcf/filter"
-	"github.com/compgenlab/cgkit/internal/locator"
+	"github.com/compgenlab/cgkit/internal/cmdio"
 	"github.com/spf13/cobra"
 )
 
@@ -132,7 +131,7 @@ variants that pass all filters; --failing writes only variants that fail one.
 			return err
 		}
 		if vcfFilterStats != "" {
-			if err := stats.write(vcfFilterStats); err != nil {
+			if err := stats.write(cmd, vcfFilterStats); err != nil {
 				return err
 			}
 		}
@@ -227,23 +226,32 @@ func (s *filterStats) tally(codes []string) {
 	s.counts[key]++
 }
 
-func (s *filterStats) write(filename string) error {
-	if err := locator.CheckLocalOutput("--stats", filename); err != nil {
-		return err
-	}
-	out, err := os.Create(filename)
+func (s *filterStats) write(cmd *cobra.Command, filename string) error {
+	dst, err := cmdio.CreateOutput(cmd, "--stats", filename)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	// Removed rather than left truncated if a write fails partway: a short
+	// stats file is indistinguishable from one describing fewer records.
+	done := false
+	defer func() {
+		if !done {
+			dst.Discard()
+		}
+	}()
+	out := dst.W
 	for _, key := range s.order {
 		if _, err := fmt.Fprintf(out, "%s\t%d\n", key, s.counts[key]); err != nil {
 			return err
 		}
 	}
-	// Close explicitly: the deferred one discards its error, and an os.File's
-	// Close is where a deferred write error surfaces.
-	return out.Close()
+	// Closed explicitly: a file's Close is where a buffered write error
+	// surfaces, and the deferred cleanup would drop it.
+	if err := dst.Close(); err != nil {
+		return err
+	}
+	done = true
+	return nil
 }
 
 // splitFilterArg parses a KEY:VAL[:SAMPLE[:ALLELE]] filter argument.
