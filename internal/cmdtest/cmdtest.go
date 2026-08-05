@@ -5,6 +5,9 @@
 package cmdtest
 
 import (
+	"bytes"
+	"testing"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -49,4 +52,45 @@ func ResetFlags(root *cobra.Command) {
 			f.Changed = false
 		})
 	}
+}
+
+// NewRoot builds a fresh root command with init applied, every flag reset, and
+// both stdout and stderr captured into the returned buffer.
+//
+// Each command package had its own copy of this -- three of them, differing only
+// in which InitCmd they called and whether they bothered to capture stderr. The
+// packages that skipped it could not assert on warnings, which is part of why
+// several commands had no tests at all.
+//
+// The root is fresh but the commands under it are not: InitCmd registers
+// package-level cobra.Command values, so ResetFlags is what actually isolates
+// one test from the next. See its doc.
+func NewRoot(init func(*cobra.Command), args ...string) (*cobra.Command, *bytes.Buffer) {
+	root := &cobra.Command{Use: "cgkit"}
+	init(root)
+	ResetFlags(root)
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs(args)
+	return root, &buf
+}
+
+// Run executes args against a fresh root and returns everything it wrote,
+// failing the test if the command returns an error.
+func Run(t *testing.T, init func(*cobra.Command), args ...string) string {
+	t.Helper()
+	root, buf := NewRoot(init, args...)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute(%v): %v", args, err)
+	}
+	return buf.String()
+}
+
+// RunErr is Run for the cases where the error is the point. It does not fail
+// the test, so a caller can assert on the message.
+func RunErr(init func(*cobra.Command), args ...string) (string, error) {
+	root, buf := NewRoot(init, args...)
+	err := root.Execute()
+	return buf.String(), err
 }

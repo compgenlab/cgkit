@@ -8,27 +8,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// bedTestRoot builds a fresh root with every command flag reset to its default.
-// See cmdtest.ResetFlags for why that is necessary.
 func bedTestRoot(args ...string) (*cobra.Command, *bytes.Buffer) {
-	root := &cobra.Command{Use: "cgkit"}
-	InitCmd(root)
-	cmdtest.ResetFlags(root)
-	var buf bytes.Buffer
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs(args)
-	return root, &buf
+	return cmdtest.NewRoot(InitCmd, args...)
 }
 
-// runBed executes a bed subcommand against a fresh root and returns its stdout.
 func runBed(t *testing.T, args ...string) string {
 	t.Helper()
-	root, buf := bedTestRoot(args...)
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute(%v): %v", args, err)
-	}
-	return buf.String()
+	return cmdtest.Run(t, InitCmd, args...)
 }
 
 func TestBedToBed3(t *testing.T) {

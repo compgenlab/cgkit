@@ -2,7 +2,6 @@ package fastacmd
 
 import (
 	"io"
-	"os"
 
 	"github.com/compgenlab/cghts/seqio"
 	"github.com/spf13/cobra"
@@ -25,7 +24,7 @@ var fastaWrapCmd = &cobra.Command{
 		if wrap < 1 {
 			wrap = 0
 		}
-		writer := seqio.NewFastaWriter(os.Stdout, seqio.NewFastaWriterOpts().Wrap(wrap))
+		writer := seqio.NewFastaWriter(cmd.OutOrStdout(), seqio.NewFastaWriterOpts().Wrap(wrap))
 		defer writer.Close()
 
 		for rec, err := reader.NextSeq(); ; rec, err = reader.NextSeq() {
