@@ -18,11 +18,8 @@ var bedStatsCmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.3.1"},
 	Use:         "bed-stats <input.bed>",
 	Short:       "Summary statistics for a BED file",
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 
 		reader, err := openBedInput(cmd, args[0])
 		if err != nil {
@@ -58,6 +55,7 @@ var bedStatsCmd = &cobra.Command{
 		}
 
 		out := cmd.OutOrStdout()
+		closeOut := func() error { return nil }
 		if bedStatsOutput != "" && bedStatsOutput != "-" {
 			if err := locator.CheckLocalOutput("-o/--output", bedStatsOutput); err != nil {
 				return err
@@ -66,7 +64,13 @@ var bedStatsCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
+			// Deferred for the error paths, and closed explicitly below so the
+			// close error is actually reported. This is the sole output sink, so
+			// discarding it meant a full disk produced a truncated file and
+			// exit 0. Close is idempotent enough here: the second call returns
+			// an already-closed error that the deferred form drops.
 			defer f.Close()
+			closeOut = f.Close
 			out = f
 		}
 
@@ -81,7 +85,7 @@ var bedStatsCmd = &cobra.Command{
 		for _, ref := range refOrder {
 			fmt.Fprintf(out, "%s\t%d\n", ref, refCount[ref])
 		}
-		return nil
+		return closeOut()
 	},
 }
 

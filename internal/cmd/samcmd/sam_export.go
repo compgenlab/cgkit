@@ -2,7 +2,6 @@ package samcmd
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -39,11 +38,8 @@ var samExportCmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.1.0"},
 	Use:         "sam-export <input.bam>",
 	Short:       "Export columns and tags from a SAM/BAM/CRAM file as tab-delimited text",
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 
 		// Build list of selected columns (in definition order).
 		type selectedColumn struct {
@@ -79,7 +75,8 @@ var samExportCmd = &cobra.Command{
 		}
 		defer reader.Close()
 
-		var out io.Writer = os.Stdout
+		out := cmd.OutOrStdout()
+		closeOut := func() error { return nil }
 		if samExportOutput != "" && samExportOutput != "-" {
 			if err := locator.CheckLocalOutput("-o/--output", samExportOutput); err != nil {
 				return err
@@ -88,7 +85,10 @@ var samExportCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
+			// Deferred for the error paths, closed explicitly at the end so the
+			// close error reaches the exit status.
 			defer f.Close()
+			closeOut = f.Close
 			out = f
 		}
 
@@ -119,7 +119,7 @@ var samExportCmd = &cobra.Command{
 			fmt.Fprintln(out, strings.Join(parts, "\t"))
 		}
 
-		return nil
+		return closeOut()
 	},
 }
 

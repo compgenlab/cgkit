@@ -52,11 +52,8 @@ alt1 (or a numeric index), or left blank for the whole value.
 
 Columns are emitted in this order: id, qual, filter, then each --info (in the
 order given), then each --format.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if vcfExportOnlySNVs && vcfExportOnlyIndels {
 			return fmt.Errorf("you can't set both --only-snvs and --only-indels")
 		}

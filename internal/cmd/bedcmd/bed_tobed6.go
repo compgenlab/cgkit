@@ -12,11 +12,8 @@ var bedToBed6Cmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.3.1"},
 	Use:         "bed-tobed6 <input.bed>",
 	Short:       "Convert a BED6+ file to a strict BED6 file",
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		opts := bed.NewBedWriterOpts().Columns(bed.Columns6)
 		return streamBed(cmd, args[0], opts, bedToBed6Output)
 	},

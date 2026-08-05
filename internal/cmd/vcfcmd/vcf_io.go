@@ -6,6 +6,7 @@ import (
 	"iter"
 	"math"
 	"os"
+	"strings"
 
 	"github.com/compgenlab/cghts/htsio"
 	"github.com/compgenlab/cghts/vcf"
@@ -136,4 +137,29 @@ func openRecordSource(cmd *cobra.Command, filename, region string) (*recordSourc
 			return nil
 		},
 	}, nil
+}
+
+// plural returns "s" when n is not 1, for error messages that name a list.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// resolveSampleIndex looks up a sample by name or by 1-based position.
+//
+// The bounds check is the point. header.SampleIndex resolves a name it does not
+// know to -1, but a *numeric* name to n-1 with no upper bound at all, so
+// "--sample 9" against a 3-sample file returned 8 and passed any `idx < 0`
+// guard. What followed was a per-record "sample index 8 out of range" from deep
+// inside the reader, once per variant, rather than one error naming the flag.
+func resolveSampleIndex(header *vcf.VcfHeader, flag, name string) (int, error) {
+	samples := header.Samples()
+	idx := header.SampleIndex(name)
+	if idx < 0 || idx >= len(samples) {
+		return 0, fmt.Errorf("%s: no such sample %q\n  this file has: %s",
+			flag, name, strings.Join(samples, ", "))
+	}
+	return idx, nil
 }

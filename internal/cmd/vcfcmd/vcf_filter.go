@@ -51,6 +51,7 @@ means every sample), and ALLELE selects an allele (ref, alt1, an index, or sum).
 By default every variant is written (with FILTER updated). --passing writes only
 variants that pass all filters; --failing writes only variants that fail one.
 --stats FILE writes per-filter-combination counts (tab-separated).`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Mutually exclusive: together they drop every record and produce a
 		// header-only file with exit 0. Sibling commands check their own
@@ -58,10 +59,6 @@ variants that pass all filters; --failing writes only variants that fail one.
 		// --ucsc/--ensembl); this pair was missed.
 		if vcfFilterPassing && vcfFilterFailing {
 			return fmt.Errorf("--passing and --failing are mutually exclusive")
-		}
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
 		}
 		chain, err := buildFilterChain()
 		if err != nil {

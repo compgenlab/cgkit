@@ -22,11 +22,8 @@ var msaCmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.1.0"},
 	Use:         "seq-msa <input.fasta|fastq>",
 	Short:       "Multiple sequence alignment via incremental consensus",
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 
 		// Detect file format from extension. FASTQ support uses the same
 		// reader interface, so downstream code does not need to care.
@@ -98,7 +95,8 @@ var msaCmd = &cobra.Command{
 		}
 
 		// Open output — file or stdout.
-		var out io.Writer = os.Stdout
+		out := cmd.OutOrStdout()
+		closeOut := func() error { return nil }
 		if msaOutput != "" && msaOutput != "-" {
 			if err := locator.CheckLocalOutput("-o/--output", msaOutput); err != nil {
 				return err
@@ -107,7 +105,10 @@ var msaCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("opening output: %w", err)
 			}
+			// Deferred for the error paths, closed explicitly at the end so a
+			// failed flush reaches the exit status rather than being dropped.
 			defer f.Close()
+			closeOut = f.Close
 			out = f
 		}
 
@@ -185,7 +186,7 @@ var msaCmd = &cobra.Command{
 			}
 		}
 
-		return nil
+		return closeOut()
 	},
 }
 

@@ -55,11 +55,8 @@ Sample-count annotators (require GATK-style FORMAT fields):
   --fisher-sb      CG_FSB Fisher strand bias, Phred-scaled (requires SAC)
   --copy-logratio SOMATIC:GERMLINE[:somatic-total:germline-total]
                    CG_CNLR copy-number log2 ratio (requires AD)`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 
 		pipeline, err := buildAnnotatePipeline()
 		if err != nil {

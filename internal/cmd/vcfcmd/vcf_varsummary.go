@@ -74,11 +74,8 @@ estimated from it -- they are reported as requiring --counts.
                      verbatim, so "| jq" works on it
   -o, --output FILE  write here instead of stdout
   -v, --verbose      note what is being read, and what a scan will cost`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if vcfVarSummaryFormat != "text" && vcfVarSummaryFormat != "json" {
 			return fmt.Errorf("unknown --format %q (use text or json)", vcfVarSummaryFormat)
 		}

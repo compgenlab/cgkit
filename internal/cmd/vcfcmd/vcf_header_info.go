@@ -25,11 +25,8 @@ var vcfHeaderInfoCmd = &cobra.Command{
   --info / --format / --filters   id<TAB>description (one per line)
   --sample                        sample name (one per line)
   --contig                        id<TAB>length (one per line)`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		n := 0
 		for _, b := range []bool{vcfHeaderInfoInfo, vcfHeaderInfoFormat, vcfHeaderInfoSample, vcfHeaderInfoFilters, vcfHeaderInfoContig} {
 			if b {
