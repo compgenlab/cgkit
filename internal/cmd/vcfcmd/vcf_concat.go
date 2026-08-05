@@ -30,11 +30,8 @@ declared as ##contig lines in a consistent order.
               number in the filename, and the files are read one at a time.
               Numbering stops at the first missing file. This keeps recombining
               thousands of chunks within the open-file limit.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if vcfConcatChunks && len(args) != 1 {
 			return fmt.Errorf("--chunks takes a single argument: the first file of the series (BASE.1.vcf.gz)")
 		}

@@ -21,11 +21,8 @@ same order) but different annotations — for example a base VCF annotated by
 several tools in parallel. The annotations are combined per variant; on a
 conflict the first file on the command line wins. A variant missing from any
 input is an error.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if len(args) < 2 {
 			return fmt.Errorf("vcf-merge needs at least two input VCF files")
 		}

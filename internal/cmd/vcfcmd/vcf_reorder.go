@@ -25,15 +25,15 @@ var vcfReorderCmd = &cobra.Command{
 
 The new sample order is given with --sample (repeatable, comma-separated) or
 --samples-file (one sample per line). Samples may be named or referenced by
-1-based number. Samples omitted from the new order are dropped; a requested
-sample that is not present is skipped with a warning.
+1-based number. Samples omitted from the new order are dropped.
+
+A requested sample the file does not have is an error, and the message lists
+the samples it does have. This used to warn and carry on, which quietly
+produced a VCF one column short of the cohort that was asked for.
 
 FORMAT values are not parsed: the sample columns are moved verbatim.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		haveList := len(vcfReorderSamples) > 0
 		haveFile := vcfReorderSamplesFile != ""
 		if haveList == haveFile {
@@ -67,16 +67,27 @@ FORMAT values are not parsed: the sample columns are moved verbatim.`,
 		}
 		orig := header.Samples()
 
+		// An unresolvable name is fatal. It used to warn and carry on, which is
+		// the worst of the options: naming one sample wrong silently produced a
+		// VCF one column short of the cohort that was asked for, and naming them
+		// all wrong produced a header with no FORMAT and no sample columns over
+		// records that still had theirs -- a file that is not valid VCF at all,
+		// written with exit status 0.
 		var order []int
 		var newNames []string
+		var missing []string
 		for _, name := range requested {
 			idx := header.SampleIndex(name)
 			if idx < 0 || idx >= len(orig) {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Missing sample: %s\n", name)
+				missing = append(missing, name)
 				continue
 			}
 			order = append(order, idx)
 			newNames = append(newNames, name)
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("no such sample%s: %s\n  this file has: %s",
+				plural(len(missing)), strings.Join(missing, ", "), strings.Join(orig, ", "))
 		}
 
 		header.SetSamples(newNames)

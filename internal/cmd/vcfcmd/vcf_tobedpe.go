@@ -36,11 +36,8 @@ becomes a line of two intervals: chrom1/start1/stop1 and chrom2/start2/stop2.
   --name KEY        INFO field (or @ID) to use as the BEDPE name
   --score KEY[:SAMPLE[:ALLELE]]   INFO/FORMAT field to use as the score
   --passing         only output passing variants`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		reader, err := openVcfInput(cmd, args[0])
 		if err != nil {
 			return err
@@ -65,9 +62,10 @@ becomes a line of two intervals: chrom1/start1/stop1 and chrom2/start2/stop2.
 			if len(spl) > 1 {
 				scoreSample = spl[1]
 				if scoreSample != "" && scoreSample != "INFO" {
-					scoreSampleIdx = header.SampleIndex(scoreSample)
-					if scoreSampleIdx < 0 {
-						return fmt.Errorf("--score: sample not found: %s", scoreSample)
+					var err error
+					scoreSampleIdx, err = resolveSampleIndex(header, "--score", scoreSample)
+					if err != nil {
+						return err
 					}
 				}
 			}

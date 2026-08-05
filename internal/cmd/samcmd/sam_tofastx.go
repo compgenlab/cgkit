@@ -22,6 +22,7 @@ var samToFastaCmd = &cobra.Command{
 	Use:         "sam-tofasta <input.bam> [output]",
 	Short:       "Convert SAM/BAM/CRAM reads to FASTA",
 	Long:        "Write SAM/BAM/CRAM reads to FASTA. Output file is optional; defaults to stdout.",
+	Args:        cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSamToFastx(cmd, args, false, samToFastaReaderFlags, samToFastaWriteTags)
 	},
@@ -33,6 +34,7 @@ var samToFastqCmd = &cobra.Command{
 	Use:         "sam-tofastq <input.bam> [output]",
 	Short:       "Convert SAM/BAM/CRAM reads to FASTQ",
 	Long:        "Write SAM/BAM/CRAM reads to FASTQ. Output file is optional; defaults to stdout.",
+	Args:        cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSamToFastx(cmd, args, true, samToFastqReaderFlags, samToFastqWriteTags)
 	},
@@ -43,10 +45,6 @@ var samToFastqCmd = &cobra.Command{
 // writeTags are emitted into the record comment as tab-delimited SAM
 // tag:type:value fields; tags absent from a record are omitted.
 func runSamToFastx(cmd *cobra.Command, args []string, fastq bool, readerFlags samReaderFlags, writeTags []string) error {
-	if len(args) == 0 {
-		cmd.Help()
-		return nil
-	}
 
 	opts, err := readerFlags.buildReaderOpts()
 	if err != nil {

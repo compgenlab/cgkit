@@ -4,6 +4,7 @@ import (
 	"io"
 
 	"github.com/compgenlab/cghts/bed"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -18,9 +19,17 @@ func openBedInput(cmd *cobra.Command, filename string) (*bed.BedReader, error) {
 
 // openBedOutput opens a BED writer for output, writing to stdout when output is
 // "" or "-". A filename ending in ".gz" is gzip-compressed.
+//
+// The locator check is here rather than in each command: without it a remote
+// -o reached bed.OpenBedWriter, which tried to create a local file literally
+// named "s3://bucket/out.bed" and reported a not-found against a path nobody
+// typed. It runs after the stdout branch, since "-" is not a locator.
 func openBedOutput(cmd *cobra.Command, output string, opts *bed.BedWriterOpts) (*bed.BedWriter, error) {
 	if output == "" || output == "-" {
 		return bed.NewBedWriter(cmd.OutOrStdout(), opts), nil
+	}
+	if err := locator.CheckLocalOutput("-o/--output", output); err != nil {
+		return nil, err
 	}
 	return bed.OpenBedWriter(output, opts)
 }

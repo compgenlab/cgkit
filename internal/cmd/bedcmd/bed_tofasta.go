@@ -30,11 +30,8 @@ a bgzip-compressed FASTA with a .gzi index).
 By default minus-strand regions are reverse-complemented and their coordinates
 are reported high-to-low in the sequence name. With --ignore-strand, the strand
 is ignored and the plus-strand sequence is always returned.`,
+	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) < 2 {
-			cmd.Help()
-			return nil
-		}
 
 		reader, err := openBedInput(cmd, args[0])
 		if err != nil {

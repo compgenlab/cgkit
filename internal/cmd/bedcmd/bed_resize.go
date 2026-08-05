@@ -20,11 +20,8 @@ var bedResizeCmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.3.1"},
 	Use:         "bed-resize <input.bed>",
 	Short:       "Resize BED regions (extend or shrink)",
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if bedResizeLen5 == 0 && bedResizeLen3 == 0 {
 			return fmt.Errorf("you must set either -5 or -3 (or both)")
 		}

@@ -23,11 +23,8 @@ var samFilterCmd = &cobra.Command{
 		"is chosen from its extension (.bam → BAM, .cram → CRAM, otherwise SAM text).\n" +
 		"With no output file, SAM text is written to stdout. Use --format to force a\n" +
 		"specific format regardless of the output filename.",
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) < 1 {
-			cmd.Help()
-			return nil
-		}
 
 		opts, err := samFilterReaderFlags.buildReaderOpts()
 		if err != nil {

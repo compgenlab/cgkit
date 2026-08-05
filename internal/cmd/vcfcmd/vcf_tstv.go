@@ -19,11 +19,8 @@ var vcfTsTvCmd = &cobra.Command{
 	Use:         "vcf-tstv <input.vcf>",
 	Short:       "Calculate a Ts/Tv ratio for SNVs",
 	Long:        "Calculate the transition/transversion (Ts/Tv) ratio for SNVs in a VCF file.",
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		src, err := openRecordSource(cmd, args[0], vcfTsTvRegion)
 		if err != nil {
 			return err

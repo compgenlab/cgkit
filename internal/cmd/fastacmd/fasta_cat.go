@@ -15,11 +15,8 @@ var fastaCatCmd = &cobra.Command{
 	Use:         "fasta-cat <input.fasta>",
 	Short:       "Write the sequences in a FASTA file without any wrapping",
 	Hidden:      true,
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		reader, err := seqio.NewFastaFile(args[0])
 		if err != nil {
 			return err

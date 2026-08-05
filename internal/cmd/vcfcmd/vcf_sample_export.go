@@ -30,11 +30,8 @@ variant. Columns: chrom, pos, [ID], ref, alt, sample, then each exported key.
   --gt               export GT and convert "0/1" to ref/alt bases
   --id               include the ID column
   --passing          only export passing variants`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		validKeys := append([]string(nil), vcfSampleExportKeys...)
 		convertGT := vcfSampleExportGT
 		if convertGT {

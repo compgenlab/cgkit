@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/compgenlab/cghts/htsio/tabix"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -58,6 +59,11 @@ with --seq, --begin, --end.`,
 			opts = opts.AutoIndex()
 		}
 
+		// tabix.NewWriter creates the file, so the locator check has to precede
+		// it or a remote -o becomes a local file with a scheme in its name.
+		if err := locator.CheckLocalOutput("-o/--output", tabSortOutput); err != nil {
+			return err
+		}
 		tw := tabix.NewWriter(tabSortOutput, opts)
 
 		// Open input.

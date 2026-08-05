@@ -1248,17 +1248,29 @@ func TestGvcfQueryAnswersOffCatalog(t *testing.T) {
 		}
 	})
 
-	t.Run("a block below the gate is excluded", func(t *testing.T) {
-		if got := tsvDataRows(runVcf(t, "vcf-varquery", "--variant", "chr1:12500-12600",
-			"--hom-ref", "--min-dp", "10", gz)); len(got) != 0 {
-			t.Errorf("a block with MIN_DP 3 must not pass --min-dp 10, got %q", got)
-		}
-		// ...and appears when the gate allows it, so the exclusion above is the gate's
-		// doing rather than the block being invisible.
+	t.Run("a block below the gate is not reported as reference", func(t *testing.T) {
+		// The row is reported, as a no-call. Dropping it would make the span
+		// indistinguishable from the gap above, which is the opposite error: the
+		// block did report here, and what it reported does not support calling
+		// the sample reference. "./." says both, and the min_dp column carries
+		// the 3 that explains it.
 		got := tsvDataRows(runVcf(t, "vcf-varquery", "--variant", "chr1:12500-12600",
+			"--hom-ref", "--min-dp", "10", gz))
+		if len(got) != 1 {
+			t.Fatalf("the block should still be reported, got %q", got)
+		}
+		if !strings.Contains(got[0], "\t./.\t") {
+			t.Errorf("a block with MIN_DP 3 must not report 0/0 under --min-dp 10, got %q", got[0])
+		}
+		if !strings.Contains(got[0], "\t3\t") {
+			t.Errorf("the depth that explains the no-call should survive, got %q", got[0])
+		}
+		// ...and reports 0/0 once the gate allows it, so the downgrade above is
+		// the gate's doing rather than something about the block itself.
+		got = tsvDataRows(runVcf(t, "vcf-varquery", "--variant", "chr1:12500-12600",
 			"--hom-ref", "--min-dp", "1", gz))
-		if len(got) != 1 || !strings.Contains(got[0], "\t3\t") {
-			t.Errorf("ungated, the MIN_DP 3 block should appear, got %q", got)
+		if len(got) != 1 || !strings.Contains(got[0], "\t0/0\t") {
+			t.Errorf("under --min-dp 1 the MIN_DP 3 block should report reference, got %q", got)
 		}
 	})
 

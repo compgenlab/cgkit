@@ -13,11 +13,8 @@ var fastqTagCmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.1.0"},
 	Use:         "fastq-tag <tag> <input.fastq>",
 	Short:       "Add a tag to the comment field of FASTQ records",
+	Args:        cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) < 2 {
-			cmd.Help()
-			return nil
-		}
 		tag := args[0]
 		reader, err := seqio.NewFastqFile(args[1])
 		if err != nil {

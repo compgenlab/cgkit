@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/compgenlab/cghts/bed"
+	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -47,11 +48,8 @@ and output is BED6; --ignore-strand (or --bed3) collapses strand and emits BED3.
 In BED6 output the name column is the merged contributing names (--delim,
 default "|") or provenance labels (--a/--b), and the score column is 0 unless
 --sum or --count is given. -o NAME.gz writes sorted BGZF; --tbi adds a tabix index.`,
+	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) < 2 {
-			cmd.Help()
-			return nil
-		}
 
 		// Resolve the single mode.
 		op := bed.OpInter
@@ -174,10 +172,17 @@ func openBedSetWriter(cmd *cobra.Command, strandAware bool) (*bed.BedWriter, err
 		if bedSetOutput == "" || bedSetOutput == "-" {
 			return nil, fmt.Errorf("--tbi requires an output file (-o)")
 		}
+		if err := locator.CheckLocalOutput("-o/--output", bedSetOutput); err != nil {
+			return nil, err
+		}
 		return bed.OpenBedWriter(bedSetOutput, opts.Tabix(true))
 	}
 	if bedSetOutput == "" || bedSetOutput == "-" {
 		return bed.NewBedWriter(cmd.OutOrStdout(), opts), nil
+	}
+	// After both stdout branches, so "-" is not mistaken for a locator.
+	if err := locator.CheckLocalOutput("-o/--output", bedSetOutput); err != nil {
+		return nil, err
 	}
 	if strings.HasSuffix(bedSetOutput, ".gz") {
 		return bed.OpenBedWriter(bedSetOutput, opts.Bgzip(true))

@@ -13,11 +13,8 @@ var revcompCmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.1.0"},
 	Use:         "seq-revcomp seq",
 	Short:       "Calculate the reverse-complement of the seq",
+	Args:        cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) != 1 {
-			cmd.Help()
-			return nil
-		}
 
 		seq := seqio.NewStringSeq(args[0], "")
 		fmt.Println(seq.FullSeq().RevComp().Seq())

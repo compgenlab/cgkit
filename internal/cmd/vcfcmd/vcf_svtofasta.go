@@ -40,11 +40,8 @@ result as FASTA. Requires an indexed reference (genome.fa.fai).
   --alt-chrom KEY   INFO field for the partner chromosome (default: from ALT)
   --alt-pos KEY     INFO field for the partner position (default END)
   --passing         only process passing variants`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if len(args) < 2 {
 			return fmt.Errorf("vcf-svtofasta needs a genome FASTA and an input VCF")
 		}
