@@ -17,13 +17,10 @@ import (
 
 var (
 	vcfToParquetOut          string
-	vcfToParquetRegion       string
 	vcfToParquetMinDP        int
 	vcfToParquetNoCallable   bool
-	vcfToParquetPassing      bool
 	vcfToParquetCompression  string
 	vcfToParquetRowGroupSize int
-	vcfToParquetVerbose      bool
 	vcfToParquetForce        bool
 
 	// One string per reserved key, keyed by the key itself, plus the generic
@@ -250,7 +247,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 
 		// The first input fixes the sample roster; every later one must carry
 		// the same people, though not necessarily in the same column order.
-		first, err := openRecordSource(cmd, args[0], vcfToParquetRegion)
+		first, err := openRecordSource(cmd, args[0], vcfRegion)
 		if err != nil {
 			return err
 		}
@@ -274,11 +271,11 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		}
 
 		// Before the writer exists, since it needs them at construction.
-		contigs, err := collectContigs(cmd, args, vcfToParquetRegion)
+		contigs, err := collectContigs(cmd, args, vcfRegion)
 		if err != nil {
 			return err
 		}
-		if len(contigs) == 0 && vcfToParquetVerbose {
+		if len(contigs) == 0 && vcfVerbose {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"note: no ##contig lines in the input; a VCF exported from this store "+
 					"cannot declare its reference\n")
@@ -307,7 +304,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			minDP:      int32(vcfToParquetMinDP),
 			noCallable: vcfToParquetNoCallable,
 			runs:       make([]*callableRun, len(samples)),
-			verbose:    vcfToParquetVerbose,
+			verbose:    vcfVerbose,
 			progress:   cmd.ErrOrStderr(),
 		}
 
@@ -337,7 +334,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			return discarding(w, err)
 		}
 
-		if vcfToParquetVerbose {
+		if vcfVerbose {
 			conv.report(cmd.ErrOrStderr(), vcfToParquetOut, time.Since(started))
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(),
@@ -422,7 +419,7 @@ func summariseNames(names []string) string {
 
 // convertOne streams one input into the store.
 func convertOne(cmd *cobra.Command, conv *parquetConverter, path string, canonical []string) error {
-	src, err := openRecordSource(cmd, path, vcfToParquetRegion)
+	src, err := openRecordSource(cmd, path, vcfRegion)
 	if err != nil {
 		return err
 	}
@@ -450,7 +447,7 @@ func convertOne(cmd *cobra.Command, conv *parquetConverter, path string, canonic
 		if err != nil {
 			return err
 		}
-		if vcfToParquetPassing && rec.IsFiltered() {
+		if vcfPassing && rec.IsFiltered() {
 			conv.nFiltered++
 			continue
 		}
@@ -779,13 +776,13 @@ func (c *parquetConverter) report(out io.Writer, base string, elapsed time.Durat
 func init() {
 	f := vcfToParquetCmd.Flags()
 	f.StringVar(&vcfToParquetOut, "out", "", "Store directory, created if needed (DIR/calls.parquet etc)")
-	f.StringVar(&vcfToParquetRegion, "region", "", "Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
+	addRegionFlag(vcfToParquetCmd)
 	f.IntVar(&vcfToParquetMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
 	f.BoolVar(&vcfToParquetNoCallable, "no-callable", false, "Accept a source with no DP field; callable regions will be empty")
-	f.BoolVar(&vcfToParquetPassing, "passing", false, "Only convert passing variants")
+	addPassingFlag(vcfToParquetCmd, "Only convert passing variants")
 	f.StringVar(&vcfToParquetCompression, "compression", "zstd", "Parquet compression: zstd, snappy, or none")
 	f.IntVar(&vcfToParquetRowGroupSize, "row-group-size", 250000, "Rows per parquet row group")
-	f.BoolVarP(&vcfToParquetVerbose, "verbose", "v", false, "Report progress and a conversion summary on stderr")
+	addVerboseFlag(vcfToParquetCmd, "Report progress and a conversion summary on stderr")
 	f.BoolVar(&vcfToParquetForce, "force", false, "Overwrite an existing store at --out")
 
 	// Generated from the library's own list, so the flag names and the keys they

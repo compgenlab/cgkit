@@ -14,7 +14,6 @@ var (
 	vcfSampleExportSamples []string
 	vcfSampleExportGT      bool
 	vcfSampleExportID      bool
-	vcfSampleExportPassing bool
 )
 
 var vcfSampleExportCmd = &cobra.Command{
@@ -88,7 +87,7 @@ variant. Columns: chrom, pos, [ID], ref, alt, sample, then each exported key.
 			if err != nil {
 				return err
 			}
-			if vcfSampleExportPassing && rec.IsFiltered() {
+			if vcfPassing && rec.IsFiltered() {
 				continue
 			}
 			for si, s := range samples {
@@ -163,7 +162,7 @@ func init() {
 	f.StringArrayVarP(&vcfSampleExportSamples, "sample", "s", nil, "Sample to export (glob, repeatable; default all)")
 	f.BoolVar(&vcfSampleExportGT, "gt", false, "Export GT and convert to ref/alt bases")
 	f.BoolVar(&vcfSampleExportID, "id", false, "Include the ID column")
-	f.BoolVar(&vcfSampleExportPassing, "passing", false, "Only export passing variants")
+	addPassingFlag(vcfSampleExportCmd, "Only export passing variants")
 }
 
 // warnUnmatchedKeys reports requested keys that matched no declared FORMAT id.

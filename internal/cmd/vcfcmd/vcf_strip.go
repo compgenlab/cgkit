@@ -13,7 +13,6 @@ var (
 	vcfStripOutput     string
 	vcfStripAll        bool
 	vcfStripDBSNP      bool
-	vcfStripPassing    bool
 	vcfStripOnlySNVs   bool
 	vcfStripOnlyIndels bool
 	vcfStripInfo       []string
@@ -145,7 +144,7 @@ keeping the output in VCF format.
 					return false, err
 				}
 				switch {
-				case vcfStripPassing && rec.IsFiltered():
+				case vcfPassing && rec.IsFiltered():
 					return false, nil
 				case vcfStripOnlySNVs && rec.IsIndel():
 					return false, nil
@@ -263,7 +262,7 @@ func init() {
 	addVcfOutputFlags(vcfStripCmd, &vcfStripOutput)
 	f.BoolVar(&vcfStripAll, "all", false, "Remove all annotations and samples")
 	f.BoolVar(&vcfStripDBSNP, "dbsnp", false, "Remove the ID column")
-	f.BoolVar(&vcfStripPassing, "passing", false, "Only output passing variants (post-strip)")
+	addPassingFlag(vcfStripCmd, "Only output passing variants (post-strip)")
 	f.BoolVar(&vcfStripOnlySNVs, "only-snvs", false, "Only output SNVs")
 	f.BoolVar(&vcfStripOnlyIndels, "only-indels", false, "Only output indels")
 	f.BoolVar(&vcfStripForceEnd, "force-end", false,
