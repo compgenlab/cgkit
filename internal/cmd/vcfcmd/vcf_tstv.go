@@ -56,13 +56,19 @@ var vcfTsTvCmd = &cobra.Command{
 }
 
 // javaRatio formats num/den the way Java's string concatenation of a double
-// does, including "Infinity" and "NaN" for division by zero.
+// does, which is what ngsutilsj emits and what the parity tests compare against.
+//
+// The zero-denominator case deliberately diverges. Java gives "Infinity" or
+// "NaN", and vcf-stats gave an empty string for the same situation -- one of
+// which reads as a real number and the other as a bug, when what actually
+// happened is that there were no transversions to divide by. Both report "-"
+// now, which is the same thing the tabular commands use for a value that does
+// not exist. testdata/sample.vcf has no transversions at all, so the parity
+// tests do cover this -- they normalize the reference output for this one field
+// rather than pretending the divergence is not there.
 func javaRatio(num, den float64) string {
 	if den == 0 {
-		if num == 0 {
-			return "NaN"
-		}
-		return "Infinity"
+		return "-"
 	}
 	return javaDouble(num / den)
 }

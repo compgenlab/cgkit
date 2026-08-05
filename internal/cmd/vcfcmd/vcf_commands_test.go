@@ -476,7 +476,7 @@ func TestVcfStats(t *testing.T) {
 		"\n" +
 		"Transitions:\t2\n" +
 		"Transversions:\t0\n" +
-		"Ts/Tv ratio:\t\n" +
+		"Ts/Tv ratio:\t-\n" +
 		"\n" +
 		"[Filters]\n" +
 		"lowqual: 1\n"
@@ -503,7 +503,7 @@ func TestVcfStatsInfoTally(t *testing.T) {
 func TestVcfTsTv(t *testing.T) {
 	want := "Transitions (Ts)\t2\n" +
 		"Transversions (Tv)\t0\n" +
-		"Ts/Tv ratio\tInfinity\n"
+		"Ts/Tv ratio\t-\n"
 	if got := runVcf(t, "vcf-tstv", "testdata/sample.vcf"); got != want {
 		t.Errorf("vcf-tstv mismatch.\n got: %q\nwant: %q", got, want)
 	}
