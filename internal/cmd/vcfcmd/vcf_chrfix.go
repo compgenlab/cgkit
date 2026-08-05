@@ -68,8 +68,11 @@ and optionally drop non-primary contigs.
 			in:   args[0],
 			out:  vcfChrFixOutput,
 			header: func(header *vcf.VcfHeader) error {
-				// Rename header contigs through the mapping.
-				for _, old := range append([]string(nil), header.ContigNames()...) {
+				// Rename header contigs through the mapping. Ranging over the
+				// accessor while removing through it is safe: cghts's removers
+				// rebuild the order slice rather than compacting it, so this
+				// walks the roster as it stood on entry.
+				for _, old := range header.ContigNames() {
 					newID := mapName(old)
 					if newID == old {
 						continue
@@ -83,7 +86,7 @@ and optionally drop non-primary contigs.
 				}
 				// Drop contigs that won't be kept.
 				if vcfChrFixPrimary || keepContigs != nil {
-					for _, c := range append([]string(nil), header.ContigNames()...) {
+					for _, c := range header.ContigNames() {
 						if !keepChrom(c) {
 							header.RemoveContig(c)
 						}
