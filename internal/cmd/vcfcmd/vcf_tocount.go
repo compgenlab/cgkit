@@ -12,13 +12,12 @@ import (
 )
 
 var (
-	vcfToCountOutput  string
-	vcfToCountSample  string
-	vcfToCountROAO    bool
-	vcfToCountAF      bool
-	vcfToCountTotal   bool
-	vcfToCountHet     bool
-	vcfToCountPassing bool
+	vcfToCountOutput string
+	vcfToCountSample string
+	vcfToCountROAO   bool
+	vcfToCountAF     bool
+	vcfToCountTotal  bool
+	vcfToCountHet    bool
 )
 
 var vcfToCountCmd = &cobra.Command{
@@ -84,7 +83,7 @@ row per ALT allele. Counts come from the AD FORMAT field (or RO/AO with
 			if err != nil {
 				return err
 			}
-			if vcfToCountPassing && rec.IsFiltered() {
+			if vcfPassing && rec.IsFiltered() {
 				continue
 			}
 			if err := writeCounts(out, rec, sampleIdx); err != nil {
@@ -198,11 +197,11 @@ func parseInts(fields []string) ([]int, error) {
 
 func init() {
 	f := vcfToCountCmd.Flags()
-	f.StringVarP(&vcfToCountOutput, "output", "o", "-", "Output filename (- for stdout)")
+	addOutputFlag(vcfToCountCmd, &vcfToCountOutput)
 	f.StringVar(&vcfToCountSample, "sample", "", "Sample to use (default: the first sample)")
 	f.BoolVar(&vcfToCountROAO, "use-ro-ao", false, "Use RO/AO format fields instead of AD")
 	f.BoolVar(&vcfToCountAF, "af", false, "Output alternate allele frequency")
 	f.BoolVar(&vcfToCountTotal, "total", false, "Output total allele count")
 	f.BoolVar(&vcfToCountHet, "het", false, "Only count heterozygous variants (GT 0/1)")
-	f.BoolVar(&vcfToCountPassing, "passing", false, "Only count passing variants")
+	addPassingFlag(vcfToCountCmd, "Only count passing variants")
 }

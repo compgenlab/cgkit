@@ -13,7 +13,6 @@ import (
 
 var (
 	vcfSvToFastaOutput     string
-	vcfSvToFastaPassing    bool
 	vcfSvToFastaIncludeRef bool
 	vcfSvToFastaBND        bool
 	vcfSvToFastaFlanking   int
@@ -77,7 +76,7 @@ result as FASTA. Requires an indexed reference (genome.fa.fai).
 			if err != nil {
 				return err
 			}
-			if vcfSvToFastaPassing && rec.IsFiltered() {
+			if vcfPassing && rec.IsFiltered() {
 				continue
 			}
 			for _, alt := range rec.AltPositions(vcfSvToFastaAltChrom, vcfSvToFastaAltPos, vcfSvToFastaSVType, vcfSvToFastaCT) {
@@ -189,11 +188,11 @@ func writeBreakendFasta(out io.Writer, ref seqio.ReferenceReader, rec *vcf.VcfRe
 
 func init() {
 	f := vcfSvToFastaCmd.Flags()
-	f.StringVarP(&vcfSvToFastaOutput, "output", "o", "-", "Output filename (- for stdout)")
+	addOutputFlag(vcfSvToFastaCmd, &vcfSvToFastaOutput)
 	f.BoolVar(&vcfSvToFastaBND, "bnd", false, "Export breakend/translocation sequences (required for output)")
 	f.IntVar(&vcfSvToFastaFlanking, "flanking", 1000, "Flanking bases to include on each side")
 	f.BoolVar(&vcfSvToFastaIncludeRef, "include-ref", false, "Also write wild-type reference sequences")
-	f.BoolVar(&vcfSvToFastaPassing, "passing", false, "Only process passing variants")
+	addPassingFlag(vcfSvToFastaCmd, "Only process passing variants")
 	f.StringVar(&vcfSvToFastaSVType, "svtype", "SVTYPE", "INFO field for the SV type")
 	f.StringVar(&vcfSvToFastaCT, "ct", "", "INFO field for the connection type")
 	f.StringVar(&vcfSvToFastaAltChrom, "alt-chrom", "", "Use an alternate INFO field for the partner chromosome")

@@ -26,7 +26,6 @@ var (
 	vcfVarQueryDosage   bool
 	vcfVarQueryFormat   string
 	vcfVarQueryStore    string
-	vcfVarQueryVerbose  bool
 )
 
 var vcfVarQueryCmd = &cobra.Command{
@@ -176,7 +175,7 @@ written where nothing is known would assert a depth the data never had.`,
 		if err != nil {
 			return err
 		}
-		if vcfVarQueryVerbose {
+		if vcfVerbose {
 			targets.report(cmd.ErrOrStderr())
 			samples.report(cmd.ErrOrStderr())
 		}
@@ -194,7 +193,7 @@ written where nothing is known would assert a depth the data never had.`,
 		}
 		defer store.Close()
 
-		if vcfVarQueryVerbose {
+		if vcfVerbose {
 			describeStore(cmd, store, args[0], q.Gate)
 		}
 		if err := checkSamples(store, q.Samples); err != nil {
@@ -212,7 +211,7 @@ written where nothing is known would assert a depth the data never had.`,
 				return err
 			}
 			warnEmptySelectors(cmd, q, t)
-			if vcfVarQueryVerbose {
+			if vcfVerbose {
 				reportQuery(cmd, store, q, t)
 			}
 			if closeVcf != nil {
@@ -239,7 +238,7 @@ written where nothing is known would assert a depth the data never had.`,
 			return err
 		}
 		warnEmptySelectors(cmd, q, t)
-		if vcfVarQueryVerbose {
+		if vcfVerbose {
 			reportQuery(cmd, store, q, t)
 		}
 
@@ -851,7 +850,7 @@ func init() {
 	f.BoolVar(&vcfVarQueryHomRef, "hom-ref", false, "Also report reference (0/0) calls, not only alternate carriers")
 	f.StringVar(&vcfVarQueryFormat, "format", "tsv", "Output format: tsv, json, vcf, or list")
 	f.StringVar(&vcfVarQueryStore, "store", "", "Force the backend: vcf or parquet (default: infer from the path)")
-	f.BoolVarP(&vcfVarQueryVerbose, "verbose", "v", false, "Report the backend, store provenance and gate effect on stderr")
+	addVerboseFlag(vcfVarQueryCmd, "Report the backend, store provenance and gate effect on stderr")
 }
 
 // warnEmptySelectors reports a named selector that matched nothing.

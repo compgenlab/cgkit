@@ -12,7 +12,6 @@ import (
 
 var (
 	vcfToBedpeOutput      string
-	vcfToBedpePassing     bool
 	vcfToBedpeNoDelOffset bool
 	vcfToBedpeUniqueEvent bool
 	vcfToBedpeAltChrom    string
@@ -94,7 +93,7 @@ becomes a line of two intervals: chrom1/start1/stop1 and chrom2/start2/stop2.
 			if err != nil {
 				return err
 			}
-			if vcfToBedpePassing && rec.IsFiltered() {
+			if vcfPassing && rec.IsFiltered() {
 				continue
 			}
 			if vcfToBedpeUniqueEvent {
@@ -183,8 +182,8 @@ func bedpeScore(rec *vcf.VcfRecord, key, sample string, sampleIdx int, allele st
 
 func init() {
 	f := vcfToBedpeCmd.Flags()
-	f.StringVarP(&vcfToBedpeOutput, "output", "o", "-", "Output filename (- for stdout)")
-	f.BoolVar(&vcfToBedpePassing, "passing", false, "Only output passing variants")
+	addOutputFlag(vcfToBedpeCmd, &vcfToBedpeOutput)
+	addPassingFlag(vcfToBedpeCmd, "Only output passing variants")
 	f.BoolVar(&vcfToBedpeNoDelOffset, "no-del-offset", false, "Don't offset deletion coordinates by one base")
 	f.BoolVar(&vcfToBedpeUniqueEvent, "unique-event", false, "Only output one set of coordinates per EVENT")
 	f.StringVar(&vcfToBedpeAltChrom, "alt-chrom", "", "Use an alternate INFO field for the partner chromosome")

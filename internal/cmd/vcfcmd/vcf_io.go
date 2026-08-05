@@ -273,3 +273,48 @@ func discardPartialVcf(out string) {
 		os.Remove(out + ".tbi")
 	}
 }
+
+// Flags shared by many commands, backed by one variable each.
+//
+// This follows vcfTbi: only one subcommand runs per process, so a variable per
+// command bought nothing and cost something. --passing had fourteen of them and
+// --region five, each registered with its own hand-written help string, and
+// every one had to be added by hand to the reset list in vcf_commands_test.go
+// or it leaked into the next test.
+var (
+	// vcfPassing backs --passing. The phrasing differs per command -- "output",
+	// "export", "convert" -- so the help text stays a caller's argument even
+	// though the flag does not.
+	vcfPassing bool
+
+	// vcfRegion backs --region. All five declarations were character-identical.
+	vcfRegion string
+
+	// vcfVerbose backs -v/--verbose. What gets reported differs per command, so
+	// the help text is still the caller's.
+	vcfVerbose bool
+)
+
+// addVerboseFlag registers -v/--verbose with command-specific help.
+func addVerboseFlag(cmd *cobra.Command, help string) {
+	cmd.Flags().BoolVarP(&vcfVerbose, "verbose", "v", false, help)
+}
+
+// addOutputFlag registers -o/--output for a command writing a tabular stream
+// rather than a VCF. The VCF writers use addVcfOutputFlags, whose help has to
+// mention bgzip and --tbi; these had six copies of one string and two lone
+// variants, which is the kind of drift a shared registrar exists to stop.
+func addOutputFlag(cmd *cobra.Command, out *string) {
+	cmd.Flags().StringVarP(out, "output", "o", "-", "Output filename (- for stdout)")
+}
+
+// addPassingFlag registers --passing with command-specific help.
+func addPassingFlag(cmd *cobra.Command, help string) {
+	cmd.Flags().BoolVar(&vcfPassing, "passing", false, help)
+}
+
+// addRegionFlag registers --region, which needs a tabix-indexed input.
+func addRegionFlag(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&vcfRegion, "region", "",
+		"Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
+}

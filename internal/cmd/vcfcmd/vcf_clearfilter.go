@@ -11,7 +11,6 @@ var (
 	vcfClearFilterOutput  string
 	vcfClearFilterFilters []string
 	vcfClearFilterOnly    bool
-	vcfClearFilterPassing bool
 )
 
 var vcfClearFilterCmd = &cobra.Command{
@@ -54,7 +53,7 @@ Cleared codes are recorded in the CG_CLEARED_FILTER INFO field.
 				if rec.IsFiltered() {
 					clearRecordFilters(rec, clearSet)
 				}
-				return !(vcfClearFilterPassing && rec.IsFiltered()), nil
+				return !(vcfPassing && rec.IsFiltered()), nil
 			},
 		})
 	},
@@ -102,5 +101,5 @@ func init() {
 	addVcfOutputFlags(vcfClearFilterCmd, &vcfClearFilterOutput)
 	f.StringArrayVar(&vcfClearFilterFilters, "filter", nil, "Filter code to clear (comma-separated, repeatable)")
 	f.BoolVar(&vcfClearFilterOnly, "only", false, "Only clear when the named filters are the only codes")
-	f.BoolVar(&vcfClearFilterPassing, "passing", false, "Only output passing variants")
+	addPassingFlag(vcfClearFilterCmd, "Only output passing variants")
 }

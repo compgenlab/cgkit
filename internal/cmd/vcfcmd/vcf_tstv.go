@@ -8,11 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	vcfTsTvPassing bool
-	vcfTsTvRegion  string
-)
-
 var vcfTsTvCmd = &cobra.Command{
 	GroupID:     "vcfcmd",
 	Annotations: map[string]string{"since": sinceVersion},
@@ -21,7 +16,7 @@ var vcfTsTvCmd = &cobra.Command{
 	Long:        "Calculate the transition/transversion (Ts/Tv) ratio for SNVs in a VCF file.",
 	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		src, err := openRecordSource(cmd, args[0], vcfTsTvRegion)
+		src, err := openRecordSource(cmd, args[0], vcfRegion)
 		if err != nil {
 			return err
 		}
@@ -36,7 +31,7 @@ var vcfTsTvCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			if vcfTsTvPassing && rec.IsFiltered() {
+			if vcfPassing && rec.IsFiltered() {
 				continue
 			}
 			switch rec.CalcTsTv() {
@@ -74,6 +69,6 @@ func javaRatio(num, den float64) string {
 }
 
 func init() {
-	vcfTsTvCmd.Flags().BoolVar(&vcfTsTvPassing, "passing", false, "Only use passing variants")
-	vcfTsTvCmd.Flags().StringVar(&vcfTsTvRegion, "region", "", "Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
+	addPassingFlag(vcfTsTvCmd, "Only use passing variants")
+	addRegionFlag(vcfTsTvCmd)
 }

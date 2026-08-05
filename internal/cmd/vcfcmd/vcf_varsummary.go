@@ -18,7 +18,6 @@ var (
 	vcfVarSummarySites   bool
 	vcfVarSummaryCounts  bool
 	vcfVarSummaryOutput  string
-	vcfVarSummaryVerbose bool
 	vcfVarSummaryStore   string
 )
 
@@ -133,7 +132,7 @@ func writeSummary(cmd *cobra.Command, out *bufio.Writer, store varstore.Store, p
 		return nil
 	}
 	if vcfVarSummarySites {
-		if _, isVcf := store.(*varstore.VcfStore); isVcf && vcfVarSummaryVerbose {
+		if _, isVcf := store.(*varstore.VcfStore); isVcf && vcfVerbose {
 			fmt.Fprintln(errOut, "note: a VCF has no catalog to read, so --sites is a full pass over the file")
 		}
 		fmt.Fprintln(out, strings.Join([]string{
@@ -285,7 +284,7 @@ func summarizeVcf(ctx context.Context, out *bufio.Writer, errOut interface{ Writ
 		return nil
 	}
 
-	if vcfVarSummaryVerbose {
+	if vcfVerbose {
 		fmt.Fprintln(errOut, "note: counting requires reading every record")
 	}
 	type chromCount struct {
@@ -356,7 +355,7 @@ func init() {
 	f.BoolVar(&vcfVarSummaryCounts, "counts", false, "Report totals and the per-chromosome census (a full pass for a VCF)")
 	f.StringVar(&vcfVarSummaryFormat, "format", "text", "Output format: text or json")
 	f.StringVarP(&vcfVarSummaryOutput, "output", "o", "-", "Output filename")
-	f.BoolVarP(&vcfVarSummaryVerbose, "verbose", "v", false, "Note what is being read, on stderr")
+	addVerboseFlag(vcfVarSummaryCmd, "Note what is being read, on stderr")
 	f.StringVar(&vcfVarSummaryStore, "store", "", "Force the backend: vcf or parquet")
 }
 
