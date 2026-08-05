@@ -3,11 +3,10 @@ package bedcmd
 import (
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strconv"
 
-	"github.com/compgenlab/cgkit/internal/locator"
+	"github.com/compgenlab/cgkit/internal/cmdio"
 	"github.com/spf13/cobra"
 )
 
@@ -55,24 +54,14 @@ var bedStatsCmd = &cobra.Command{
 		}
 
 		out := cmd.OutOrStdout()
-		closeOut := func() error { return nil }
-		if bedStatsOutput != "" && bedStatsOutput != "-" {
-			if err := locator.CheckLocalOutput("-o/--output", bedStatsOutput); err != nil {
-				return err
-			}
-			f, err := os.Create(bedStatsOutput)
-			if err != nil {
-				return err
-			}
-			// Deferred for the error paths, and closed explicitly below so the
-			// close error is actually reported. This is the sole output sink, so
-			// discarding it meant a full disk produced a truncated file and
-			// exit 0. Close is idempotent enough here: the second call returns
-			// an already-closed error that the deferred form drops.
-			defer f.Close()
-			closeOut = f.Close
-			out = f
+		dst, err := cmdio.CreateOutput(cmd, "-o/--output", bedStatsOutput)
+		if err != nil {
+			return err
 		}
+		// Deferred for the error paths, closed explicitly below so the close
+		// error reaches the exit status. Output.Close is safe twice.
+		defer dst.Close()
+		out = dst.W
 
 		fmt.Fprintf(out, "Total number of regions:\t%d\n", total)
 		fmt.Fprintf(out, "Total number of bases:\t%d\n", totalSize)
@@ -85,7 +74,7 @@ var bedStatsCmd = &cobra.Command{
 		for _, ref := range refOrder {
 			fmt.Fprintf(out, "%s\t%d\n", ref, refCount[ref])
 		}
-		return closeOut()
+		return dst.Close()
 	},
 }
 

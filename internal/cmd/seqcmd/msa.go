@@ -3,12 +3,11 @@ package seqcmd
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/compgenlab/cghts/align"
 	"github.com/compgenlab/cghts/seqio"
-	"github.com/compgenlab/cgkit/internal/locator"
+	"github.com/compgenlab/cgkit/internal/cmdio"
 	"github.com/spf13/cobra"
 )
 
@@ -96,21 +95,12 @@ var msaCmd = &cobra.Command{
 
 		// Open output — file or stdout.
 		out := cmd.OutOrStdout()
-		closeOut := func() error { return nil }
-		if msaOutput != "" && msaOutput != "-" {
-			if err := locator.CheckLocalOutput("-o/--output", msaOutput); err != nil {
-				return err
-			}
-			f, err := os.Create(msaOutput)
-			if err != nil {
-				return fmt.Errorf("opening output: %w", err)
-			}
-			// Deferred for the error paths, closed explicitly at the end so a
-			// failed flush reaches the exit status rather than being dropped.
-			defer f.Close()
-			closeOut = f.Close
-			out = f
+		dst, err := cmdio.CreateOutput(cmd, "-o/--output", msaOutput)
+		if err != nil {
+			return err
 		}
+		defer dst.Close()
+		out = dst.W
 
 		// --hp-expand post-processes the alignment by expanding each
 		// compressed column out to the per-row original HP lengths. When
@@ -186,7 +176,7 @@ var msaCmd = &cobra.Command{
 			}
 		}
 
-		return closeOut()
+		return dst.Close()
 	},
 }
 

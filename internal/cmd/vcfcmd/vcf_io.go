@@ -11,7 +11,7 @@ import (
 	"github.com/compgenlab/cghts/htsio"
 	"github.com/compgenlab/cghts/vcf"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
-	"github.com/compgenlab/cgkit/internal/locator"
+	"github.com/compgenlab/cgkit/internal/cmdio"
 	"github.com/spf13/cobra"
 )
 
@@ -48,18 +48,14 @@ func openVcfInput(cmd *cobra.Command, filename string) (*vcf.VcfReader, error) {
 // openOutput returns the writer for output, using stdout when output is "" or
 // "-". The returned closer is nil when writing to stdout.
 func openOutput(cmd *cobra.Command, output string) (io.Writer, func() error, error) {
-	if output == "" || output == "-" {
-		return cmd.OutOrStdout(), nil, nil
-	}
-	// After the stdout check, never before it: "-" is not a locator.
-	if err := locator.CheckLocalOutput("-o/--output", output); err != nil {
-		return nil, nil, err
-	}
-	f, err := os.Create(output)
+	out, err := cmdio.CreateOutput(cmd, "-o/--output", output)
 	if err != nil {
 		return nil, nil, err
 	}
-	return f, f.Close, nil
+	if output == "" || output == "-" {
+		return out.W, nil, nil
+	}
+	return out.W, out.Close, nil
 }
 
 // recordSource is a uniform record stream over either a plain (streaming) VCF or
