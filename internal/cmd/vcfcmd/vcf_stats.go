@@ -124,10 +124,9 @@ comma-separated.`,
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "Transitions:\t%d\n", tsCount)
 		fmt.Fprintf(out, "Transversions:\t%d\n", tvCount)
-		ratio := ""
-		if tvCount > 0 {
-			ratio = javaDouble(float64(tsCount) / float64(tvCount))
-		}
+		// "-", not "": see javaRatio. An empty field reads as a failure rather
+		// than as "there were no transversions to divide by".
+		ratio := javaRatio(float64(tsCount), float64(tvCount))
 		fmt.Fprintf(out, "Ts/Tv ratio:\t%s\n", ratio)
 		fmt.Fprintln(out)
 
