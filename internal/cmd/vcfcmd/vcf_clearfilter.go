@@ -1,7 +1,6 @@
 package vcfcmd
 
 import (
-	"io"
 	"strings"
 
 	"github.com/compgenlab/cghts/vcf"
@@ -38,54 +37,26 @@ Cleared codes are recorded in the CG_CLEARED_FILTER INFO field.
 			}
 		}
 
-		reader, err := openVcfInput(cmd, args[0])
-		if err != nil {
-			return err
-		}
-		defer reader.Close()
-
-		header, err := reader.Header()
-		if err != nil {
-			return err
-		}
-		if _, ok := header.InfoDef("CG_CLEARED_FILTER"); !ok {
-			header.AddInfo(&vcf.AnnotationDef{
-				IsInfo: true, ID: "CG_CLEARED_FILTER", Number: ".", Type: "String",
-				Description: "Filters that have been removed from this variant",
-			})
-		}
-		stampVcfProvenance(header, "vcf-clearfilter")
-
-		writer, closeFn, err := openVcfWriter(cmd, vcfClearFilterOutput)
-		if err != nil {
-			return err
-		}
-		if err := writer.WriteHeader(header); err != nil {
-			return err
-		}
-
-		for {
-			rec, err := reader.NextRecord()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return err
-			}
-			if rec.IsFiltered() {
-				clearRecordFilters(rec, clearSet)
-			}
-			if vcfClearFilterPassing && rec.IsFiltered() {
-				continue
-			}
-			if err := writer.WriteRecord(rec); err != nil {
-				return err
-			}
-		}
-		if closeFn != nil {
-			return closeFn()
-		}
-		return writer.Close()
+		return runVcfStream(cmd, vcfStream{
+			name: "vcf-clearfilter",
+			in:   args[0],
+			out:  vcfClearFilterOutput,
+			header: func(h *vcf.VcfHeader) error {
+				if _, ok := h.InfoDef("CG_CLEARED_FILTER"); !ok {
+					h.AddInfo(&vcf.AnnotationDef{
+						IsInfo: true, ID: "CG_CLEARED_FILTER", Number: ".", Type: "String",
+						Description: "Filters that have been removed from this variant",
+					})
+				}
+				return nil
+			},
+			record: func(rec *vcf.VcfRecord) (bool, error) {
+				if rec.IsFiltered() {
+					clearRecordFilters(rec, clearSet)
+				}
+				return !(vcfClearFilterPassing && rec.IsFiltered()), nil
+			},
+		})
 	},
 }
 
