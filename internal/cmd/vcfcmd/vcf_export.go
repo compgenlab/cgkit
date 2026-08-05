@@ -21,11 +21,9 @@ var (
 	vcfExportFormat      []string
 	vcfExportNoHeader    bool
 	vcfExportNoVCFHeader bool
-	vcfExportPassing     bool
 	vcfExportOnlySNVs    bool
 	vcfExportOnlyIndels  bool
 	vcfExportMissBlank   bool
-	vcfExportRegion      string
 )
 
 // exporter produces one or more output columns per record.
@@ -58,7 +56,7 @@ order given), then each --format.`,
 			return fmt.Errorf("you can't set both --only-snvs and --only-indels")
 		}
 
-		src, err := openRecordSource(cmd, args[0], vcfExportRegion)
+		src, err := openRecordSource(cmd, args[0], vcfRegion)
 		if err != nil {
 			return err
 		}
@@ -104,7 +102,7 @@ order given), then each --format.`,
 			if err != nil {
 				return err
 			}
-			if vcfExportPassing && rec.IsFiltered() {
+			if vcfPassing && rec.IsFiltered() {
 				continue
 			}
 			if vcfExportOnlySNVs && rec.IsIndel() {
@@ -445,7 +443,7 @@ func formatStripped(f float64) string {
 }
 
 func init() {
-	vcfExportCmd.Flags().StringVarP(&vcfExportOutput, "output", "o", "-", "Output filename (- for stdout)")
+	addOutputFlag(vcfExportCmd, &vcfExportOutput)
 	vcfExportCmd.Flags().BoolVar(&vcfExportID, "id", false, "Export the VCF ID column")
 	vcfExportCmd.Flags().BoolVar(&vcfExportQual, "qual", false, "Export the VCF QUAL column")
 	vcfExportCmd.Flags().BoolVar(&vcfExportFilter, "filter", false, "Export the VCF FILTER column")
@@ -453,9 +451,9 @@ func init() {
 	vcfExportCmd.Flags().StringArrayVar(&vcfExportFormat, "format", nil, "Export a FORMAT field: ID[:SAMPLE[:ALLELE[:NEWSAMPLE]]] (repeatable, glob, comma-separated)")
 	vcfExportCmd.Flags().BoolVar(&vcfExportNoHeader, "no-header", false, "Don't write the column-name row")
 	vcfExportCmd.Flags().BoolVar(&vcfExportNoVCFHeader, "no-vcf-header", false, "Don't write the VCF metadata header lines")
-	vcfExportCmd.Flags().BoolVar(&vcfExportPassing, "passing", false, "Only export passing variants")
+	addPassingFlag(vcfExportCmd, "Only export passing variants")
 	vcfExportCmd.Flags().BoolVar(&vcfExportOnlySNVs, "only-snvs", false, "Only export SNVs")
 	vcfExportCmd.Flags().BoolVar(&vcfExportOnlyIndels, "only-indels", false, "Only export indels")
 	vcfExportCmd.Flags().BoolVar(&vcfExportMissBlank, "missing-blank", false, "Render missing values as an empty string instead of \".\"")
-	vcfExportCmd.Flags().StringVar(&vcfExportRegion, "region", "", "Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
+	addRegionFlag(vcfExportCmd)
 }

@@ -11,11 +11,9 @@ import (
 )
 
 var (
-	vcfStatsPassing     bool
 	vcfStatsFilterCombo bool
 	vcfStatsInfoTally   []string
 	vcfStatsInfoPresent []string
-	vcfStatsRegion      string
 )
 
 var vcfStatsCmd = &cobra.Command{
@@ -31,7 +29,7 @@ how often a field is present or absent. Both may be repeated or
 comma-separated.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		src, err := openRecordSource(cmd, args[0], vcfStatsRegion)
+		src, err := openRecordSource(cmd, args[0], vcfRegion)
 		if err != nil {
 			return err
 		}
@@ -71,7 +69,7 @@ comma-separated.`,
 					sort.Strings(filters)
 					fullFilterCounts[strings.Join(filters, ",")]++
 				}
-				if vcfStatsPassing {
+				if vcfPassing {
 					continue
 				}
 			} else {
@@ -181,9 +179,9 @@ func sortedKeys(m map[string]int64) []string {
 }
 
 func init() {
-	vcfStatsCmd.Flags().BoolVar(&vcfStatsPassing, "passing", false, "Only process passing variants")
+	addPassingFlag(vcfStatsCmd, "Only process passing variants")
 	vcfStatsCmd.Flags().BoolVar(&vcfStatsFilterCombo, "filter-combo", false, "Show full filter combinations")
 	vcfStatsCmd.Flags().StringArrayVar(&vcfStatsInfoTally, "info-tally", nil, "Tally the values of these INFO fields (repeatable, comma-separated)")
 	vcfStatsCmd.Flags().StringArrayVar(&vcfStatsInfoPresent, "info-present", nil, "Tally presence/absence of these INFO fields (repeatable, comma-separated)")
-	vcfStatsCmd.Flags().StringVar(&vcfStatsRegion, "region", "", "Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
+	addRegionFlag(vcfStatsCmd)
 }

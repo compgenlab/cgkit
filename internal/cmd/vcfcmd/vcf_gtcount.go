@@ -21,7 +21,6 @@ import (
 var (
 	vcfGtCountOutput  string
 	vcfGtCountSites   []string
-	vcfGtCountPassing bool
 	vcfGtCountThreads int
 )
 
@@ -88,7 +87,7 @@ Progress is reported on stderr only when stderr is an interactive terminal.`,
 
 		var done int64
 		stopProgress := startGtProgress(int64(len(sites)), &done)
-		streamErr := streamGtCounts(cmd.Context(), args[0], sites, threads, vcfGtCountPassing, bw, &done)
+		streamErr := streamGtCounts(cmd.Context(), args[0], sites, threads, vcfPassing, bw, &done)
 		stopProgress()
 		if streamErr != nil {
 			return streamErr
@@ -457,8 +456,8 @@ func startGtProgress(total int64, done *int64) func() {
 
 func init() {
 	f := vcfGtCountCmd.Flags()
-	f.StringVarP(&vcfGtCountOutput, "output", "o", "-", "Output filename (- for stdout)")
+	addOutputFlag(vcfGtCountCmd, &vcfGtCountOutput)
 	f.StringArrayVar(&vcfGtCountSites, "sites", nil, "Read additional targets from FILE: a VCF, a BED, or \"chrom pos [ref alt]\" lines (repeatable)")
-	f.BoolVar(&vcfGtCountPassing, "passing", false, "Only count records that pass FILTER")
+	addPassingFlag(vcfGtCountCmd, "Only count records that pass FILTER")
 	f.IntVarP(&vcfGtCountThreads, "threads", "t", 1, "Number of parallel query workers (>= 1)")
 }

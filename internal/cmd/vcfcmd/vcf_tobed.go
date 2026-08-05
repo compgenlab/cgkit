@@ -12,12 +12,10 @@ import (
 
 var (
 	vcfToBedOutput     string
-	vcfToBedPassing    bool
 	vcfToBedIncludePos bool
 	vcfToBedPadding    int
 	vcfToBedAltChrom   string
 	vcfToBedAltPos     string
-	vcfToBedRegion     string
 )
 
 var vcfToBedCmd = &cobra.Command{
@@ -39,7 +37,7 @@ Breakends (BND) that span two different chromosomes cannot be represented in
 BED and are skipped.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		src, err := openRecordSource(cmd, args[0], vcfToBedRegion)
+		src, err := openRecordSource(cmd, args[0], vcfRegion)
 		if err != nil {
 			return err
 		}
@@ -59,7 +57,7 @@ BED and are skipped.`,
 			if err != nil {
 				return err
 			}
-			if vcfToBedPassing && rec.IsFiltered() {
+			if vcfPassing && rec.IsFiltered() {
 				continue
 			}
 			// A gVCF reference block is not a variant, so it has no place in a BED
@@ -129,11 +127,11 @@ BED and are skipped.`,
 }
 
 func init() {
-	vcfToBedCmd.Flags().StringVarP(&vcfToBedOutput, "output", "o", "-", "Output filename (- for stdout)")
-	vcfToBedCmd.Flags().BoolVar(&vcfToBedPassing, "passing", false, "Only output passing variants")
+	addOutputFlag(vcfToBedCmd, &vcfToBedOutput)
+	addPassingFlag(vcfToBedCmd, "Only output passing variants")
 	vcfToBedCmd.Flags().BoolVar(&vcfToBedIncludePos, "include-pos", false, "Use CHROM_POS as the name field (without padding)")
 	vcfToBedCmd.Flags().IntVar(&vcfToBedPadding, "padding", 0, "Add extra padding on either side")
 	vcfToBedCmd.Flags().StringVar(&vcfToBedAltChrom, "alt-chrom", "", "Use an alternate INFO field for the chromosome (default: extracted from ALT)")
 	vcfToBedCmd.Flags().StringVar(&vcfToBedAltPos, "alt-pos", "", "Use an alternate INFO field for the position (default: extracted from ALT, or END)")
-	vcfToBedCmd.Flags().StringVar(&vcfToBedRegion, "region", "", "Only variants in this 1-based region (chrom:start-end, or chrom); requires a tabix-indexed file")
+	addRegionFlag(vcfToBedCmd)
 }

@@ -14,7 +14,6 @@ import (
 
 var (
 	vcfFilterOutput  string
-	vcfFilterPassing bool
 	vcfFilterFailing bool
 	vcfFilterStats   string
 	vcfFilterChain   []chainArg
@@ -56,7 +55,7 @@ variants that pass all filters; --failing writes only variants that fail one.
 		// header-only file with exit 0. Sibling commands check their own
 		// exclusive pairs (vcf-strip --only-snvs/--only-indels, vcf-chrfix
 		// --ucsc/--ensembl); this pair was missed.
-		if vcfFilterPassing && vcfFilterFailing {
+		if vcfPassing && vcfFilterFailing {
 			return fmt.Errorf("--passing and --failing are mutually exclusive")
 		}
 		chain, err := buildFilterChain()
@@ -117,7 +116,7 @@ variants that pass all filters; --failing writes only variants that fail one.
 			if filtered {
 				stats.tally(rec.Filters())
 			}
-			if vcfFilterPassing && filtered {
+			if vcfPassing && filtered {
 				continue
 			}
 			if vcfFilterFailing && !filtered {
@@ -319,7 +318,7 @@ func newValueFilter(kind, key, val, sample, allele string) (filter.Filter, error
 func init() {
 	f := vcfFilterCmd.Flags()
 	addVcfOutputFlags(vcfFilterCmd, &vcfFilterOutput)
-	f.BoolVar(&vcfFilterPassing, "passing", false, "Only output passing variants")
+	addPassingFlag(vcfFilterCmd, "Only output passing variants")
 	f.BoolVar(&vcfFilterFailing, "failing", false, "Only output failing variants")
 	f.StringVar(&vcfFilterStats, "stats", "", "Write per-filter-combination counts (tab-separated) to this file")
 	registerChainVal(f, &vcfFilterChain, "chrom-pass", "Flag variants not on these chromosomes (CSV)")
