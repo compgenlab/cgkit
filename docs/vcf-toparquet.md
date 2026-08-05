@@ -37,6 +37,65 @@ pointed straight at `cohort/calls.parquet`.
 > must be re-converted. `cgkit vcf-varsummary <store>` reports why one is
 > refused.
 
+### Metadata: what the store *is*
+
+Everything above records how a store was **made** — the command, the inputs, the
+sample roster, the moment it ran. None of it says what the store **holds**.
+
+A whole-genome callset ships as one VCF per chromosome and converts into a single
+store. That store can name its 24 input filenames, but not the release they
+collectively are — and those filenames stop identifying anything the moment the
+store is copied to another machine. The assembly is the same gap in a more
+dangerous form: the `##contig` lines carry lengths that *imply* GRCh37 or
+GRCh38, but implying is not declaring, and a store read against the wrong
+assumption does not fail. It answers, with coordinates that mean something else.
+
+```
+cgkit vcf-toparquet \
+  --meta-dataset 20201028_CCDG_14151_B01_GRM_WGS_2020-08-05 \
+  --meta-reference GRCh38 \
+  --meta-caller 'GATK 4.2.6.1' \
+  --meta cohort=phase3 \
+  --out cohort chr*.vcf.gz
+```
+
+Seven keys have an agreed meaning — `dataset`, `reference`, `caller`,
+`accession`, `url`, `version`, `description` — each with a `--meta-<key>` flag.
+`--meta KEY=VALUE` records anything else and repeats.
+
+It lands in two places, the same two that already carry provenance: the
+manifest, as a `meta` object, and the calls file's Parquet key/value metadata,
+namespaced under `cgkit.meta.` so a supplied key can never shadow one the writer
+vouches for (`--meta source=...` does not become `cgkit.source`).
+
+```jsonc
+// manifest.json.gz
+{
+  "sources": ["chr1.vcf.gz", "..."],   // how it was made
+  "meta": {                            // what it is
+    "dataset":   "20201028_CCDG_14151_B01_GRM_WGS_2020-08-05",
+    "reference": "GRCh38",
+    "caller":    "GATK 4.2.6.1",
+    "cohort":    "phase3"
+  }
+}
+```
+
+Values are recorded **verbatim and never validated** — cgkit cannot know whether
+`GRCh38` is true, and normalizing it would quietly turn your claim into cgkit's.
+Keys *are* validated, to lowercase `[a-z0-9_-]`, because a key has to survive a
+Parquet metadata key, a JSON member and a `grep`.
+
+A key given twice, by either spelling, is an **error** rather than last-wins:
+which of two conflicting claims about a store gets recorded should not depend on
+the order the flags were typed.
+
+Metadata is optional, and a store converted without any omits the field
+entirely rather than writing `{}` — absent means "not stated", never "stated as
+nothing". `vcf-varsummary` prints all of it, `--format json` emits it verbatim,
+and `vcf-varquery -v` reports `dataset` and `reference`, the two that change how
+a result should be read.
+
 ### Schemas
 
 `calls.parquet` — one row per (sample, site) where the sample carries the ALT allele. Records are normalized to one variant per row, so `alt` is always a single allele.
