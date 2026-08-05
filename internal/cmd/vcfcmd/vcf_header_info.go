@@ -51,12 +51,18 @@ var vcfHeaderInfoCmd = &cobra.Command{
 		switch {
 		case vcfHeaderInfoInfo:
 			for _, id := range header.InfoIDs() {
-				d, _ := header.InfoDef(id)
+				d, ok := header.InfoDef(id)
+				if !ok {
+					continue
+				}
 				fmt.Fprintf(out, "%s\t%s\n", d.ID, d.Description)
 			}
 		case vcfHeaderInfoFormat:
 			for _, id := range header.FormatIDs() {
-				d, _ := header.FormatDef(id)
+				d, ok := header.FormatDef(id)
+				if !ok {
+					continue
+				}
 				fmt.Fprintf(out, "%s\t%s\n", d.ID, d.Description)
 			}
 		case vcfHeaderInfoSample:
@@ -65,12 +71,18 @@ var vcfHeaderInfoCmd = &cobra.Command{
 			}
 		case vcfHeaderInfoFilters:
 			for _, id := range header.FilterIDs() {
-				d, _ := header.FilterDef(id)
+				d, ok := header.FilterDef(id)
+				if !ok {
+					continue
+				}
 				fmt.Fprintf(out, "%s\t%s\n", d.ID, d.Description)
 			}
 		case vcfHeaderInfoContig:
 			for _, id := range header.ContigNames() {
-				d, _ := header.ContigDef(id)
+				d, ok := header.ContigDef(id)
+				if !ok {
+					continue
+				}
 				length := ""
 				if d.Length >= 0 {
 					length = strconv.FormatInt(d.Length, 10)
