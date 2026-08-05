@@ -2,7 +2,6 @@ package vcfcmd
 
 import (
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/compgenlab/cghts/vcf"
@@ -27,74 +26,49 @@ a comma-separated list (FOO;BAR => FLAGS=FOO,BAR).
   --always     always emit the key, using "." when no flags are set`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		reader, err := openVcfInput(cmd, args[0])
-		if err != nil {
-			return err
-		}
-		defer reader.Close()
-
-		header, err := reader.Header()
-		if err != nil {
-			return err
-		}
-
-		var flagIDs []string
 		flagSet := map[string]bool{}
-		for _, id := range header.InfoIDs() {
-			if d, ok := header.InfoDef(id); ok && strings.EqualFold(d.Type, "Flag") {
-				flagIDs = append(flagIDs, id)
-				flagSet[id] = true
-			}
-		}
-		if len(flagIDs) == 0 {
-			return fmt.Errorf("no INFO flags defined in VCF")
-		}
-		for _, id := range flagIDs {
-			header.RemoveInfo(id)
-		}
-		header.AddInfo(&vcf.AnnotationDef{
-			IsInfo: true, ID: vcfRemoveFlagsKey, Number: ".", Type: "String",
-			Description: "INFO Flag values as CSV (" + strings.Join(flagIDs, ",") + ")",
+		return runVcfStream(cmd, vcfStream{
+			name: "vcf-remove-flags",
+			in:   args[0],
+			out:  vcfRemoveFlagsOutput,
+			header: func(h *vcf.VcfHeader) error {
+				var flagIDs []string
+				for _, id := range h.InfoIDs() {
+					if d, ok := h.InfoDef(id); ok && strings.EqualFold(d.Type, "Flag") {
+						flagIDs = append(flagIDs, id)
+						flagSet[id] = true
+					}
+				}
+				if len(flagIDs) == 0 {
+					return fmt.Errorf("no INFO flags defined in VCF")
+				}
+				for _, id := range flagIDs {
+					h.RemoveInfo(id)
+				}
+				h.AddInfo(&vcf.AnnotationDef{
+					IsInfo: true, ID: vcfRemoveFlagsKey, Number: ".", Type: "String",
+					Description: "INFO Flag values as CSV (" + strings.Join(flagIDs, ",") + ")",
+				})
+				return nil
+			},
+			record: func(rec *vcf.VcfRecord) (bool, error) {
+				var setFlags []string
+				for _, id := range rec.Info().Keys() {
+					if flagSet[id] {
+						setFlags = append(setFlags, id)
+					}
+				}
+				if len(setFlags) > 0 {
+					for _, id := range setFlags {
+						rec.Info().Remove(id)
+					}
+					rec.AddInfo(vcfRemoveFlagsKey, strings.Join(setFlags, ","))
+				} else if vcfRemoveFlagsAlways {
+					rec.AddInfo(vcfRemoveFlagsKey, ".")
+				}
+				return true, nil
+			},
 		})
-		stampVcfProvenance(header, "vcf-remove-flags")
-
-		writer, closeFn, err := openVcfWriter(cmd, vcfRemoveFlagsOutput)
-		if err != nil {
-			return err
-		}
-		if err := writer.WriteHeader(header); err != nil {
-			return err
-		}
-		for {
-			rec, err := reader.NextRecord()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return err
-			}
-			var setFlags []string
-			for _, id := range rec.Info().Keys() {
-				if flagSet[id] {
-					setFlags = append(setFlags, id)
-				}
-			}
-			if len(setFlags) > 0 {
-				for _, id := range setFlags {
-					rec.Info().Remove(id)
-				}
-				rec.AddInfo(vcfRemoveFlagsKey, strings.Join(setFlags, ","))
-			} else if vcfRemoveFlagsAlways {
-				rec.AddInfo(vcfRemoveFlagsKey, ".")
-			}
-			if err := writer.WriteRecord(rec); err != nil {
-				return err
-			}
-		}
-		if closeFn != nil {
-			return closeFn()
-		}
-		return writer.Close()
 	},
 }
 

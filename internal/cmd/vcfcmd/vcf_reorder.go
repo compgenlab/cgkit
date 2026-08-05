@@ -3,10 +3,10 @@ package vcfcmd
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
+	"github.com/compgenlab/cghts/vcf"
 	"github.com/spf13/cobra"
 )
 
@@ -55,68 +55,44 @@ FORMAT values are not parsed: the sample columns are moved verbatim.`,
 			}
 		}
 
-		reader, err := openVcfInput(cmd, args[0])
-		if err != nil {
-			return err
-		}
-		defer reader.Close()
-
-		header, err := reader.Header()
-		if err != nil {
-			return err
-		}
-		orig := header.Samples()
-
-		// An unresolvable name is fatal. It used to warn and carry on, which is
-		// the worst of the options: naming one sample wrong silently produced a
-		// VCF one column short of the cohort that was asked for, and naming them
-		// all wrong produced a header with no FORMAT and no sample columns over
-		// records that still had theirs -- a file that is not valid VCF at all,
-		// written with exit status 0.
 		var order []int
-		var newNames []string
-		var missing []string
-		for _, name := range requested {
-			idx := header.SampleIndex(name)
-			if idx < 0 || idx >= len(orig) {
-				missing = append(missing, name)
-				continue
-			}
-			order = append(order, idx)
-			newNames = append(newNames, name)
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("no such sample%s: %s\n  this file has: %s",
-				plural(len(missing)), strings.Join(missing, ", "), strings.Join(orig, ", "))
-		}
+		return runVcfStream(cmd, vcfStream{
+			name: "vcf-reorder",
+			in:   args[0],
+			out:  vcfReorderOutput,
+			header: func(header *vcf.VcfHeader) error {
+				orig := header.Samples()
 
-		header.SetSamples(newNames)
-		stampVcfProvenance(header, "vcf-reorder")
+				// An unresolvable name is fatal. It used to warn and carry on, which is
+				// the worst of the options: naming one sample wrong silently produced a
+				// VCF one column short of the cohort that was asked for, and naming them
+				// all wrong produced a header with no FORMAT and no sample columns over
+				// records that still had theirs -- a file that is not valid VCF at all,
+				// written with exit status 0.
+				var newNames []string
+				var missing []string
+				for _, name := range requested {
+					idx := header.SampleIndex(name)
+					if idx < 0 || idx >= len(orig) {
+						missing = append(missing, name)
+						continue
+					}
+					order = append(order, idx)
+					newNames = append(newNames, name)
+				}
+				if len(missing) > 0 {
+					return fmt.Errorf("no such sample%s: %s\n  this file has: %s",
+						plural(len(missing)), strings.Join(missing, ", "), strings.Join(orig, ", "))
+				}
 
-		writer, closeErr, err := openVcfWriter(cmd, vcfReorderOutput)
-		if err != nil {
-			return err
-		}
-
-		if err := writer.WriteHeader(header); err != nil {
-			return err
-		}
-		for {
-			rec, err := reader.NextRecord()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return err
-			}
-			if err := writer.WriteLine(rec.ReorderSamplesLine(order)); err != nil {
-				return err
-			}
-		}
-		if closeErr != nil {
-			return closeErr()
-		}
-		return writer.Close()
+				header.SetSamples(newNames)
+				return nil
+			},
+			record: func(*vcf.VcfRecord) (bool, error) { return true, nil },
+			write: func(w *vcf.VcfWriter, rec *vcf.VcfRecord) error {
+				return w.WriteLine(rec.ReorderSamplesLine(order))
+			},
+		})
 	},
 }
 

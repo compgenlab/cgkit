@@ -687,6 +687,21 @@ func addRecordedContigs(h *vcf.VcfHeader, store varstore.Store) bool {
 
 // contigIDOf pulls the ID out of a "##contig=<ID=x,...>" line, which is needed
 // only as the map key the header stores definitions under.
+// contigIDsOf maps ##contig lines to their IDs, skipping any that carry none.
+//
+// There used to be a second copy of this in vcf_varsummary.go, and the two did
+// not merely differ in style: it matched a bare "ID=" rather than "<ID=", so an
+// ID= appearing later in the line -- inside a Description, say -- would win.
+func contigIDsOf(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		if id := contigIDOf(l); id != "" && id != l {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func contigIDOf(line string) string {
 	_, rest, ok := strings.Cut(line, "<ID=")
 	if !ok {

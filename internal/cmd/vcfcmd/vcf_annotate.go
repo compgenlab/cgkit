@@ -56,7 +56,7 @@ Sample-count annotators (require GATK-style FORMAT fields):
   --copy-logratio SOMATIC:GERMLINE[:somatic-total:germline-total]
                    CG_CNLR copy-number log2 ratio (requires AD)`,
 	Args: cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
 
 		pipeline, err := buildAnnotatePipeline()
 		if err != nil {
@@ -82,6 +82,30 @@ Sample-count annotators (require GATK-style FORMAT fields):
 		if err != nil {
 			return err
 		}
+		// The loop below does not defer the writer, so every error return inside
+		// it used to leak the descriptor and leave a partial file -- for a bgzip
+		// output, one with no BGZF EOF block. runVcfStream does this for the
+		// commands whose shape fits it; these do not fit it.
+		// Cleared once the stream is written and only the closer remains: --tbi
+		// refuses to index unsorted output *after* the VCF is complete, and that
+		// VCF is valid and must survive.
+		closing := false
+		defer func() {
+			if err != nil && !closing {
+				writer.Close()
+				discardPartialVcf(vcfAnnotateOutput)
+			}
+		}()
+		// The writer is not deferred by the loop below, so every error return
+		// inside it used to leak the descriptor and leave a partial file -- for
+		// a bgzip output, one with no BGZF EOF block. runVcfStream does this for
+		// the commands whose shape fits it; this one's does not.
+		defer func() {
+			if err != nil {
+				writer.Close()
+				discardPartialVcf(vcfAnnotateOutput)
+			}
+		}()
 		if err := writer.WriteHeader(header); err != nil {
 			return err
 		}
@@ -117,8 +141,10 @@ Sample-count annotators (require GATK-style FORMAT fields):
 			return err
 		}
 		if closeFile != nil {
+			closing = true
 			return closeFile()
 		}
+		closing = true
 		return writer.Close()
 	},
 }
