@@ -110,7 +110,7 @@ keeping the output in VCF format.
 				}
 
 				// Header: drop stripped INFO/FORMAT/FILTER defs.
-				for _, id := range append([]string(nil), header.InfoIDs()...) {
+				for _, id := range header.InfoIDs() {
 					if keepEnd && id == "END" {
 						continue
 					}
@@ -118,12 +118,12 @@ keeping the output in VCF format.
 						header.RemoveInfo(id)
 					}
 				}
-				for _, id := range append([]string(nil), header.FormatIDs()...) {
+				for _, id := range header.FormatIDs() {
 					if formatSet.strips(id) {
 						header.RemoveFormat(id)
 					}
 				}
-				for _, id := range append([]string(nil), header.FilterIDs()...) {
+				for _, id := range header.FilterIDs() {
 					if filterSet.strips(id) {
 						header.RemoveFilter(id)
 					}
@@ -172,7 +172,7 @@ func stripRecord(rec *vcf.VcfRecord, infoSet, formatSet, filterSet stripSet, kep
 		}
 	}
 	// INFO keys.
-	for _, k := range append([]string(nil), rec.Info().Keys()...) {
+	for _, k := range rec.Info().Keys() {
 		if keepEnd && k == "END" {
 			continue
 		}
