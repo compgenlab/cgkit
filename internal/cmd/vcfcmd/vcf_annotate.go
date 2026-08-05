@@ -13,7 +13,6 @@ import (
 
 var (
 	vcfAnnotateOutput      string
-	vcfAnnotatePassing     bool
 	vcfAnnotateAltChrom    string
 	vcfAnnotateAltPos      string
 	vcfAnnotateEndPos      string
@@ -117,7 +116,7 @@ Sample-count annotators (require GATK-style FORMAT fields):
 				if err != nil {
 					return nil, err
 				}
-				if vcfAnnotatePassing && rec.IsFiltered() {
+				if vcfPassing && rec.IsFiltered() {
 					continue
 				}
 				return rec, nil
@@ -510,7 +509,7 @@ func parseCopyLogRatio(arg string) (*annotate.CopyNumberLogRatio, error) {
 func init() {
 	f := vcfAnnotateCmd.Flags()
 	addVcfOutputFlags(vcfAnnotateCmd, &vcfAnnotateOutput)
-	f.BoolVar(&vcfAnnotatePassing, "passing", false, "Only output passing variants")
+	addPassingFlag(vcfAnnotateCmd, "Only output passing variants")
 	f.StringVar(&vcfAnnotateAltChrom, "alt-chrom", "", "Use an INFO field as the chromosome for coordinate-based annotators")
 	f.StringVar(&vcfAnnotateAltPos, "alt-pos", "", "Use an INFO field as the position for coordinate-based annotators")
 	f.StringVar(&vcfAnnotateEndPos, "end-pos", "", "Use an INFO field as the end position for coordinate-based annotators")
