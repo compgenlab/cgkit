@@ -14,11 +14,8 @@ var swalignCmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.1.0"},
 	Use:         "seq-pairwise query target",
 	Short:       "Align the two given sequences",
+	Args:        cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) != 2 {
-			cmd.Help()
-			return nil
-		}
 
 		if swalignUseClipping && swalignGlobal {
 			return fmt.Errorf("cannot use clipping penalties with global alignment")

@@ -29,11 +29,8 @@ and optionally drop non-primary contigs.
   --ensembl         convert to Ensembl names (1, MT)
   --primary-human   keep only primary human contigs (1-22, X, Y, M)
   --contigs CSV     keep only these contigs (matched after conversion)`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if !vcfChrFixUCSC && !vcfChrFixEnsembl && !vcfChrFixPrimary && vcfChrFixContigs == "" {
 			return fmt.Errorf("no changes specified (use --ucsc, --ensembl, --primary-human, or --contigs)")
 		}

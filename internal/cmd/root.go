@@ -47,11 +47,20 @@ NGS data-wrangling, and more.`,
 // Execute runs the root command and exits with a non-zero status on error.
 // Cobra already prints the error (and usage, for argument/flag errors), so we
 // only need to set the exit status here.
+//
+// Prefer Run from main: os.Exit here skips every deferred function in the
+// process, which is how a failing run under --profile came to write an empty,
+// unparseable profile.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
+
+// Run executes the root command and reports whether it failed, leaving the exit
+// to the caller so that deferred cleanup -- notably stopping a CPU profile and
+// closing its file -- still runs.
+func Run() error { return rootCmd.Execute() }
 
 func init() {
 	// Share the ldflags-injected version with the leaf buildinfo package so

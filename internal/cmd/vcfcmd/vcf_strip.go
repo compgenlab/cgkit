@@ -62,11 +62,8 @@ keeping the output in VCF format.
   --dbsnp                     remove the ID column
   --only-snvs / --only-indels output only SNVs / only indels
   --passing                   output only passing variants (post-strip)`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if vcfStripOnlySNVs && vcfStripOnlyIndels {
 			return fmt.Errorf("you can't set both --only-snvs and --only-indels")
 		}

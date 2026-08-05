@@ -57,11 +57,8 @@ matching record emits a single row with gt '.' and count 0.
   -t, --threads    number of parallel query workers (default 1)
 
 Progress is reported on stderr only when stderr is an interactive terminal.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		if vcfGtCountThreads < 1 {
 			return fmt.Errorf("--threads must be >= 1")
 		}

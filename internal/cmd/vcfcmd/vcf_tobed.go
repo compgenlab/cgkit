@@ -37,11 +37,8 @@ gVCF reference blocks are skipped -- they describe coverage, not variants.
 
 Breakends (BND) that span two different chromosomes cannot be represented in
 BED and are skipped.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		src, err := openRecordSource(cmd, args[0], vcfToBedRegion)
 		if err != nil {
 			return err

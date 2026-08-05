@@ -12,11 +12,8 @@ var vcfSamplesCmd = &cobra.Command{
 	Use:         "vcf-samples <input.vcf>",
 	Short:       "Output the sample names in a VCF file",
 	Long:        "Output the sample names in a VCF file, one per line. Use - to read from stdin.",
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		reader, err := openVcfInput(cmd, args[0])
 		if err != nil {
 			return err

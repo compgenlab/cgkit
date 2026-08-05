@@ -42,8 +42,14 @@ func Schemes() []string { return append([]string{"http", "https"}, iosource.Sche
 // io.Writer that a BAM or Parquet writer can stream into. Refusing early and by
 // name is better than failing deep inside a writer with a mangled path.
 //
-// Callers must apply this *after* their own stdout check, or "-" gets rejected.
+// Stdout is always accepted, so a caller that applies this before its own
+// stdout branch still behaves. That used to be a rule stated only in this
+// comment and enforced nowhere, and the call sites are not consistent about
+// which side of the branch they sit on.
 func CheckLocalOutput(flag, value string) error {
+	if value == "" || value == "-" {
+		return nil
+	}
 	if !IsRemote(value) {
 		return nil
 	}

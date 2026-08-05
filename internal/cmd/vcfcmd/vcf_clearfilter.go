@@ -29,11 +29,8 @@ Cleared codes are recorded in the CG_CLEARED_FILTER INFO field.
   --filter VAL   filter code to clear (comma-separated, repeatable)
   --only         only clear when the named filters are the sole codes
   --passing      only output variants that pass after clearing`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		clearSet := map[string]bool{}
 		for _, v := range vcfClearFilterFilters {
 			for _, f := range strings.Split(v, ",") {

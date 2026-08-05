@@ -14,11 +14,8 @@ var fastaGCCmd = &cobra.Command{
 	Annotations: map[string]string{"since": "v0.1.0"},
 	Use:         "fasta-gc <input.fasta>",
 	Short:       "Return the GC content of sequences in a FASTA file",
+	Args:        cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			cmd.Help()
-			return nil
-		}
 		reader, err := seqio.NewFastaFile(args[0])
 		if err != nil {
 			return err
