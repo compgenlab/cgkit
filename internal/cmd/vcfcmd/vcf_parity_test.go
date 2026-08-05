@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -66,8 +67,13 @@ func TestParityWithNgsutilsj(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
+		// normalize rewrites the *reference* output where cgkit diverges on
+		// purpose. Applied to the Java side only, so cgkit's own output is
+		// still compared byte for byte -- the divergence is excused for one
+		// field, not for the page.
+		normalize func(string) string
 	}{
-		{"samples", []string{"vcf-samples", vcf}},
+		{"samples", []string{"vcf-samples", vcf}, nil},
 		// These three still match ngsutilsj, but only because testdata/sample.vcf
 		// happens to contain no multi-base-REF deletion. We deliberately DIVERGE on
 		// those: ngsutilsj ends a plain deletion at POS+len(REF), one base past the
@@ -76,24 +82,43 @@ func TestParityWithNgsutilsj(t *testing.T) {
 		// values. If a deletion is ever added to sample.vcf, these cases will fail
 		// and the right response is to accept the new output, not to restore the
 		// off-by-one.
-		{"tobed", []string{"vcf-tobed", vcf}},
-		{"tobed-passing", []string{"vcf-tobed", "--passing", vcf}},
-		{"tobed-includepos-pad", []string{"vcf-tobed", "--include-pos", "--padding", "5", vcf}},
-		{"stats", []string{"vcf-stats", vcf}},
-		{"stats-info", []string{"vcf-stats", "--info-tally", "SVTYPE", "--info-present", "DB", vcf}},
-		{"stats-filtercombo", []string{"vcf-stats", "--filter-combo", vcf}},
-		{"tstv", []string{"vcf-tstv", vcf}},
-		{"tstv-passing", []string{"vcf-tstv", "--passing", vcf}},
+		{"tobed", []string{"vcf-tobed", vcf}, nil},
+		{"tobed-passing", []string{"vcf-tobed", "--passing", vcf}, nil},
+		{"tobed-includepos-pad", []string{"vcf-tobed", "--include-pos", "--padding", "5", vcf}, nil},
+		// sample.vcf has no transversions, so all five of these hit the
+		// zero-denominator Ts/Tv case -- where ngsutilsj is not even
+		// self-consistent: vcf-stats emits an empty field and vcf-tstv emits
+		// "Infinity" for the same situation. One reads as a failure and the
+		// other as a real number, when what happened is that there was nothing
+		// to divide by. cgkit reports "-" from both. See javaRatio.
+		{"stats", []string{"vcf-stats", vcf}, dashTsTv},
+		{"stats-info", []string{"vcf-stats", "--info-tally", "SVTYPE", "--info-present", "DB", vcf}, dashTsTv},
+		{"stats-filtercombo", []string{"vcf-stats", "--filter-combo", vcf}, dashTsTv},
+		{"tstv", []string{"vcf-tstv", vcf}, dashTsTv},
+		{"tstv-passing", []string{"vcf-tstv", "--passing", vcf}, dashTsTv},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			want := stripProvenance(runJava(t, bin, tc.args...))
+			if tc.normalize != nil {
+				want = tc.normalize(want)
+			}
 			got := stripProvenance(runVcf(t, tc.args...))
 			if got != want {
 				t.Errorf("parity mismatch for %v\n java: %q\n cgkit: %q", tc.args, want, got)
 			}
 		})
 	}
+}
+
+// dashTsTv rewrites ngsutilsj's zero-denominator Ts/Tv rendering -- an empty
+// field from vcf-stats, "Infinity" or "NaN" from vcf-tstv -- to the "-" cgkit
+// reports from both. Only that one value; everything else on the line, and
+// every other line, still has to match exactly.
+var tsTvLine = regexp.MustCompile(`(Ts/Tv ratio:?\t)(Infinity|NaN|)\n`)
+
+func dashTsTv(s string) string {
+	return tsTvLine.ReplaceAllString(s, "${1}-\n")
 }
 
 // dataRows returns only the non-header (non-#) lines of VCF/tab output.

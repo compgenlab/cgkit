@@ -53,6 +53,13 @@ variant. Columns: chrom, pos, [ID], ref, alt, sample, then each exported key.
 		}
 
 		samples := selectByGlob(header.Samples(), vcfSampleExportSamples)
+		// Resolved once. These names come from header.Samples() by way of
+		// selectByGlob, so every one of them is real -- but the lookup was
+		// happening once per sample per record, for a mapping the header fixes.
+		sampleIdx := make([]int, len(samples))
+		for i, s := range samples {
+			sampleIdx[i] = header.SampleIndex(s)
+		}
 		keys := selectByGlob(header.FormatIDs(), validKeys)
 
 		// selectByGlob filters against the header's declared FORMAT ids, so a
@@ -84,8 +91,8 @@ variant. Columns: chrom, pos, [ID], ref, alt, sample, then each exported key.
 			if vcfSampleExportPassing && rec.IsFiltered() {
 				continue
 			}
-			for _, s := range samples {
-				idx := header.SampleIndex(s)
+			for si, s := range samples {
+				idx := sampleIdx[si]
 				row := []string{rec.Chrom, fmt.Sprint(rec.Pos)}
 				if vcfSampleExportID {
 					row = append(row, idOrMissing(rec))
