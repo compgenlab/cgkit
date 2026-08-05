@@ -2,7 +2,6 @@ package vcfcmd
 
 import (
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/compgenlab/cghts/vcf"
@@ -64,68 +63,41 @@ and optionally drop non-primary contigs.
 			return true
 		}
 
-		reader, err := openVcfInput(cmd, args[0])
-		if err != nil {
-			return err
-		}
-		defer reader.Close()
-
-		header, err := reader.Header()
-		if err != nil {
-			return err
-		}
-		// Rename header contigs through the mapping.
-		for _, old := range append([]string(nil), header.ContigNames()...) {
-			newID := mapName(old)
-			if newID == old {
-				continue
-			}
-			length := int64(-1)
-			if d, ok := header.ContigDef(old); ok {
-				length = d.Length
-			}
-			header.RemoveContig(old)
-			header.AddContig(&vcf.ContigDef{ID: newID, Length: length})
-		}
-		// Drop contigs that won't be kept.
-		if vcfChrFixPrimary || keepContigs != nil {
-			for _, c := range append([]string(nil), header.ContigNames()...) {
-				if !keepChrom(c) {
-					header.RemoveContig(c)
+		return runVcfStream(cmd, vcfStream{
+			name: "vcf-chrfix",
+			in:   args[0],
+			out:  vcfChrFixOutput,
+			header: func(header *vcf.VcfHeader) error {
+				// Rename header contigs through the mapping.
+				for _, old := range append([]string(nil), header.ContigNames()...) {
+					newID := mapName(old)
+					if newID == old {
+						continue
+					}
+					length := int64(-1)
+					if d, ok := header.ContigDef(old); ok {
+						length = d.Length
+					}
+					header.RemoveContig(old)
+					header.AddContig(&vcf.ContigDef{ID: newID, Length: length})
 				}
-			}
-		}
-		stampVcfProvenance(header, "vcf-chrfix")
-
-		writer, closeFn, err := openVcfWriter(cmd, vcfChrFixOutput)
-		if err != nil {
-			return err
-		}
-		if err := writer.WriteHeader(header); err != nil {
-			return err
-		}
-		for {
-			rec, err := reader.NextRecord()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return err
-			}
-			if newChrom := mapName(rec.Chrom); newChrom != rec.Chrom {
-				rec.SetChrom(newChrom)
-			}
-			if !keepChrom(rec.Chrom) {
-				continue
-			}
-			if err := writer.WriteRecord(rec); err != nil {
-				return err
-			}
-		}
-		if closeFn != nil {
-			return closeFn()
-		}
-		return writer.Close()
+				// Drop contigs that won't be kept.
+				if vcfChrFixPrimary || keepContigs != nil {
+					for _, c := range append([]string(nil), header.ContigNames()...) {
+						if !keepChrom(c) {
+							header.RemoveContig(c)
+						}
+					}
+				}
+				return nil
+			},
+			record: func(rec *vcf.VcfRecord) (bool, error) {
+				if newChrom := mapName(rec.Chrom); newChrom != rec.Chrom {
+					rec.SetChrom(newChrom)
+				}
+				return keepChrom(rec.Chrom), nil
+			},
+		})
 	},
 }
 

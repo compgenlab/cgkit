@@ -31,30 +31,20 @@ with --seq, --begin, --end.`,
 			return fmt.Errorf("input file is required (use '-' for stdin)")
 		}
 
-		// Build TabixWriter options.
-		opts := tabix.NewWriterOpts()
-		switch strings.ToLower(tabSortPreset) {
-		case "bed":
-			opts = opts.BED()
-		case "vcf":
-			opts = opts.VCF()
-		case "gff", "gtf":
-			opts = opts.GFF()
-		case "":
-			opts = opts.Columns(tabSortColSeq, tabSortColBeg, tabSortColEnd)
-			if tabSortZeroBased {
-				opts = opts.ZeroBased()
-			}
-		default:
-			return fmt.Errorf("unknown preset %q (use bed, vcf, or gff)", tabSortPreset)
+		opts, err := tabixSpec{
+			preset:    tabSortPreset,
+			colSeq:    tabSortColSeq,
+			colBeg:    tabSortColBeg,
+			colEnd:    tabSortColEnd,
+			zeroBased: tabSortZeroBased,
+			meta:      tabSortMeta,
+			skip:      tabSortSkip,
+		}.writerOpts()
+		if err != nil {
+			return err
 		}
-
-		if tabSortMeta != "" {
-			opts = opts.Meta(tabSortMeta[0])
-		}
-		if tabSortSkip > 0 {
-			opts = opts.Skip(tabSortSkip)
-		}
+		// The one thing tab-sort adds: it writes the file, so it can index as it
+		// goes rather than in a second pass.
 		if !tabSortNoIndex {
 			opts = opts.AutoIndex()
 		}

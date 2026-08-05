@@ -163,3 +163,117 @@ func resolveSampleIndex(header *vcf.VcfHeader, flag, name string) (int, error) {
 	}
 	return idx, nil
 }
+
+// vcfStream describes a single-input, single-output VCF transform: read every
+// record, optionally change or drop it, write the rest.
+type vcfStream struct {
+	// name is the command name, for the provenance stamp.
+	name string
+	// in and out are the input locator and the -o value.
+	in, out string
+	// header, when set, adjusts the header before provenance is stamped onto it.
+	header func(*vcf.VcfHeader) error
+	// record returns false to drop the record. It may modify it in place.
+	record func(*vcf.VcfRecord) (bool, error)
+	// write, when set, replaces WriteRecord -- vcf-reorder rewrites the sample
+	// columns as a raw line rather than through the record.
+	write func(*vcf.VcfWriter, *vcf.VcfRecord) error
+}
+
+// runVcfStream runs a vcfStream to completion.
+//
+// This was eleven near-identical copies of open-header-stamp-write-loop-close,
+// and they shared a bug that is the real reason to have one of them. The writer
+// was never deferred and the closing tail sat *after* the record loop, so every
+// error return inside the loop skipped it: the file descriptor leaked, and for a
+// bgzip output the file was left with no BGZF EOF block. That last part is the
+// dangerous half -- a truncated BGZF is detectably broken, but only if something
+// checks, and in the meantime it is a file sitting where a result belongs.
+//
+// So a failure closes the writer and removes what it wrote. vcf-toparquet
+// already did this (see discarding); everything else did not.
+func runVcfStream(cmd *cobra.Command, s vcfStream) (err error) {
+	reader, err := openVcfInput(cmd, s.in)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	header, err := reader.Header()
+	if err != nil {
+		return err
+	}
+	if s.header != nil {
+		if err := s.header(header); err != nil {
+			return err
+		}
+	}
+	stampVcfProvenance(header, s.name)
+
+	writer, closeFn, err := openVcfWriter(cmd, s.out)
+	if err != nil {
+		return err
+	}
+	// Set once the stream is fully written and only the closer remains. A
+	// failure before that point left a partial file and is removed; a failure
+	// from the closer is not, because --tbi refuses to index unsorted output
+	// *after* the VCF is complete, and that VCF is valid -- the error names it
+	// and says how to sort it. Discarding it would destroy a good result over a
+	// missing index.
+	closing := false
+	defer func() {
+		if err == nil || closing {
+			return
+		}
+		writer.Close()
+		discardPartialVcf(s.out)
+	}()
+
+	if err := writer.WriteHeader(header); err != nil {
+		return err
+	}
+	for {
+		rec, err := reader.NextRecord()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		keep, err := s.record(rec)
+		if err != nil {
+			return err
+		}
+		if !keep {
+			continue
+		}
+		write := writer.WriteRecord
+		if s.write != nil {
+			write = func(r *vcf.VcfRecord) error { return s.write(writer, r) }
+		}
+		if err := write(rec); err != nil {
+			return err
+		}
+	}
+	closing = true
+	if closeFn != nil {
+		return closeFn()
+	}
+	return writer.Close()
+}
+
+// discardPartialVcf removes the half-written output of a failed run, and its
+// index if one was requested.
+//
+// Only a file this process created and truncated is touched -- stdout has
+// nothing to remove, and the removal errors are ignored because the failure that
+// got us here is the one worth reporting.
+func discardPartialVcf(out string) {
+	if out == "" || out == "-" {
+		return
+	}
+	os.Remove(out)
+	if vcfTbi {
+		os.Remove(out + ".tbi")
+	}
+}

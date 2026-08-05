@@ -2,7 +2,6 @@ package vcfcmd
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -95,93 +94,67 @@ keeping the output in VCF format.
 			return err
 		}
 
-		reader, err := openVcfInput(cmd, args[0])
-		if err != nil {
-			return err
-		}
-		defer reader.Close()
-
-		header, err := reader.Header()
-		if err != nil {
-			return err
-		}
-
-		// A gVCF's reference blocks declare their extent with INFO/END. Removing it
-		// leaves a file that still parses but silently claims one base of coverage
-		// where it claimed thousands, so rescue it unless told otherwise.
-		gvcf := isGvcfHeader(header)
-		keepEnd := gvcf && infoSet.strips("END") && !vcfStripForceEnd
-		if gvcf && infoSet.strips("END") {
-			warnStrippingGvcfEnd(cmd, keepEnd)
-		}
-
-		// Header: drop stripped INFO/FORMAT/FILTER defs.
-		for _, id := range append([]string(nil), header.InfoIDs()...) {
-			if keepEnd && id == "END" {
-				continue
-			}
-			if infoSet.strips(id) {
-				header.RemoveInfo(id)
-			}
-		}
-		for _, id := range append([]string(nil), header.FormatIDs()...) {
-			if formatSet.strips(id) {
-				header.RemoveFormat(id)
-			}
-		}
-		for _, id := range append([]string(nil), header.FilterIDs()...) {
-			if filterSet.strips(id) {
-				header.RemoveFilter(id)
-			}
-		}
-		// Header: project samples.
 		var keptIdx []int
-		var keptNames []string
-		for i, s := range header.Samples() {
-			if !sampleSet.strips(s) {
-				keptIdx = append(keptIdx, i)
-				keptNames = append(keptNames, s)
-			}
-		}
-		header.SetSamples(keptNames)
-		stampVcfProvenance(header, "vcf-strip")
+		var keepEnd bool
+		return runVcfStream(cmd, vcfStream{
+			name: "vcf-strip",
+			in:   args[0],
+			out:  vcfStripOutput,
+			header: func(header *vcf.VcfHeader) error {
+				// A gVCF's reference blocks declare their extent with INFO/END. Removing it
+				// leaves a file that still parses but silently claims one base of coverage
+				// where it claimed thousands, so rescue it unless told otherwise.
+				gvcf := isGvcfHeader(header)
+				keepEnd = gvcf && infoSet.strips("END") && !vcfStripForceEnd
+				if gvcf && infoSet.strips("END") {
+					warnStrippingGvcfEnd(cmd, keepEnd)
+				}
 
-		writer, closeFn, err := openVcfWriter(cmd, vcfStripOutput)
-		if err != nil {
-			return err
-		}
-		if err := writer.WriteHeader(header); err != nil {
-			return err
-		}
-
-		for {
-			rec, err := reader.NextRecord()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return err
-			}
-			if err := stripRecord(rec, infoSet, formatSet, filterSet, keptIdx, dbsnp, keepEnd, vcfStripForceEnd); err != nil {
-				return err
-			}
-			if vcfStripPassing && rec.IsFiltered() {
-				continue
-			}
-			if vcfStripOnlySNVs && rec.IsIndel() {
-				continue
-			}
-			if vcfStripOnlyIndels && !rec.IsIndel() {
-				continue
-			}
-			if err := writer.WriteRecord(rec); err != nil {
-				return err
-			}
-		}
-		if closeFn != nil {
-			return closeFn()
-		}
-		return writer.Close()
+				// Header: drop stripped INFO/FORMAT/FILTER defs.
+				for _, id := range append([]string(nil), header.InfoIDs()...) {
+					if keepEnd && id == "END" {
+						continue
+					}
+					if infoSet.strips(id) {
+						header.RemoveInfo(id)
+					}
+				}
+				for _, id := range append([]string(nil), header.FormatIDs()...) {
+					if formatSet.strips(id) {
+						header.RemoveFormat(id)
+					}
+				}
+				for _, id := range append([]string(nil), header.FilterIDs()...) {
+					if filterSet.strips(id) {
+						header.RemoveFilter(id)
+					}
+				}
+				// Header: project samples.
+				var keptNames []string
+				for i, s := range header.Samples() {
+					if !sampleSet.strips(s) {
+						keptIdx = append(keptIdx, i)
+						keptNames = append(keptNames, s)
+					}
+				}
+				header.SetSamples(keptNames)
+				return nil
+			},
+			record: func(rec *vcf.VcfRecord) (bool, error) {
+				if err := stripRecord(rec, infoSet, formatSet, filterSet, keptIdx, dbsnp, keepEnd, vcfStripForceEnd); err != nil {
+					return false, err
+				}
+				switch {
+				case vcfStripPassing && rec.IsFiltered():
+					return false, nil
+				case vcfStripOnlySNVs && rec.IsIndel():
+					return false, nil
+				case vcfStripOnlyIndels && !rec.IsIndel():
+					return false, nil
+				}
+				return true, nil
+			},
+		})
 	},
 }
 

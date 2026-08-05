@@ -52,7 +52,7 @@ By default every variant is written (with FILTER updated). --passing writes only
 variants that pass all filters; --failing writes only variants that fail one.
 --stats FILE writes per-filter-combination counts (tab-separated).`,
 	Args: cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		// Mutually exclusive: together they drop every record and produce a
 		// header-only file with exit 0. Sibling commands check their own
 		// exclusive pairs (vcf-strip --only-snvs/--only-indels, vcf-chrfix
@@ -84,6 +84,20 @@ variants that pass all filters; --failing writes only variants that fail one.
 		if err != nil {
 			return err
 		}
+		// The loop below does not defer the writer, so every error return inside
+		// it used to leak the descriptor and leave a partial file -- for a bgzip
+		// output, one with no BGZF EOF block. runVcfStream does this for the
+		// commands whose shape fits it; these do not fit it.
+		// Cleared once the stream is written and only the closer remains: --tbi
+		// refuses to index unsorted output *after* the VCF is complete, and that
+		// VCF is valid and must survive.
+		closing := false
+		defer func() {
+			if err != nil && !closing {
+				writer.Close()
+				discardPartialVcf(vcfFilterOutput)
+			}
+		}()
 		if err := writer.WriteHeader(header); err != nil {
 			return err
 		}
@@ -123,8 +137,10 @@ variants that pass all filters; --failing writes only variants that fail one.
 			}
 		}
 		if closeFile != nil {
+			closing = true
 			return closeFile()
 		}
+		closing = true
 		return writer.Close()
 	},
 }

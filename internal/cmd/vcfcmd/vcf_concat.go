@@ -31,7 +31,7 @@ declared as ##contig lines in a consistent order.
               Numbering stops at the first missing file. This keeps recombining
               thousands of chunks within the open-file limit.`,
 	Args: cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		if vcfConcatChunks && len(args) != 1 {
 			return fmt.Errorf("--chunks takes a single argument: the first file of the series (BASE.1.vcf.gz)")
 		}
@@ -71,6 +71,20 @@ declared as ##contig lines in a consistent order.
 		if err != nil {
 			return err
 		}
+		// The loop below does not defer the writer, so every error return inside
+		// it used to leak the descriptor and leave a partial file -- for a bgzip
+		// output, one with no BGZF EOF block. runVcfStream does this for the
+		// commands whose shape fits it; these do not fit it.
+		// Cleared once the stream is written and only the closer remains: --tbi
+		// refuses to index unsorted output *after* the VCF is complete, and that
+		// VCF is valid and must survive.
+		closing := false
+		defer func() {
+			if err != nil && !closing {
+				writer.Close()
+				discardPartialVcf(vcfConcatOutput)
+			}
+		}()
 		if err := writer.WriteHeader(header); err != nil {
 			return err
 		}
@@ -129,8 +143,10 @@ declared as ##contig lines in a consistent order.
 		}
 
 		if closeFn != nil {
+			closing = true
 			return closeFn()
 		}
+		closing = true
 		return writer.Close()
 	},
 }
@@ -151,20 +167,9 @@ func openConcatStream(cmd *cobra.Command, filename string, chunks bool) (*record
 		}
 		return &recordSource{header: header, next: c.NextRecord, close: c.Close}, nil
 	}
-	reader, err := openVcfInput(cmd, filename)
-	if err != nil {
-		return nil, err
-	}
-	header, err := reader.Header()
-	if err != nil {
-		reader.Close()
-		return nil, err
-	}
-	return &recordSource{
-		header: header,
-		next:   reader.NextRecord,
-		close:  func() error { reader.Close(); return nil },
-	}, nil
+	// Everything past the chunked case is what openRecordSource already does
+	// for a plain stream; this was a verbatim second copy of it.
+	return openRecordSource(cmd, filename, "")
 }
 
 // unionHeaderInto folds src's definitions into dst (first file wins). Samples in
