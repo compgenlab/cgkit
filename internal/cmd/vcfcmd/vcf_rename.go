@@ -2,9 +2,9 @@ package vcfcmd
 
 import (
 	"fmt"
-	"io"
 	"strings"
 
+	"github.com/compgenlab/cghts/vcf"
 	"github.com/spf13/cobra"
 )
 
@@ -52,46 +52,20 @@ unchanged; only the sample names in the header are updated.
 			return fmt.Errorf("you must specify at least one sample to rename")
 		}
 
-		reader, err := openVcfInput(cmd, args[0])
-		if err != nil {
-			return err
-		}
-		defer reader.Close()
-
-		header, err := reader.Header()
-		if err != nil {
-			return err
-		}
-		for i := range oldNames {
-			if err := header.RenameSample(oldNames[i], newNames[i]); err != nil {
-				return err
-			}
-		}
-		stampVcfProvenance(header, "vcf-rename")
-
-		writer, closeFn, err := openVcfWriter(cmd, vcfRenameOutput)
-		if err != nil {
-			return err
-		}
-		if err := writer.WriteHeader(header); err != nil {
-			return err
-		}
-		for {
-			rec, err := reader.NextRecord()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return err
-			}
-			if err := writer.WriteRecord(rec); err != nil {
-				return err
-			}
-		}
-		if closeFn != nil {
-			return closeFn()
-		}
-		return writer.Close()
+		return runVcfStream(cmd, vcfStream{
+			name: "vcf-rename",
+			in:   args[0],
+			out:  vcfRenameOutput,
+			header: func(h *vcf.VcfHeader) error {
+				for i := range oldNames {
+					if err := h.RenameSample(oldNames[i], newNames[i]); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+			record: func(*vcf.VcfRecord) (bool, error) { return true, nil },
+		})
 	},
 }
 

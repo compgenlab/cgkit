@@ -1,9 +1,6 @@
 package tabcmd
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/compgenlab/cghts/htsio/tabix"
 	"github.com/spf13/cobra"
 )
@@ -31,29 +28,15 @@ Use --preset bed, vcf, or gff, or set the columns manually with --seq/--begin/
 
 // tabixIndexOpts builds the tabix configuration from the flags.
 func tabixIndexOpts() (*tabix.WriterOpts, error) {
-	opts := tabix.NewWriterOpts()
-	switch strings.ToLower(tabixIndexPreset) {
-	case "bed":
-		opts = opts.BED()
-	case "vcf":
-		opts = opts.VCF()
-	case "gff", "gtf":
-		opts = opts.GFF()
-	case "":
-		opts = opts.Columns(tabixIndexColSeq, tabixIndexColBeg, tabixIndexColEnd)
-		if tabixIndexZeroBased {
-			opts = opts.ZeroBased()
-		}
-	default:
-		return nil, fmt.Errorf("unknown preset %q (use bed, vcf, or gff)", tabixIndexPreset)
-	}
-	if tabixIndexMeta != "" {
-		opts = opts.Meta(tabixIndexMeta[0])
-	}
-	if tabixIndexSkip > 0 {
-		opts = opts.Skip(tabixIndexSkip)
-	}
-	return opts, nil
+	return tabixSpec{
+		preset:    tabixIndexPreset,
+		colSeq:    tabixIndexColSeq,
+		colBeg:    tabixIndexColBeg,
+		colEnd:    tabixIndexColEnd,
+		zeroBased: tabixIndexZeroBased,
+		meta:      tabixIndexMeta,
+		skip:      tabixIndexSkip,
+	}.writerOpts()
 }
 
 var (

@@ -253,7 +253,7 @@ func summarizeStore(out *bufio.Writer, errOut interface{ Write([]byte) (int, err
 		written[c.Name] = true
 	}
 	var missing []string
-	for _, id := range contigIDs(m.ContigsDeclared) {
+	for _, id := range contigIDsOf(m.ContigsDeclared) {
 		if !written[id] {
 			missing = append(missing, id)
 		}
@@ -347,25 +347,6 @@ func writeSummaryJSON(out *bufio.Writer, store varstore.Store, path string) erro
 		}{path, "vcf", s.Indexed(), samples})
 	}
 	return fmt.Errorf("unknown backend %T", store)
-}
-
-// contigIDs pulls the ID out of each ##contig line.
-func contigIDs(lines []string) []string {
-	var out []string
-	for _, l := range lines {
-		i := strings.Index(l, "ID=")
-		if i < 0 {
-			continue
-		}
-		rest := l[i+3:]
-		if j := strings.IndexAny(rest, ",>"); j >= 0 {
-			rest = rest[:j]
-		}
-		if rest != "" {
-			out = append(out, rest)
-		}
-	}
-	return out
 }
 
 func init() {

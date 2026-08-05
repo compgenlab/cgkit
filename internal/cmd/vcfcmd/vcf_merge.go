@@ -22,7 +22,7 @@ several tools in parallel. The annotations are combined per variant; on a
 conflict the first file on the command line wins. A variant missing from any
 input is an error.`,
 	Args: cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		if len(args) < 2 {
 			return fmt.Errorf("vcf-merge needs at least two input VCF files")
 		}
@@ -57,6 +57,20 @@ input is an error.`,
 		if err != nil {
 			return err
 		}
+		// The loop below does not defer the writer, so every error return inside
+		// it used to leak the descriptor and leave a partial file -- for a bgzip
+		// output, one with no BGZF EOF block. runVcfStream does this for the
+		// commands whose shape fits it; these do not fit it.
+		// Cleared once the stream is written and only the closer remains: --tbi
+		// refuses to index unsorted output *after* the VCF is complete, and that
+		// VCF is valid and must survive.
+		closing := false
+		defer func() {
+			if err != nil && !closing {
+				writer.Close()
+				discardPartialVcf(vcfMergeOutput)
+			}
+		}()
 		if err := writer.WriteHeader(header); err != nil {
 			return err
 		}
@@ -101,8 +115,10 @@ input is an error.`,
 		}
 
 		if closeFn != nil {
+			closing = true
 			return closeFn()
 		}
+		closing = true
 		return writer.Close()
 	},
 }
