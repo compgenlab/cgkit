@@ -3,7 +3,6 @@ package bedcmd
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/compgenlab/cghts/bed"
@@ -96,7 +95,7 @@ default "|") or provenance labels (--a/--b), and the score column is 0 unless
 		bStranded := bCols >= 6
 		strandAware := !bedSetIgnoreStrand && !bedSetBed3 && aStranded && bStranded
 		if !bedSetIgnoreStrand && !bedSetBed3 && aStranded != bStranded {
-			fmt.Fprintln(os.Stderr, "warning: inputs have mixed column widths; treating as strand-agnostic (BED3). Use --ignore-strand to silence.")
+			fmt.Fprintln(cmd.ErrOrStderr(), "warning: inputs have mixed column widths; treating as strand-agnostic (BED3). Use --ignore-strand to silence.")
 		}
 
 		writer, err := openBedSetWriter(cmd, strandAware)

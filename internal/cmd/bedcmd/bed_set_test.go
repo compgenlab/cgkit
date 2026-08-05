@@ -1,6 +1,7 @@
 package bedcmd
 
 import (
+	"github.com/compgenlab/cgkit/internal/cmdtest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,9 +20,7 @@ func resetBedSetFlags() {
 
 // runBedErr executes a bed subcommand and returns (stdout, error).
 func runBedErr(args ...string) (string, error) {
-	root, buf := bedTestRoot(args...)
-	err := root.Execute()
-	return buf.String(), err
+	return cmdtest.RunErr(InitCmd, args...)
 }
 
 func TestBedSetModes(t *testing.T) {

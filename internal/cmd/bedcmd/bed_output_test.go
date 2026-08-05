@@ -39,3 +39,17 @@ func TestStdoutIsNotMistakenForALocator(t *testing.T) {
 		}
 	}
 }
+
+// The mixed-column-width warning went to os.Stderr, so no test could see it.
+// It uses cmd.ErrOrStderr() now, and the harness captures both streams.
+func TestBedSetWarnsOnMixedColumnWidths(t *testing.T) {
+	// setA is BED6 and bed3.bed is BED3, so strand cannot be honored and the
+	// result silently becomes strand-agnostic. Worth saying out loud.
+	out, err := runBedErr("bed-set", "--union", "testdata/setA.bed", "testdata/bed3.bed")
+	if err != nil {
+		t.Fatalf("bed-set: %v", err)
+	}
+	if !strings.Contains(out, "mixed column widths") {
+		t.Errorf("no width warning in output:\n%s", out)
+	}
+}

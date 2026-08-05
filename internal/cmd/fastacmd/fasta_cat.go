@@ -34,14 +34,15 @@ var fastaCatCmd = &cobra.Command{
 				break
 			}
 
-			fmt.Printf(">%s", rec.Name())
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, ">%s", rec.Name())
 
 			if rec.Comment() != "" {
-				fmt.Printf(" %s\n", rec.Comment())
+				fmt.Fprintf(out, " %s\n", rec.Comment())
 			} else {
-				fmt.Printf("\n")
+				fmt.Fprintf(out, "\n")
 			}
-			fmt.Printf("%s\n", rec.FullSeq().Seq())
+			fmt.Fprintf(out, "%s\n", rec.FullSeq().Seq())
 		}
 		return nil
 	},

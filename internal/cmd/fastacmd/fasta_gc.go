@@ -23,7 +23,10 @@ var fastaGCCmd = &cobra.Command{
 		defer reader.Close()
 
 		for rec, err := reader.NextSeq(); ; rec, err = reader.NextSeq() {
-			if err != nil && err != io.EOF {
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
 				return err
 			}
 			if rec == nil {

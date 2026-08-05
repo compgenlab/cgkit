@@ -2,7 +2,6 @@ package samcmd
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/compgenlab/cghts/htsio"
@@ -81,9 +80,9 @@ func runSamToFastx(cmd *cobra.Command, args []string, fastq bool, readerFlags sa
 		}
 	} else {
 		if fastq {
-			fastqWriter = seqio.NewFastqWriter(os.Stdout)
+			fastqWriter = seqio.NewFastqWriter(cmd.OutOrStdout())
 		} else {
-			fastaWriter = seqio.NewFastaWriter(os.Stdout)
+			fastaWriter = seqio.NewFastaWriter(cmd.OutOrStdout())
 		}
 	}
 	if fastqWriter != nil {
