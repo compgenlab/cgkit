@@ -1,0 +1,30 @@
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=1000>
+##contig=<ID=chrUn_a,length=1000>
+##contig=<ID=chrUn_b,length=1000>
+##contig=<ID=chrUn_c,length=1000>
+##contig=<ID=chrUn_d,length=1000>
+##contig=<ID=chrUn_e,length=1000>
+##contig=<ID=chr2,length=1000>
+##FILTER=<ID=fa,Description="a">
+##FILTER=<ID=fb,Description="b">
+##FILTER=<ID=fc,Description="c">
+##FILTER=<ID=fd,Description="d">
+##INFO=<ID=IA,Number=1,Type=Integer,Description="a">
+##INFO=<ID=IB,Number=1,Type=Integer,Description="b">
+##INFO=<ID=IC,Number=1,Type=Integer,Description="c">
+##INFO=<ID=ID_,Number=1,Type=Integer,Description="d">
+##INFO=<ID=KEEPME,Number=1,Type=Integer,Description="survivor">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=FA,Number=1,Type=Integer,Description="a">
+##FORMAT=<ID=FB,Number=1,Type=Integer,Description="b">
+##FORMAT=<ID=FC,Number=1,Type=Integer,Description="c">
+##FORMAT=<ID=FD,Number=1,Type=Integer,Description="d">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2
+chr1	100	.	A	G	.	PASS	IA=1;IB=2;IC=3;ID_=4;KEEPME=9	GT:FA:FB:FC:FD	0/1:1:2:3:4	0/0:1:2:3:4
+chrUn_a	100	.	A	G	.	PASS	IA=1;IB=2;IC=3;ID_=4;KEEPME=9	GT:FA:FB:FC:FD	0/1:1:2:3:4	0/0:1:2:3:4
+chrUn_b	100	.	A	G	.	PASS	IA=1;IB=2;IC=3;ID_=4;KEEPME=9	GT:FA:FB:FC:FD	0/1:1:2:3:4	0/0:1:2:3:4
+chrUn_c	100	.	A	G	.	PASS	IA=1;IB=2;IC=3;ID_=4;KEEPME=9	GT:FA:FB:FC:FD	0/1:1:2:3:4	0/0:1:2:3:4
+chrUn_d	100	.	A	G	.	PASS	IA=1;IB=2;IC=3;ID_=4;KEEPME=9	GT:FA:FB:FC:FD	0/1:1:2:3:4	0/0:1:2:3:4
+chrUn_e	100	.	A	G	.	PASS	IA=1;IB=2;IC=3;ID_=4;KEEPME=9	GT:FA:FB:FC:FD	0/1:1:2:3:4	0/0:1:2:3:4
+chr2	100	.	A	G	.	PASS	IA=1;IB=2;IC=3;ID_=4;KEEPME=9	GT:FA:FB:FC:FD	0/1:1:2:3:4	0/0:1:2:3:4
