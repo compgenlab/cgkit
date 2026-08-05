@@ -9,18 +9,11 @@ import (
 	"github.com/compgenlab/cghts/htsio/bgzf"
 	"github.com/compgenlab/cghts/htsio/tabix"
 	"github.com/compgenlab/cgkit/internal/cmdtest"
-	"github.com/spf13/cobra"
 )
 
 func runTab(t *testing.T, args ...string) {
 	t.Helper()
-	root := &cobra.Command{Use: "cgkit"}
-	InitCmd(root)
-	cmdtest.ResetFlags(root)
-	root.SetArgs(args)
-	if err := root.Execute(); err != nil {
-		t.Fatalf("Execute(%v): %v", args, err)
-	}
+	cmdtest.Run(t, InitCmd, args...)
 }
 
 func TestTabixIndexCommand(t *testing.T) {

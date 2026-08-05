@@ -17,7 +17,7 @@ var revcompCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 
 		seq := seqio.NewStringSeq(args[0], "")
-		fmt.Println(seq.FullSeq().RevComp().Seq())
+		fmt.Fprintln(cmd.OutOrStdout(), seq.FullSeq().RevComp().Seq())
 
 		return nil
 	},
