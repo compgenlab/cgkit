@@ -67,9 +67,9 @@ var swalignCmd = &cobra.Command{
 		aln1 := sw.Align(query.FullSeq(), target.FullSeq())
 		aln2 := sw.Align(query.FullSeq().RevComp(), target.FullSeq())
 		if aln1.Score >= aln2.Score {
-			fmt.Println(aln1.String())
+			fmt.Fprintln(cmd.OutOrStdout(), aln1.String())
 		} else {
-			fmt.Println(aln2.String())
+			fmt.Fprintln(cmd.OutOrStdout(), aln2.String())
 		}
 		return nil
 	},
