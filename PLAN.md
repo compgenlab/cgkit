@@ -125,6 +125,103 @@ durable claim it supports is the *ratio* (bulk flat vs per-locus linear), not th
 milliseconds. Counters inside `varstore` would give numbers that survive a machine
 change. Not required by anything.
 
+## 4. Indel normalization — not started, and mostly not ours
+
+`vcf-toparquet` splits multiallelics but does **not** normalize allele
+representation. Splitting and normalization are routinely conflated because one
+`bcftools norm` invocation does both; they are separate operations and only the
+first is handled here. `bcftools norm -m -both` — a common pre-step — does the
+half cgkit already does and none of the half it does not.
+
+The exposure is exact-locus matching. `SameLocus` canonicalizes the chromosome
+name and then compares `Pos`/`Ref`/`Alt` byte-for-byte
+(`cghts/varstore/store.go:426`), so an indel stored as the source wrote it and
+queried in a different-but-equivalent representation is a miss — no rows, and the
+target-not-matched warning is the only signal. Span queries (`chr1:1000-2000`, a
+whole contig, BED) are immune: overlap comes from `pos`/`ref_end` and never touches
+the alleles. SNVs are immune in practice. The exposure is indels reached by exact
+locus, and any join between a store and an externally-normalized site list.
+
+Normalization has two halves with very different costs.
+
+**Trimming is reference-free.** Right-trim while all alleles have length ≥ 2 and
+share a last base; left-trim while all alleles have length ≥ 2 and share a first
+base, incrementing `POS`. So `chr1:100 CTT>CT` → `chr1:100 CT>C`, and
+`chr1:100 GAT>GA` → `chr1:101 AT>A`.
+
+**Left-shifting needs the FASTA**, because the shift is entirely a property of the
+flanking reference. With reference `97:C 98:A 99:A 100:A 101:A 102:A 103:G`, a
+one-base deletion written `chr1:101 AA>A` left-aligns to `chr1:97 CA>C`. Nothing in
+the record predicts that distance: it is the length of the perfect tandem repeat
+containing the indel — tens of bases for a homopolymer, hundreds for an STR,
+kilobases at an expanded repeat locus.
+
+### Three things it breaks
+
+1. **Sort order.** `checkOrder` errors on `pos < lastPos`
+   (`internal/cmd/vcfcmd/vcf_toparquet.go:833`), which is the correct failure but
+   means normalization cannot be a filter inside the record loop. It needs a
+   reorder buffer, and the window cannot be computed — only chosen, with an
+   explicit error when a record shifts past it. `bcftools norm -w/--site-win`
+   (default 1000) is the precedent worth copying rather than reinventing.
+   Trimming needs one too, just a small one: left-trim moves `POS` *forward* by up
+   to `len(REF)-1`, so record N can trim past record N+1.
+2. **Row-group pruning.** Tight per-group min/max on `pos` is what gives the
+   measured 3.05x, so reordering has to happen before the writer sees a row.
+3. **`RecordKey`.** Sibling exclusion for `--hom-ref` keys on `{Chrom, Pos, Ref}`
+   derived from the locus (`cghts/varstore/store.go:52`): a `0/2` sample is kept out
+   of the allele-1 row because both split loci share a key. Normalizing *after* the
+   split breaks that, under trimming alone — `chr1:100 GA → GAA, G` splits to
+   `chr1:100 G>GA` and `chr1:100 GA>G`, same position, different `REF`, different
+   key — and a `0/2` sample silently reappears as `0/0`. Preserving it means
+   carrying the source record identity explicitly, which is a schema change to
+   `calls`/`sites`, not a flag. **This is the real cost of the feature**, and it is
+   easy to miss when scoping it as "call a normalize function per record".
+
+### The hazard that argues for doing something now
+
+A missing FASTA fails loudly. A FASTA for the **wrong build** does not: shifting
+against the wrong bases yields well-formed records at confidently wrong positions,
+and the store then answers every query in coordinates that mean something else.
+Same failure class `--meta-reference` exists for, but worse — metadata records a
+claim, this manufactures data.
+
+The guard is cheap and header-only, so it should be mandatory rather than opt-in:
+compare `(*vcf.VcfHeader).ContigDef(id).Length` (`cghts/vcf/header.go:178`, `-1`
+when absent) against `seqio.ReferenceReader.SequenceLength(name)`
+(`cghts/seqio/reference.go:24`), matching names through `CanonicalContig` since a
+`chr1` FASTA against a `1` VCF is routine. No records read, so it costs nothing
+against a 200 GB input and it catches GRCh37-vs-38 immediately.
+
+### If any of this gets built, build this first
+
+A **reference-free detector**: per split allele, flag `len(ref) ≥ 2 && len(alt) ≥ 2
+&& (ref[0] == alt[0] || ref[len-1] == alt[len-1])`, count the hits, and report them
+in the `-v` conversion summary beside the DP/GQ/AD census, plus a manifest field.
+It flags `GAT>GA` and `CTT>CT` and leaves `GA>G` and `A>T` alone. It must run
+**after** the split, not before: `GA → GAA, G` is minimal as a multiallelic (the `G`
+allele is length 1, so no joint trim applies) while its split components are not.
+
+That is nearly free, needs no FASTA, no flag, no reorder buffer and no schema
+change, and it converts a silent mismatch into a stated fact about the store. Full
+left-alignment is the project; detection is the part that pays for itself.
+
+### The counter-argument, recorded so it is not rediscovered
+
+`bcftools norm -f ref.fa` already does this correctly, is universally available, and
+runs upstream of conversion. The case for owning it in cgkit is **not** capability —
+it is that a store should be self-describing about whether it was normalized and
+against what, so two stores can be known to be joinable. That is a metadata goal
+that the detector above serves at a fraction of the cost. Do not build the
+realignment for the capability alone.
+
+Also note that pre-normalizing with `-m -both` is now actively counterproductive:
+cgkit tallies `AC`/`AN` from the record's raw GTs before recoding
+(`AddAlleleCounts`, `cghts/varstore/vcfrecord.go:139`), so it sees both alleles of a
+`1/2`. A record arriving already split with `.` padding has lost that, and `AN` —
+and therefore `AF` in `--format vcf` — comes out low at every multiallelic site.
+Recommend `bcftools norm -f ref.fa` with no `-m`.
+
 ---
 
 ## Decided against — do not re-litigate
