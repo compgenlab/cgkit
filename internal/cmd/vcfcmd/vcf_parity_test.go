@@ -144,7 +144,11 @@ func TestParityAnnotate(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"groupA", []string{"vcf-annotate", "--indel", "--tstv", "--dosage", "--auto-id", vcf}},
+		// --auto-id is deliberately not here. It used to write chrom_pos_ref_alt,
+		// which is what the Java tool writes; it now writes the portable form
+		// (1-115256529-T-C) that gnomAD and the variant portals use, so the two
+		// no longer agree on purpose. Everything else in group A still must.
+		{"groupA", []string{"vcf-annotate", "--indel", "--tstv", "--dosage", vcf}},
 		{"copy-logratio", []string{"vcf-annotate", "--copy-logratio", "TUMOR:NORMAL", vcf}},
 		{"vardist", []string{"vcf-annotate", "--vardist", vcf}},
 		{"single-tag", []string{"vcf-annotate", "--tag", "PANEL:myset", vcf}},

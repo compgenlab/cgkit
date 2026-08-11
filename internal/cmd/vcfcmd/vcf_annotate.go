@@ -41,7 +41,7 @@ and NCBI RefSeq (NC_000001.11) naming for every external annotation source
 rewritten; conversion is applied only when looking up each source.
 
 Self-contained annotators (read only the variant):
-  --auto-id        set ID to chrom_pos_ref_alt
+  --auto-id        set ID to chrom-pos-ref-alt, without the "chr" (1-115256529-T-C)
   --tag KEY[:VAL]  add a constant INFO flag/value (repeatable)
   --indel          flag insertions/deletions and their lengths
   --tstv           CG_TSTV transition/transversion class
@@ -519,7 +519,7 @@ func init() {
 	// Annotator flags are recorded in command-line order via chainValue.
 	chainBool := func(name, usage string) { registerChainBool(f, &vcfAnnotateChain, name, usage) }
 	chainVal := func(name, usage string) { registerChainVal(f, &vcfAnnotateChain, name, usage) }
-	chainBool("auto-id", "Set the ID to chrom_pos_ref_alt")
+	chainBool("auto-id", "Set the ID to chrom-pos-ref-alt, without the \"chr\" (1-115256529-T-C)")
 	chainVal("tag", "Add a constant INFO annotation: KEY or KEY:VALUE (repeatable)")
 	chainBool("indel", "Add INSERT/DELETE flags and lengths")
 	chainBool("tstv", "Add TS/TV annotation (CG_TSTV)")
