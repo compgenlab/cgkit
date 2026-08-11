@@ -227,10 +227,10 @@ func TestVcfAnnotateGroupA(t *testing.T) {
 	out := runVcf(t, "vcf-annotate", "--indel", "--tstv", "--dosage", "--auto-id",
 		"testdata/annotate.vcf")
 	for _, want := range []string{
-		"chr1\t100\tchr1_100_A_G\tA\tG\t50\tPASS\tDP=30;CG_TSTV=TS\tGT:AD:SAC:CG_DS\t0/0:14,1:15,13,1,1:0\t0/1:15,15:8,7,8,7:1\n",
-		"chr1\t150\tchr1_150_A_C\tA\tC\t40\tPASS\tDP=25;CG_TSTV=TV\tGT:AD:SAC:CG_DS\t0/0:25,0:13,12,0,0:0\t1/1:0,30:0,0,15,15:2\n",
-		"chr1\t300\tchr1_300_G_GA\tG\tGA\t40\tPASS\tDP=25;CG_INSERT;CG_INSLEN=1;CG_INDELLEN=1\tGT:AD:SAC:CG_DS\t0/0:25,0:13,12,0,0:0\t0/1:12,13:6,6,7,6:1\n",
-		"chr2\t500\tchr2_500_CAT_C\tCAT\tC\t99\tPASS\tDP=40;CG_DELETE;CG_DELLEN=2;CG_INDELLEN=-2\tGT:AD:SAC:CG_DS\t0/0:40,0:20,20,0,0:0\t0/1:20,20:10,10,11,9:1\n",
+		"chr1\t100\t1-100-A-G\tA\tG\t50\tPASS\tDP=30;CG_TSTV=TS\tGT:AD:SAC:CG_DS\t0/0:14,1:15,13,1,1:0\t0/1:15,15:8,7,8,7:1\n",
+		"chr1\t150\t1-150-A-C\tA\tC\t40\tPASS\tDP=25;CG_TSTV=TV\tGT:AD:SAC:CG_DS\t0/0:25,0:13,12,0,0:0\t1/1:0,30:0,0,15,15:2\n",
+		"chr1\t300\t1-300-G-GA\tG\tGA\t40\tPASS\tDP=25;CG_INSERT;CG_INSLEN=1;CG_INDELLEN=1\tGT:AD:SAC:CG_DS\t0/0:25,0:13,12,0,0:0\t0/1:12,13:6,6,7,6:1\n",
+		"chr2\t500\t2-500-CAT-C\tCAT\tC\t99\tPASS\tDP=40;CG_DELETE;CG_DELLEN=2;CG_INDELLEN=-2\tGT:AD:SAC:CG_DS\t0/0:40,0:20,20,0,0:0\t0/1:20,20:10,10,11,9:1\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("vcf-annotate group A missing line:\n%q\nfull output:\n%s", want, out)
