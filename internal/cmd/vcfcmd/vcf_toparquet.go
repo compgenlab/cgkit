@@ -25,6 +25,7 @@ var (
 	vcfToParquetCompression  string
 	vcfToParquetRowGroupSize int
 	vcfToParquetForce        bool
+	vcfToParquetInfo         []string
 
 	// One string per reserved key, keyed by the key itself, plus the generic
 	// --meta pairs. Both feed one map; see collectMeta.
@@ -189,12 +190,47 @@ could answer off-catalog positions.
                         straight there and needs no local scratch.
   --force               overwrite an existing store at --out
   --min-dp N            depth at or above which a site counts as callable
+  --info ID[,ID...]     capture these INFO fields into the sites catalog
   --no-callable         proceed when the input has no DP field at all
   --passing             skip filtered records
   --compression C       zstd (default), snappy, or none
   --row-group-size N    rows per parquet row group
   -v, --verbose         report progress and a conversion summary on stderr,
                         including which of DP/GQ/AD the input actually carries
+
+--info captures source INFO fields into sites.parquet, each as its own typed
+column named info_<id> in lower case. It is for the things that are properties
+of THIS FILE rather than of the variant -- imputation quality (R2, DR2, INFO),
+an IMP or TYPED flag, a panel allele frequency, VQSLOD. Those cannot be
+recovered from an annotation source later, because a different VCF of the same
+cohort gives different numbers at the same locus, and without capture they are
+simply dropped at conversion.
+
+  --info R2,IMP         two fields by name
+  --info 'AF_*'         a glob over the header's declared fields
+  --info '*'            everything the header declares that can be stored
+
+Types and cardinality are read from the ##INFO header lines, never from the
+command line: the file already declares them, so restating them would only be a
+way to get them wrong. Only Number=1 (one value per site), Number=A (one per
+ALT) and Flag can be captured -- a site row is one ALT, so Number=R and Number=G
+have values with nowhere to go. Naming such a field is an error; one that merely
+matched a glob is skipped with a note.
+
+Values are stored per ALT where the field is Number=A, so a multiallelic record
+that splits into three site rows gives each row its own value rather than
+repeating the first. A field absent from a record is stored as null, which stays
+distinct from a value of zero -- "no R2 was reported here" and "R2 is 0 here"
+are different claims.
+
+Captured columns never collide with the store's own: --info AC lands in info_ac
+and leaves the computed ac alone. That matters because AC/AN/n_called are
+recomputed over the samples in the store rather than copied from the source,
+which is the only reason they survive a subset.
+
+The manifest records which fields were captured, with their source key, type and
+Number. That is the only place absence is answerable: a reader gets zero both
+for a column that is not in the file and for one holding zero.
 
 Metadata records what the store *is*, as opposed to how it was made. The store
 already knows the latter -- the command, the inputs, the sample roster, when it
@@ -260,7 +296,22 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			return err
 		}
 		samples := first.header.Samples()
+		// Resolved from the header while it is still open, and BEFORE the
+		// overwrite check below: a misspelled --info must not be the thing that
+		// discovers itself after the previous store has been truncated.
+		infoFields, infoSkipped, err := resolveInfoFields(first.header, vcfToParquetInfo)
+		if err != nil {
+			first.close()
+			return err
+		}
 		first.close()
+		// Never silently: a glob that quietly dropped a field would leave the
+		// caller looking for a column that was never written.
+		if len(infoSkipped) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"note: not capturing %s -- only Number=1 and Number=A fit a site row\n",
+				strings.Join(infoSkipped, ", "))
+		}
 		if len(samples) == 0 {
 			return fmt.Errorf("%s has no samples; a genotype store needs per-sample calls", args[0])
 		}
@@ -308,6 +359,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			Sources:      args,
 			Contigs:      contigs,
 			Meta:         meta,
+			Info:         infoFields,
 		})
 		if err != nil {
 			return err
@@ -320,6 +372,8 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			minDP:      int32(vcfToParquetMinDP),
 			noCallable: vcfToParquetNoCallable,
 			runs:       make([]*callableRun, len(samples)),
+			info:       infoFields,
+			infoBuf:    make(map[string]any, len(infoFields)),
 			verbose:    vcfVerbose,
 			progress:   cmd.ErrOrStderr(),
 		}
@@ -499,6 +553,11 @@ type parquetConverter struct {
 	curChrom   string
 	sawDP      int64
 
+	// info are the captured INFO fields, and infoBuf is the per-record scratch
+	// they are read into. Nil when --info was not given.
+	info    []varstore.InfoField
+	infoBuf map[string]any
+
 	// perm maps the current file's genotype columns onto canonical sample
 	// indices; nil means the columns are already in canonical order.
 	perm []int
@@ -670,7 +729,7 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 		if vcf.IsRefBlockAlt(alt) {
 			continue
 		}
-		if err := c.w.WriteSite(varstore.Site{
+		site := varstore.Site{
 			Chrom:     chrom,
 			Pos:       pos,
 			Ref:       rec.Ref,
@@ -681,7 +740,18 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 			NCarriers: carriers[j],
 			NLowDP:    nLowDP,
 			NCalled:   nCalled,
-		}); err != nil {
+		}
+		if len(c.info) == 0 {
+			if err := c.w.WriteSite(site); err != nil {
+				return err
+			}
+			continue
+		}
+		// j is the ALT index, which is exactly what a Number=A field is indexed
+		// by: one record with three ALTs becomes three site rows, and each must
+		// take its own value rather than the record's first.
+		captureInfo(c.infoBuf, rec, c.info, j)
+		if err := c.w.WriteSiteInfo(site, c.infoBuf); err != nil {
 			return err
 		}
 	}
@@ -794,6 +864,8 @@ func init() {
 	f.StringVar(&vcfToParquetOut, "out", "", "Store directory, created if needed (DIR/calls.parquet etc)")
 	addRegionFlag(vcfToParquetCmd)
 	f.IntVar(&vcfToParquetMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
+	f.StringSliceVar(&vcfToParquetInfo, "info", nil,
+		"INFO field to capture into the sites catalog, as its own column (repeatable, comma separated, globs allowed)")
 	f.BoolVar(&vcfToParquetNoCallable, "no-callable", false, "Accept a source with no DP field; callable regions will be empty")
 	addPassingFlag(vcfToParquetCmd, "Only convert passing variants")
 	f.StringVar(&vcfToParquetCompression, "compression", "zstd", "Parquet compression: zstd, snappy, or none")
