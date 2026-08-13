@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"github.com/compgenlab/cghts/varstore"
+	// Registers the s3 sink, so --out may name a bucket. A blank import:
+	// nothing here calls it, and without it s3:// is refused as an unknown
+	// scheme rather than written.
+	_ "github.com/compgenlab/cghts/varstore/sinks3"
 	"github.com/compgenlab/cghts/vcf"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
-	"github.com/compgenlab/cgkit/internal/locator"
 	"github.com/spf13/cobra"
 )
 
@@ -181,7 +184,9 @@ calls, even where run intervals appear to bracket it. Only a gVCF, whose
 reference blocks carry END and MIN_DP, makes positive statements about spans and
 could answer off-catalog positions.
 
-  --out DIR             the store directory, created if needed (required)
+  --out DIR             the store directory, created if needed (required).
+                        May be s3://bucket/store, which streams the members
+                        straight there and needs no local scratch.
   --force               overwrite an existing store at --out
   --min-dp N            depth at or above which a site counts as callable
   --no-callable         proceed when the input has no DP field at all
@@ -221,11 +226,14 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		if vcfToParquetOut == "" {
 			return fmt.Errorf("you must specify an output store directory with --out")
 		}
-		// Before CheckStoreTarget: its os.Stat fails harmlessly on a URL, and the
-		// writer would then reach os.Create("s3://...") and report a bewildering
-		// not-found against a path nobody typed.
-		if err := locator.CheckLocalOutput("--out", vcfToParquetOut); err != nil {
-			return err
+		// A store may be written to an object store as well as to a directory,
+		// so --out is checked against the transports linked in rather than
+		// refused for being remote. An unregistered scheme is named as such:
+		// left to the writer it would surface as a not-found against a path
+		// nobody typed.
+		if !varstore.CanWrite(vcfToParquetOut) {
+			return fmt.Errorf("--out: cannot write a store to %q; this build writes to a directory%s",
+				vcfToParquetOut, writableSchemes())
 		}
 		if vcfToParquetMinDP < 0 {
 			return fmt.Errorf("--min-dp must not be negative")
@@ -259,14 +267,21 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		// A gVCF is refused, but on the evidence of a reference block record rather
 		// than of the header -- see gvcfRefBlockError in gvcf.go.
 
-		// Refuse to clobber an existing store before opening anything: the
-		// writer truncates all three members, so this is the last moment the
-		// previous one still exists.
-		if err := varstore.CheckStoreTarget(vcfToParquetOut, vcfToParquetForce); err != nil {
+		// The destination, opened once and reused: the overwrite check and the
+		// writer must agree about where the store is going, and opening it
+		// twice is how they would come to differ.
+		sink, err := varstore.OpenSink(vcfToParquetOut)
+		if err != nil {
 			return err
 		}
-		// A base ending in "/" names a directory to put the members in.
-		if err := varstore.EnsureStoreDir(vcfToParquetOut); err != nil {
+		// Refuse to clobber an existing store before opening anything: the
+		// writer truncates every member, so this is the last moment the
+		// previous one still exists.
+		//
+		// Asked of the SINK rather than the filesystem. varstore.CheckStoreTarget
+		// stats local paths, so against a remote store it would find nothing and
+		// wave through an overwrite it exists to prevent.
+		if err := checkStoreTarget(sink, vcfToParquetForce); err != nil {
 			return err
 		}
 
@@ -282,6 +297,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		}
 
 		w, err := varstore.NewWriter(vcfToParquetOut, varstore.WriterOpts{
+			Sink:         sink,
 			Codec:        codec,
 			RowGroupSize: int64(vcfToParquetRowGroupSize),
 			Samples:      samples,
@@ -918,4 +934,63 @@ func discarding(w *varstore.Writer, err error) error {
 		return fmt.Errorf("%w\n       the partial store could not be removed: %v", err, derr)
 	}
 	return err
+}
+
+// writableSchemes names the remote destinations this build can reach, for the
+// error a bare "cannot write there" would otherwise leave unexplained.
+//
+// A transport is linked in by import, so which ones exist is a property of the
+// binary rather than of the arguments -- and "s3:// is not supported" and
+// "s3:// support was not compiled into this build" are different problems with
+// different fixes.
+func writableSchemes() string {
+	schemes := varstore.SinkSchemes()
+	if len(schemes) == 0 {
+		return ", and no remote transports are linked into this build"
+	}
+	for i, s := range schemes {
+		schemes[i] = s + "://"
+	}
+	return ", or " + strings.Join(schemes, ", ")
+}
+
+// checkStoreTarget refuses to overwrite an existing store unless force is set.
+//
+// Asked of the sink, so it means the same thing wherever the store is going.
+// Conversion truncates every member and they are only meaningful together, so
+// a half-replaced set is worse than either keeping or replacing the old one --
+// any single surviving member is enough to stop.
+//
+// The manifest counts: it is written by a conversion and removed by one, so
+// ignoring it would let a re-run orphan a marker vouching for members it
+// replaced.
+func checkStoreTarget(sink varstore.Sink, force bool) error {
+	if force {
+		return nil
+	}
+	var found []string
+	for _, name := range []string{
+		varstore.MemberFile(varstore.CallsMember),
+		varstore.MemberFile(varstore.SitesMember),
+		varstore.MemberFile(varstore.RegionsMember),
+		varstore.ManifestFile,
+	} {
+		switch _, ok, err := sink.Stat(name); {
+		case err != nil:
+			return fmt.Errorf("checking %s in %s: %w", name, sink.Describe(), err)
+		case ok:
+			found = append(found, name)
+		}
+	}
+	if len(found) > 0 {
+		// Named as full locators rather than bare member names: the reader has
+		// to be able to go and look at what stopped them, and "sites.parquet"
+		// on its own does not say where.
+		for i, name := range found {
+			found[i] = strings.TrimSuffix(sink.Describe(), "/") + "/" + name
+		}
+		return fmt.Errorf("refusing to overwrite an existing store: %s; pass --force to replace it",
+			strings.Join(found, ", "))
+	}
+	return nil
 }
