@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -100,7 +101,9 @@ func TestVarsummaryJSONIsTheManifest(t *testing.T) {
 	if len(fromCmd.Chromosomes) != len(fromDisk.Chromosomes) {
 		t.Errorf("census lengths differ: %d vs %d", len(fromCmd.Chromosomes), len(fromDisk.Chromosomes))
 	}
-	if fromCmd.Params != fromDisk.Params {
+	// DeepEqual rather than ==: ManifestParams carries the captured INFO
+	// fields, which is a slice, so the struct is no longer comparable.
+	if !reflect.DeepEqual(fromCmd.Params, fromDisk.Params) {
 		t.Errorf("params differ: %+v vs %+v", fromCmd.Params, fromDisk.Params)
 	}
 }
