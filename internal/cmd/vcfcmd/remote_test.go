@@ -2,6 +2,7 @@ package vcfcmd
 
 import (
 	"context"
+	"github.com/compgenlab/cghts/varstore"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -134,12 +135,16 @@ func TestSampleFileFromLocator(t *testing.T) {
 
 // A remote input is read, a remote output is refused, and the refusal names the
 // flag and says "local" rather than failing deep inside a writer.
+//
+// vcf-toparquet is NOT in this list any more: a store is written through a sink
+// and may go to an object store, which is what TestStoreOutMayBeRemote covers.
+// The commands here write a single stream and still have nowhere remote to put
+// it.
 func TestRemoteOutputIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []string
 	}{
-		{"toparquet --out", []string{"vcf-toparquet", "--out", "s3://bucket/cohort", "testdata/sample.vcf"}},
 		{"export -o", []string{"vcf-export", "-o", "https://host/out.tsv", "testdata/sample.vcf"}},
 		{"tobed -o", []string{"vcf-tobed", "-o", "s3://bucket/out.bed", "testdata/sample.vcf"}},
 	} {
@@ -203,4 +208,29 @@ func stripQueryProvenance(s string) string {
 		keep = append(keep, line)
 	}
 	return strings.Join(keep, "\n")
+}
+
+// --out may name a bucket, and an unknown scheme is refused by name.
+//
+// The accepting half deliberately does not reach the network: it asserts the
+// LOCATOR is accepted, which is the decision this package makes. What happens
+// against a real bucket is iosource/s3's business and is tested there, against
+// a server that speaks the protocol.
+func TestStoreOutMayBeRemote(t *testing.T) {
+	if !varstore.CanWrite("s3://bucket/cohort") {
+		t.Error("s3:// is not writable; the sinks3 blank import is missing from vcf_toparquet.go")
+	}
+	if !varstore.CanWrite(t.TempDir() + "/cohort") {
+		t.Error("a local directory is not writable")
+	}
+
+	// An unregistered scheme is named as such rather than treated as a
+	// directory with a very strange name.
+	err := runVcfErr(t, "vcf-toparquet", "--out", "gs://bucket/cohort", "testdata/sample.vcf")
+	if err == nil {
+		t.Fatal("gs:// was accepted with no transport for it")
+	}
+	if !strings.Contains(err.Error(), "gs://bucket/cohort") {
+		t.Errorf("the refusal does not name the locator: %v", err)
+	}
 }
