@@ -48,6 +48,8 @@ github.com/compgenlab/cghts v0.10.9 h1:gh69+JqO5HQf1/KQ3Mi62toeA6WMX7Lr2IenIHSaZ
 github.com/compgenlab/cghts v0.10.9/go.mod h1:uGhwCm/cVAgUH5fXhKDcfSMa0XkO1N3/L1G4opci63M=
 github.com/compgenlab/cghts v0.10.10 h1:tdTEJM+C28Si7/01jiwMs5VXRYBzJvaousCng8A6MT0=
 github.com/compgenlab/cghts v0.10.10/go.mod h1:uGhwCm/cVAgUH5fXhKDcfSMa0XkO1N3/L1G4opci63M=
+github.com/compgenlab/cghts v0.10.11 h1:hDZh8wMmD+0K0YIea/X366zpvLrBQLgbb2RR2O6czlY=
+github.com/compgenlab/cghts v0.10.11/go.mod h1:uGhwCm/cVAgUH5fXhKDcfSMa0XkO1N3/L1G4opci63M=
 github.com/cpuguy83/go-md2man/v2 v2.0.3/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
 github.com/google/go-cmp v0.5.5 h1:Khx7svrCpmxxtHBq5j2mp/xVjsi8hQMfNLvJFAlrGgU=
 github.com/google/go-cmp v0.5.5/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
