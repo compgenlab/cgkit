@@ -278,10 +278,10 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		// writer truncates every member, so this is the last moment the
 		// previous one still exists.
 		//
-		// Asked of the SINK rather than the filesystem. varstore.CheckStoreTarget
-		// stats local paths, so against a remote store it would find nothing and
-		// wave through an overwrite it exists to prevent.
-		if err := checkStoreTarget(sink, vcfToParquetForce); err != nil {
+		// Asked of the SINK the writer will use, not of the base again: opening
+		// the destination twice is how the check and the writer come to
+		// disagree about where the store is going.
+		if err := varstore.CheckStoreTargetIn(sink, vcfToParquetForce); err != nil {
 			return err
 		}
 
@@ -952,45 +952,4 @@ func writableSchemes() string {
 		schemes[i] = s + "://"
 	}
 	return ", or " + strings.Join(schemes, ", ")
-}
-
-// checkStoreTarget refuses to overwrite an existing store unless force is set.
-//
-// Asked of the sink, so it means the same thing wherever the store is going.
-// Conversion truncates every member and they are only meaningful together, so
-// a half-replaced set is worse than either keeping or replacing the old one --
-// any single surviving member is enough to stop.
-//
-// The manifest counts: it is written by a conversion and removed by one, so
-// ignoring it would let a re-run orphan a marker vouching for members it
-// replaced.
-func checkStoreTarget(sink varstore.Sink, force bool) error {
-	if force {
-		return nil
-	}
-	var found []string
-	for _, name := range []string{
-		varstore.MemberFile(varstore.CallsMember),
-		varstore.MemberFile(varstore.SitesMember),
-		varstore.MemberFile(varstore.RegionsMember),
-		varstore.ManifestFile,
-	} {
-		switch _, ok, err := sink.Stat(name); {
-		case err != nil:
-			return fmt.Errorf("checking %s in %s: %w", name, sink.Describe(), err)
-		case ok:
-			found = append(found, name)
-		}
-	}
-	if len(found) > 0 {
-		// Named as full locators rather than bare member names: the reader has
-		// to be able to go and look at what stopped them, and "sites.parquet"
-		// on its own does not say where.
-		for i, name := range found {
-			found[i] = strings.TrimSuffix(sink.Describe(), "/") + "/" + name
-		}
-		return fmt.Errorf("refusing to overwrite an existing store: %s; pass --force to replace it",
-			strings.Join(found, ", "))
-	}
-	return nil
 }
