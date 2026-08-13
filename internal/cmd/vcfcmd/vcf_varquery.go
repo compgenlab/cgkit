@@ -18,14 +18,17 @@ import (
 )
 
 var (
-	vcfVarQueryOutput   string
-	vcfVarQuerySamples  []string
-	vcfVarQueryVariants []string
-	vcfVarQueryMinDP    int
-	vcfVarQueryHomRef   bool
-	vcfVarQueryDosage   bool
-	vcfVarQueryFormat   string
-	vcfVarQueryStore    string
+	vcfVarQueryOutput    string
+	vcfVarQuerySamples   []string
+	vcfVarQueryVariants  []string
+	vcfVarQueryMinDP     int
+	vcfVarQueryMinADAlt  int
+	vcfVarQueryMinABHet  float64
+	vcfVarQueryMaxRefHom float64
+	vcfVarQueryHomRef    bool
+	vcfVarQueryDosage    bool
+	vcfVarQueryFormat    string
+	vcfVarQueryStore     string
 )
 
 var vcfVarQueryCmd = &cobra.Command{
@@ -115,6 +118,9 @@ without coverage information.
   --sample SUBJECT    a subject, or a file of subject names (repeatable)
   --variant TARGET    a locus, region, contig, or a file of them (repeatable)
   --min-dp N          minimum depth for a call to count
+  --min-ad-alt N      fewest alt reads a carrier call may rest on
+  --min-ab-het F      smallest allele balance a 0/1 may have (0.15 is usual)
+  --max-ref-frac-hom F  largest reference share a 1/1 may carry (0.10 is usual)
   --dosage            also report alt-allele dosage (0/1/2/.)
   --hom-ref           report every interrogated site, not only the ALT calls
   --format F          tsv (default), json, vcf, or list. vcf emits a genotype
@@ -388,7 +394,12 @@ func warnUnknownSites(cmd *cobra.Command, store varstore.Store, q varstore.Query
 // what that subject carries.
 func buildQuery(ctx context.Context) (varstore.Query, *targetSet, *sampleSet, error) {
 	q := varstore.Query{
-		Gate:       varstore.Gate{MinDP: int32(vcfVarQueryMinDP)},
+		Gate: varstore.Gate{
+			MinDP:         int32(vcfVarQueryMinDP),
+			MinADAlt:      int32(vcfVarQueryMinADAlt),
+			MinABHet:      vcfVarQueryMinABHet,
+			MaxRefFracHom: vcfVarQueryMaxRefHom,
+		},
 		IncludeRef: vcfVarQueryHomRef,
 	}
 	t, err := parseTargets(ctx, vcfVarQueryVariants)
@@ -846,6 +857,12 @@ func init() {
 	f.StringArrayVar(&vcfVarQuerySamples, "sample", nil, "A subject, or a file of subject names (a VCF works too); repeatable")
 	f.StringArrayVar(&vcfVarQueryVariants, "variant", nil, "A locus, region, contig, or a file of them; repeatable")
 	f.IntVar(&vcfVarQueryMinDP, "min-dp", 0, "Minimum DP for a call to count")
+	f.IntVar(&vcfVarQueryMinADAlt, "min-ad-alt", 0,
+		"Fewest alt-supporting reads a carrier call may rest on")
+	f.Float64Var(&vcfVarQueryMinABHet, "min-ab-het", 0,
+		"Smallest allele balance -- alt/(ref+alt) reads -- a 0/1 call may have")
+	f.Float64Var(&vcfVarQueryMaxRefHom, "max-ref-frac-hom", 0,
+		"Largest share of reference reads a 1/1 call may carry")
 	f.BoolVar(&vcfVarQueryDosage, "dosage", false, "Also report alt-allele dosage: 0, 1, 2, or . -- what PGS and GReX tools consume")
 	f.BoolVar(&vcfVarQueryHomRef, "hom-ref", false, "Also report reference (0/0) calls, not only alternate carriers")
 	f.StringVar(&vcfVarQueryFormat, "format", "tsv", "Output format: tsv, json, vcf, or list")

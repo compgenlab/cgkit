@@ -26,6 +26,7 @@ var (
 	vcfToParquetRowGroupSize int
 	vcfToParquetForce        bool
 	vcfToParquetInfo         []string
+	vcfToParquetBands        []int
 
 	// One string per reserved key, keyed by the key itself, plus the generic
 	// --meta pairs. Both feed one map; see collectMeta.
@@ -336,6 +337,20 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			return err
 		}
 
+		// Bands must be ascending and above the gate: a boundary below --min-dp
+		// names a class nothing can fall into, which is not an error so much as
+		// a sign the caller meant something else.
+		bands := make([]int32, 0, len(vcfToParquetBands))
+		for i, b := range vcfToParquetBands {
+			if b <= 0 {
+				return fmt.Errorf("--depth-bands: %d is not a depth", b)
+			}
+			if i > 0 && int32(b) <= bands[i-1] {
+				return fmt.Errorf("--depth-bands must ascend; %d follows %d", b, bands[i-1])
+			}
+			bands = append(bands, int32(b))
+		}
+
 		// Before the writer exists, since it needs them at construction.
 		contigs, err := collectContigs(cmd, args, vcfRegion)
 		if err != nil {
@@ -360,6 +375,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			Contigs:      contigs,
 			Meta:         meta,
 			Info:         infoFields,
+			DepthBands:   bands,
 		})
 		if err != nil {
 			return err
@@ -372,6 +388,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			minDP:      int32(vcfToParquetMinDP),
 			noCallable: vcfToParquetNoCallable,
 			runs:       make([]*callableRun, len(samples)),
+			bands:      bands,
 			info:       infoFields,
 			infoBuf:    make(map[string]any, len(infoFields)),
 			verbose:    vcfVerbose,
@@ -540,6 +557,14 @@ type callableRun struct {
 	start  int32
 	last   int32
 	nSites int32
+
+	// minDP is the lowest depth seen inside the run, and band is the depth
+	// class it belongs to. A run is broken when depth leaves its band, so the
+	// bound stays tight: without that, one poorly covered site drags a whole
+	// megabase down and every reference call across it inherits the worst
+	// moment in the span.
+	minDP int32
+	band  int
 }
 
 // parquetConverter turns a stream of VCF records into store rows, holding only
@@ -552,6 +577,10 @@ type parquetConverter struct {
 	runs       []*callableRun
 	curChrom   string
 	sawDP      int64
+
+	// bands are the depth-class boundaries runs are broken at. Empty leaves
+	// runs unbanded, which is what stores written before this are.
+	bands []int32
 
 	// info are the captured INFO fields, and infoBuf is the per-record scratch
 	// they are read into. Nil when --info was not given.
@@ -694,11 +723,27 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 			si := c.sampleAt(i)
 			if varstore.HasCall(sf.GT) && sf.DP != varstore.Missing && sf.DP >= c.minDP {
 				nCalled++
-				if r := c.runs[si]; r != nil {
+				band := varstore.DepthBand(c.bands, sf.DP)
+				r := c.runs[si]
+				// A run spans ONE depth class. Leaving the band closes it and
+				// opens another, which is what keeps each run's MinDP a bound
+				// on the whole of it rather than on its worst moment.
+				if r != nil && band != r.band {
+					if err := c.emitRun(si); err != nil {
+						return err
+					}
+					r = nil
+				}
+				if r != nil {
 					r.last = pos
 					r.nSites++
+					if sf.DP < r.minDP {
+						r.minDP = sf.DP
+					}
 				} else {
-					c.runs[si] = &callableRun{start: pos, last: pos, nSites: 1}
+					c.runs[si] = &callableRun{
+						start: pos, last: pos, nSites: 1, minDP: sf.DP, band: band,
+					}
 				}
 			} else {
 				nLowDP++
@@ -771,6 +816,7 @@ func (c *parquetConverter) emitRun(i int) error {
 		Start:    r.start,
 		End:      r.last,
 		NSites:   r.nSites,
+		MinDP:    r.minDP,
 	})
 }
 
@@ -864,6 +910,8 @@ func init() {
 	f.StringVar(&vcfToParquetOut, "out", "", "Store directory, created if needed (DIR/calls.parquet etc)")
 	addRegionFlag(vcfToParquetCmd)
 	f.IntVar(&vcfToParquetMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
+	f.IntSliceVar(&vcfToParquetBands, "depth-bands", []int{10, 20, 50},
+		"Depth boundaries at which a callable run is broken, so each run's min_dp bounds the whole of it (empty leaves runs unbanded)")
 	f.StringSliceVar(&vcfToParquetInfo, "info", nil,
 		"INFO field to capture into the sites catalog, as its own column (repeatable, comma separated, globs allowed)")
 	f.BoolVar(&vcfToParquetNoCallable, "no-callable", false, "Accept a source with no DP field; callable regions will be empty")
