@@ -5,7 +5,7 @@ A columnar, sparse on-disk format for cohort genotypes, written by `cgkit vcf-to
 ## Usage
 
 ```
-cgkit vcf-toparquet --out DIR <input.vcf> [input2.vcf ...]
+cgkit vcf-toparquet --out DIR|s3://bucket/store <input.vcf> [input2.vcf ...]
 cgkit vcf-varquery [--variant LOCUS | --sample NAME] <input.vcf | store>
 cgkit vcf-varsummary <input.vcf | store>
 ```
@@ -31,6 +31,32 @@ remote locator at all.
 
 A directory is also what every Parquet tool expects, so DuckDB or pyarrow can be
 pointed straight at `cohort/calls.parquet`.
+
+### `--out` may name a bucket
+
+```sh
+cgkit vcf-toparquet --out s3://bucket/cohort input.vcf.gz
+```
+
+The members are streamed as they are produced, so nothing is written locally
+and no scratch space is needed: Parquet emits row groups forward and puts its
+footer last, so a member never has to be seekable. Reading works the same way
+already, so a store can be converted and queried without ever touching a disk.
+
+Two things follow from how object stores work, and both are already how the
+format behaves:
+
+- **A member appears only when it is complete.** A conversion that dies partway
+  therefore leaves no readable store — which is the same guarantee the manifest
+  gives locally, since it is written last and a store without one is refused.
+- **An abandoned upload is invisible and still billed.** cgkit abandons the
+  uploads on every failure it can see. For the ones it cannot — a killed
+  process, a lost node — set a bucket lifecycle rule with
+  `AbortIncompleteMultipartUpload`.
+
+The overwrite guard works against a bucket too: `--out` pointing at an existing
+store is refused unless `--force` is given, and the refusal names the members
+that stopped it by their full locators.
 
 > **Migrating.** Two breaking changes land together: stores are directories, and
 > the manifest is required. A store written by an earlier cgkit has neither and
