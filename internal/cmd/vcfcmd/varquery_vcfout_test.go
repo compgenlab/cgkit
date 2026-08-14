@@ -298,7 +298,7 @@ func TestContigsSurviveConversion(t *testing.T) {
 // multi-input conversion exists for.
 func TestContigsAreTheUnionOfInputs(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "store") + "/"
-	runVcf(t, "vcf-toparquet", "--out", base,
+	runVcf(t, "vcf-tovarstore", "--out", base,
 		"testdata/multi_chr1.vcf", "testdata/multi_chr2.vcf")
 
 	out := runVcf(t, "vcf-varquery", "--sample", "S1", "--hom-ref", "--format", "vcf", base)
@@ -325,7 +325,7 @@ func TestConflictingContigLengthIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = runVcfErr(t, "vcf-toparquet", "--out", filepath.Join(dir, "store")+"/",
+	err = runVcfErr(t, "vcf-tovarstore", "--out", filepath.Join(dir, "store")+"/",
 		altered, "testdata/multi_chr1.vcf")
 	if err == nil {
 		t.Fatal("conflicting contig lengths should be refused")

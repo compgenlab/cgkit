@@ -186,7 +186,7 @@ type vcfStream struct {
 // dangerous half -- a truncated BGZF is detectably broken, but only if something
 // checks, and in the meantime it is a file sitting where a result belongs.
 //
-// So a failure closes the writer and removes what it wrote. vcf-toparquet
+// So a failure closes the writer and removes what it wrote. vcf-tovarstore
 // already did this (see discarding); everything else did not.
 func runVcfStream(cmd *cobra.Command, s vcfStream) (err error) {
 	reader, err := openVcfInput(cmd, s.in)

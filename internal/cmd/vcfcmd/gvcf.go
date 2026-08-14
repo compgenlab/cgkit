@@ -28,7 +28,7 @@ import (
 // None of these markers is *evidence* of reference blocks, only of a file whose
 // header has at some point described them, so this is far too weak a basis for a
 // refusal -- see gvcfRefBlockError. A DRAGEN msVCF, which is a joint-genotyped
-// cohort callset and the exact input vcf-toparquet is for, keeps the
+// cohort callset and the exact input vcf-tovarstore is for, keeps the
 // ##ALT=<ID=NON_REF> line it inherited from the gVCFs it was built from. VCF 4.5
 // makes the <*> case worse than incidental: the gVCF unspecified allele and the
 // ordinary spanning-deletion allele are the same ALT ID, so no header-level test
@@ -57,7 +57,7 @@ func isGvcfHeader(h *vcf.VcfHeader) bool {
 
 // gvcfRefBlockError refuses a conversion that has met an actual reference block.
 //
-// vcf-toparquet asks this of records rather than of the header, unlike vcf-strip,
+// vcf-tovarstore asks this of records rather than of the header, unlike vcf-strip,
 // and the difference is not a preference: the header says only what a file's
 // ancestry declared, while a record is the thing the store would get wrong. A
 // header-based refusal rejected ordinary cohort VCFs -- any callset carrying a

@@ -15,7 +15,7 @@ import (
 // a value under the wrong key rather than fail, so it is checked per key.
 func TestToParquetRecordsEveryReservedMetaKey(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "store")
-	args := []string{"vcf-toparquet", "--out", base}
+	args := []string{"vcf-tovarstore", "--out", base}
 	want := map[string]string{}
 	for _, k := range varstore.ReservedMetaKeys {
 		v := "value-for-" + k
@@ -40,7 +40,7 @@ func TestToParquetRecordsEveryReservedMetaKey(t *testing.T) {
 
 func TestToParquetGenericMetaFlag(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "store")
-	runVcf(t, "vcf-toparquet", "--out", base,
+	runVcf(t, "vcf-tovarstore", "--out", base,
 		"--meta-dataset", "1kg",
 		"--meta", "cohort=phase3",
 		"--meta", "batch=b7",
@@ -79,7 +79,7 @@ func TestToParquetRejectsDuplicateMetaKey(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "store")
-			args := append([]string{"vcf-toparquet", "--out", out}, c.args...)
+			args := append([]string{"vcf-tovarstore", "--out", out}, c.args...)
 			err := runVcfErr(t, append(args, "testdata/coverage.vcf")...)
 			if err == nil {
 				t.Fatal("expected an error for a duplicated metadata key")
@@ -104,7 +104,7 @@ func TestToParquetRejectsMalformedMeta(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "store")
-			err := runVcfErr(t, "vcf-toparquet", "--out", out,
+			err := runVcfErr(t, "vcf-tovarstore", "--out", out,
 				"--meta", c.arg, "testdata/coverage.vcf")
 			if err == nil {
 				t.Fatalf("expected an error for --meta %q", c.arg)
@@ -123,7 +123,7 @@ func TestToParquetRejectsMalformedMeta(t *testing.T) {
 
 func TestVarSummaryReportsMetadata(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "store")
-	runVcf(t, "vcf-toparquet", "--out", base,
+	runVcf(t, "vcf-tovarstore", "--out", base,
 		"--meta-dataset", "20201028_CCDG_14151_B01_GRM_WGS_2020-08-05",
 		"--meta-reference", "GRCh38",
 		"--meta", "cohort=phase3",
@@ -153,7 +153,7 @@ func TestVarSummaryReportsMetadata(t *testing.T) {
 // the text report never learns to print it.
 func TestVarSummaryJSONCarriesMetadata(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "store")
-	runVcf(t, "vcf-toparquet", "--out", base,
+	runVcf(t, "vcf-tovarstore", "--out", base,
 		"--meta-dataset", "1kg", "--meta", "cohort=phase3", "testdata/coverage.vcf")
 
 	var doc struct {
@@ -184,7 +184,7 @@ func TestVarSummaryOmitsAbsentMetadata(t *testing.T) {
 // those; the rest is catalogue that belongs in vcf-varsummary.
 func TestVarQueryVerboseReportsDatasetAndReference(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "store")
-	runVcf(t, "vcf-toparquet", "--out", base,
+	runVcf(t, "vcf-tovarstore", "--out", base,
 		"--meta-dataset", "1kg-phase3",
 		"--meta-reference", "GRCh38",
 		"--meta-caller", "GATK 4.2.6.1",

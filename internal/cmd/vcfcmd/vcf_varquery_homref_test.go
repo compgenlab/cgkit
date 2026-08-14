@@ -252,7 +252,7 @@ func TestHomRefRefusesIncompleteStore(t *testing.T) {
 	// (also correct) error. What this pins is the store that never tracked
 	// coverage in the first place.
 	base := filepath.Join(t.TempDir(), "store")
-	runVcf(t, "vcf-toparquet", "--no-callable", "--out", base, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--no-callable", "--out", base, "testdata/coverage.vcf")
 	for _, args := range [][]string{
 		{"vcf-varquery", "--variant", "1:100:A:G", "--hom-ref", base},
 		{"vcf-varquery", "--sample", "S1", "--hom-ref", base},
