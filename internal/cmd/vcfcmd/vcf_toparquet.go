@@ -27,6 +27,8 @@ var (
 	vcfToParquetForce        bool
 	vcfToParquetInfo         []string
 	vcfToParquetBands        []int
+	vcfToParquetShardSites   int
+	vcfToParquetFormat       []string
 
 	// One string per reserved key, keyed by the key itself, plus the generic
 	// --meta pairs. Both feed one map; see collectMeta.
@@ -305,9 +307,19 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			first.close()
 			return err
 		}
+		formatFields, formatSkipped, err := resolveFormatFields(first.header, vcfToParquetFormat)
+		if err != nil {
+			first.close()
+			return err
+		}
 		first.close()
 		// Never silently: a glob that quietly dropped a field would leave the
 		// caller looking for a column that was never written.
+		if len(formatSkipped) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"note: not capturing %s -- only Number=1 and Number=A fit a call row\n",
+				strings.Join(formatSkipped, ", "))
+		}
 		if len(infoSkipped) > 0 {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"note: not capturing %s -- only Number=1 and Number=A fit a site row\n",
@@ -362,6 +374,11 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 					"cannot declare its reference\n")
 		}
 
+		// Declared before the writer because the writer's rotate hook calls back
+		// into it: a shard boundary has to flush the converter's open runs into
+		// the shard they belong to, before that shard closes.
+		var conv *parquetConverter
+
 		w, err := varstore.NewWriter(vcfToParquetOut, varstore.WriterOpts{
 			Sink:         sink,
 			Codec:        codec,
@@ -375,20 +392,34 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			Contigs:      contigs,
 			Meta:         meta,
 			Info:         infoFields,
+			Format:       formatFields,
 			DepthBands:   bands,
+			ShardSites:   int64(vcfToParquetShardSites),
+			// A run must lie wholly inside one shard, or every locus it covers
+			// in an earlier one reads as never assayed rather than reference.
+			// The converter already breaks runs at chromosome changes and at
+			// depth-band boundaries; a shard boundary is one more of the same.
+			BeforeRotate: func() error {
+				if conv == nil {
+					return nil // no rows written yet, so nothing is open
+				}
+				return conv.closeRuns()
+			},
 		})
 		if err != nil {
 			return err
 		}
 
 		started := time.Now()
-		conv := &parquetConverter{
+		conv = &parquetConverter{
 			w:          w,
 			samples:    samples,
 			minDP:      int32(vcfToParquetMinDP),
 			noCallable: vcfToParquetNoCallable,
 			runs:       make([]*callableRun, len(samples)),
 			bands:      bands,
+			format:     formatFields,
+			formatBuf:  make(map[string]any, len(formatFields)),
 			info:       infoFields,
 			infoBuf:    make(map[string]any, len(infoFields)),
 			verbose:    vcfVerbose,
@@ -582,6 +613,11 @@ type parquetConverter struct {
 	// runs unbanded, which is what stores written before this are.
 	bands []int32
 
+	// format are the captured FORMAT fields, and formatBuf is the per-call
+	// scratch they are read into. Nil when --format was not given.
+	format    []varstore.FormatField
+	formatBuf map[string]any
+
 	// info are the captured INFO fields, and infoBuf is the per-record scratch
 	// they are read into. Nil when --info was not given.
 	info    []varstore.InfoField
@@ -652,6 +688,24 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 		c.curChrom = chrom
 		c.note(chrom, rec.Pos)
 	}
+	// BEFORE ANY RUN IS EXTENDED INTO THIS RECORD. A run is extended to this
+	// position and only then is the site written, so a rotation discovered
+	// while writing the site would emit a run reaching into the shard that is
+	// opening -- and every sample would read as never assayed at the first site
+	// of every shard. Asking first is what keeps runs inside one shard.
+	if c.w.WouldRotate(chrom) {
+		if err := c.closeRuns(); err != nil {
+			return err
+		}
+		// ROTATE HERE, not later. Letting the writer discover the boundary while
+		// this record's sites are written would put this record's runs in the
+		// shard that is closing, and every locus they cover would read as never
+		// assayed.
+		if err := c.w.Rotate(); err != nil {
+			return err
+		}
+	}
+
 	c.nRecords++
 	c.tick(rec.Pos)
 
@@ -764,8 +818,18 @@ func (c *parquetConverter) record(rec *vcf.VcfRecord) error {
 			}
 			call.RefEnd = refEnd
 			carriers[j]++
-			if err := c.w.WriteCall(call); err != nil {
-				return err
+			if len(c.format) == 0 {
+				if err := c.w.WriteCall(call); err != nil {
+					return err
+				}
+			} else {
+				// j is the ALT index, which is what a Number=A field is indexed
+				// by; the sample index is the record's column, not the canonical
+				// one, since that is what rec.Sample reads.
+				captureFormat(c.formatBuf, rec, i, c.format, j)
+				if err := c.w.WriteCallFormat(call, c.formatBuf); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -910,8 +974,12 @@ func init() {
 	f.StringVar(&vcfToParquetOut, "out", "", "Store directory, created if needed (DIR/calls.parquet etc)")
 	addRegionFlag(vcfToParquetCmd)
 	f.IntVar(&vcfToParquetMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
+	f.IntVar(&vcfToParquetShardSites, "shard-sites", 0,
+		"Split each member every N sites, so a locus query reads one small file instead of pruning a large one (0 writes one file per member)")
 	f.IntSliceVar(&vcfToParquetBands, "depth-bands", []int{10, 20, 50},
 		"Depth boundaries at which a callable run is broken, so each run's min_dp bounds the whole of it (empty leaves runs unbanded)")
+	f.StringSliceVar(&vcfToParquetFormat, "format", nil,
+		"FORMAT field to capture onto each ALT call, as its own column (repeatable, comma separated, globs allowed)")
 	f.StringSliceVar(&vcfToParquetInfo, "info", nil,
 		"INFO field to capture into the sites catalog, as its own column (repeatable, comma separated, globs allowed)")
 	f.BoolVar(&vcfToParquetNoCallable, "no-callable", false, "Accept a source with no DP field; callable regions will be empty")
