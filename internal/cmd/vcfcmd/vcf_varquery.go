@@ -267,7 +267,7 @@ written where nothing is known would assert a depth the data never had.`,
 // resolved to nothing. All this adds is the flag advice, which is a CLI concern
 // and the one thing the library should not be spelling out.
 func openVarStore(ctx context.Context, path, kind string) (varstore.Store, error) {
-	store, err := varstore.OpenVolume(ctx, path, kind)
+	store, err := varstore.Open(ctx, path, kind)
 	if err != nil && kind == "" && errors.Is(err, varstore.ErrUnknownStoreKind) {
 		return nil, fmt.Errorf("%w; pass --store vcf or --store parquet", err)
 	}
