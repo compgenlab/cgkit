@@ -136,7 +136,7 @@ func TestSampleFileFromLocator(t *testing.T) {
 // A remote input is read, a remote output is refused, and the refusal names the
 // flag and says "local" rather than failing deep inside a writer.
 //
-// vcf-toparquet is NOT in this list any more: a store is written through a sink
+// vcf-tovarstore is NOT in this list any more: a store is written through a sink
 // and may go to an object store, which is what TestStoreOutMayBeRemote covers.
 // The commands here write a single stream and still have nowhere remote to put
 // it.
@@ -181,7 +181,7 @@ func TestUnregisteredSchemeMessage(t *testing.T) {
 func TestStoreQueryOverHTTP(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "cohort")
-	runVcf(t, "vcf-toparquet", "--out", base, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 
 	srv := httptest.NewServer(http.FileServer(http.Dir(dir)))
 	defer srv.Close()
@@ -226,7 +226,7 @@ func TestStoreOutMayBeRemote(t *testing.T) {
 
 	// An unregistered scheme is named as such rather than treated as a
 	// directory with a very strange name.
-	err := runVcfErr(t, "vcf-toparquet", "--out", "gs://bucket/cohort", "testdata/sample.vcf")
+	err := runVcfErr(t, "vcf-tovarstore", "--out", "gs://bucket/cohort", "testdata/sample.vcf")
 	if err == nil {
 		t.Fatal("gs:// was accepted with no transport for it")
 	}

@@ -19,21 +19,21 @@ import (
 )
 
 var (
-	vcfToParquetOut          string
-	vcfToParquetMinDP        int
-	vcfToParquetNoCallable   bool
-	vcfToParquetCompression  string
-	vcfToParquetRowGroupSize int
-	vcfToParquetForce        bool
-	vcfToParquetInfo         []string
-	vcfToParquetBands        []int
-	vcfToParquetShardSites   int
-	vcfToParquetFormat       []string
+	vcfToVarstoreOut          string
+	vcfToVarstoreMinDP        int
+	vcfToVarstoreNoCallable   bool
+	vcfToVarstoreCompression  string
+	vcfToVarstoreRowGroupSize int
+	vcfToVarstoreForce        bool
+	vcfToVarstoreInfo         []string
+	vcfToVarstoreBands        []int
+	vcfToVarstoreShardSites   int
+	vcfToVarstoreFormat       []string
 
 	// One string per reserved key, keyed by the key itself, plus the generic
 	// --meta pairs. Both feed one map; see collectMeta.
-	vcfToParquetMetaNamed = map[string]*string{}
-	vcfToParquetMetaPairs []string
+	vcfToVarstoreMetaNamed = map[string]*string{}
+	vcfToVarstoreMetaPairs []string
 )
 
 // collectMeta folds the named --meta-<key> flags and the generic --meta
@@ -67,13 +67,13 @@ func collectMeta() (map[string]string, error) {
 	}
 
 	for _, key := range varstore.ReservedMetaKeys {
-		if p := vcfToParquetMetaNamed[key]; p != nil && *p != "" {
+		if p := vcfToVarstoreMetaNamed[key]; p != nil && *p != "" {
 			if err := set(key, *p, "--meta-"+key); err != nil {
 				return nil, err
 			}
 		}
 	}
-	for _, pair := range vcfToParquetMetaPairs {
+	for _, pair := range vcfToVarstoreMetaPairs {
 		key, val, ok := strings.Cut(pair, "=")
 		if !ok {
 			return nil, fmt.Errorf("--meta %q: expected KEY=VALUE", pair)
@@ -93,12 +93,12 @@ func collectMeta() (map[string]string, error) {
 	return meta, nil
 }
 
-var vcfToParquetCmd = &cobra.Command{
+var vcfToVarstoreCmd = &cobra.Command{
 	GroupID:     "vcfcmd",
 	Annotations: map[string]string{"since": "v0.5.0"},
-	Use:         "vcf-toparquet <input.vcf> [input2.vcf ...]",
-	Short:       "Convert a VCF to a sparse Parquet genotype store",
-	Long: `Convert a VCF into a columnar genotype store that keeps only the
+	Use:         "vcf-tovarstore <input.vcf> [input2.vcf ...]",
+	Short:       "Convert a VCF to a varstore",
+	Long: `Convert a VCF into a VARSTORE: a columnar genotype store that keeps only the
 alternate-allele calls, along with enough context to still tell a
 confidently-called reference apart from a position that was never assayed.
 
@@ -117,6 +117,13 @@ depend on it -- the answers are identical either way -- but the per-row-group
 position statistics stay tighter, and a locus lookup then skips more of the
 file. Measured on a two-chromosome store, supplying them out of order cost
 about 1.8x on a locus query (166ms against 298ms).
+
+The name is the STORE rather than its encoding. Parquet is how a varstore is
+written today, behind an interface this package owns, and the design keeps room
+for another backend -- so naming the command after the format would be a promise
+about something deliberately left changeable. Several varstores, disjoint by
+chromosome, can then be grouped into a VARSET and queried as one -- see
+cgkit vcf-varset.
 
 The store is written to --out, and its members form one inseparable set:
 
@@ -262,7 +269,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 --format json emits it verbatim for jq.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if vcfToParquetOut == "" {
+		if vcfToVarstoreOut == "" {
 			return fmt.Errorf("you must specify an output store directory with --out")
 		}
 		// A store may be written to an object store as well as to a directory,
@@ -270,17 +277,17 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		// refused for being remote. An unregistered scheme is named as such:
 		// left to the writer it would surface as a not-found against a path
 		// nobody typed.
-		if !varstore.CanWrite(vcfToParquetOut) {
+		if !varstore.CanWrite(vcfToVarstoreOut) {
 			return fmt.Errorf("--out: cannot write a store to %q; this build writes to a directory%s",
-				vcfToParquetOut, writableSchemes())
+				vcfToVarstoreOut, writableSchemes())
 		}
-		if vcfToParquetMinDP < 0 {
+		if vcfToVarstoreMinDP < 0 {
 			return fmt.Errorf("--min-dp must not be negative")
 		}
-		if vcfToParquetRowGroupSize <= 0 {
+		if vcfToVarstoreRowGroupSize <= 0 {
 			return fmt.Errorf("--row-group-size must be a positive number")
 		}
-		codec, err := varstore.CodecFor(vcfToParquetCompression)
+		codec, err := varstore.CodecFor(vcfToVarstoreCompression)
 		if err != nil {
 			return err
 		}
@@ -302,12 +309,12 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		// Resolved from the header while it is still open, and BEFORE the
 		// overwrite check below: a misspelled --info must not be the thing that
 		// discovers itself after the previous store has been truncated.
-		infoFields, infoSkipped, err := resolveInfoFields(first.header, vcfToParquetInfo)
+		infoFields, infoSkipped, err := resolveInfoFields(first.header, vcfToVarstoreInfo)
 		if err != nil {
 			first.close()
 			return err
 		}
-		formatFields, formatSkipped, err := resolveFormatFields(first.header, vcfToParquetFormat)
+		formatFields, formatSkipped, err := resolveFormatFields(first.header, vcfToVarstoreFormat)
 		if err != nil {
 			first.close()
 			return err
@@ -334,7 +341,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		// The destination, opened once and reused: the overwrite check and the
 		// writer must agree about where the store is going, and opening it
 		// twice is how they would come to differ.
-		sink, err := varstore.OpenSink(vcfToParquetOut)
+		sink, err := varstore.OpenSink(vcfToVarstoreOut)
 		if err != nil {
 			return err
 		}
@@ -345,15 +352,15 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		// Asked of the SINK the writer will use, not of the base again: opening
 		// the destination twice is how the check and the writer come to
 		// disagree about where the store is going.
-		if err := varstore.CheckStoreTargetIn(sink, vcfToParquetForce); err != nil {
+		if err := varstore.CheckStoreTargetIn(sink, vcfToVarstoreForce); err != nil {
 			return err
 		}
 
 		// Bands must be ascending and above the gate: a boundary below --min-dp
 		// names a class nothing can fall into, which is not an error so much as
 		// a sign the caller meant something else.
-		bands := make([]int32, 0, len(vcfToParquetBands))
-		for i, b := range vcfToParquetBands {
+		bands := make([]int32, 0, len(vcfToVarstoreBands))
+		for i, b := range vcfToVarstoreBands {
 			if b <= 0 {
 				return fmt.Errorf("--depth-bands: %d is not a depth", b)
 			}
@@ -379,13 +386,13 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		// the shard they belong to, before that shard closes.
 		var conv *parquetConverter
 
-		w, err := varstore.NewWriter(vcfToParquetOut, varstore.WriterOpts{
+		w, err := varstore.NewWriter(vcfToVarstoreOut, varstore.WriterOpts{
 			Sink:         sink,
 			Codec:        codec,
-			RowGroupSize: int64(vcfToParquetRowGroupSize),
+			RowGroupSize: int64(vcfToVarstoreRowGroupSize),
 			Samples:      samples,
-			MinDP:        int32(vcfToParquetMinDP),
-			NoCallable:   vcfToParquetNoCallable,
+			MinDP:        int32(vcfToVarstoreMinDP),
+			NoCallable:   vcfToVarstoreNoCallable,
 			Program:      buildinfo.String(),
 			Command:      buildinfo.CommandLine(),
 			Sources:      args,
@@ -394,7 +401,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			Info:         infoFields,
 			Format:       formatFields,
 			DepthBands:   bands,
-			ShardSites:   int64(vcfToParquetShardSites),
+			ShardSites:   int64(vcfToVarstoreShardSites),
 			// A run must lie wholly inside one shard, or every locus it covers
 			// in an earlier one reads as never assayed rather than reference.
 			// The converter already breaks runs at chromosome changes and at
@@ -414,8 +421,8 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		conv = &parquetConverter{
 			w:          w,
 			samples:    samples,
-			minDP:      int32(vcfToParquetMinDP),
-			noCallable: vcfToParquetNoCallable,
+			minDP:      int32(vcfToVarstoreMinDP),
+			noCallable: vcfToVarstoreNoCallable,
 			runs:       make([]*callableRun, len(samples)),
 			bands:      bands,
 			format:     formatFields,
@@ -438,7 +445,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		// written, so the failure left all three members on disk -- which then
 		// tripped the overwrite guard on the --no-callable retry the message
 		// itself asks for.
-		if conv.sawDP == 0 && !vcfToParquetNoCallable {
+		if conv.sawDP == 0 && !vcfToVarstoreNoCallable {
 			return discarding(w, fmt.Errorf("no DP field found in %s, so callable regions cannot be built\n"+
 				"       re-run with --no-callable to accept a store that cannot distinguish\n"+
 				"       non-carrier from not-assayed", strings.Join(args, ", ")))
@@ -453,11 +460,11 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		}
 
 		if vcfVerbose {
-			conv.report(cmd.ErrOrStderr(), vcfToParquetOut, time.Since(started))
+			conv.report(cmd.ErrOrStderr(), vcfToVarstoreOut, time.Since(started))
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"wrote %s: %d calls, %d sites, %d callable runs over %d samples\n",
-			vcfToParquetOut, w.NCalls, w.NSites, w.NRegions, len(samples))
+			vcfToVarstoreOut, w.NCalls, w.NSites, w.NRegions, len(samples))
 		return nil
 	},
 }
@@ -970,33 +977,33 @@ func (c *parquetConverter) report(out io.Writer, base string, elapsed time.Durat
 }
 
 func init() {
-	f := vcfToParquetCmd.Flags()
-	f.StringVar(&vcfToParquetOut, "out", "", "Store directory, created if needed (DIR/calls.parquet etc)")
-	addRegionFlag(vcfToParquetCmd)
-	f.IntVar(&vcfToParquetMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
-	f.IntVar(&vcfToParquetShardSites, "shard-sites", 0,
+	f := vcfToVarstoreCmd.Flags()
+	f.StringVar(&vcfToVarstoreOut, "out", "", "Store directory, created if needed (DIR/calls.parquet etc)")
+	addRegionFlag(vcfToVarstoreCmd)
+	f.IntVar(&vcfToVarstoreMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
+	f.IntVar(&vcfToVarstoreShardSites, "shard-sites", 0,
 		"Split each member every N sites, so a locus query reads one small file instead of pruning a large one (0 writes one file per member)")
-	f.IntSliceVar(&vcfToParquetBands, "depth-bands", []int{10, 20, 50},
+	f.IntSliceVar(&vcfToVarstoreBands, "depth-bands", []int{10, 20, 50},
 		"Depth boundaries at which a callable run is broken, so each run's min_dp bounds the whole of it (empty leaves runs unbanded)")
-	f.StringSliceVar(&vcfToParquetFormat, "format", nil,
+	f.StringSliceVar(&vcfToVarstoreFormat, "format", nil,
 		"FORMAT field to capture onto each ALT call, as its own column (repeatable, comma separated, globs allowed)")
-	f.StringSliceVar(&vcfToParquetInfo, "info", nil,
+	f.StringSliceVar(&vcfToVarstoreInfo, "info", nil,
 		"INFO field to capture into the sites catalog, as its own column (repeatable, comma separated, globs allowed)")
-	f.BoolVar(&vcfToParquetNoCallable, "no-callable", false, "Accept a source with no DP field; callable regions will be empty")
-	addPassingFlag(vcfToParquetCmd, "Only convert passing variants")
-	f.StringVar(&vcfToParquetCompression, "compression", "zstd", "Parquet compression: zstd, snappy, or none")
-	f.IntVar(&vcfToParquetRowGroupSize, "row-group-size", 250000, "Rows per parquet row group")
-	addVerboseFlag(vcfToParquetCmd, "Report progress and a conversion summary on stderr")
-	f.BoolVar(&vcfToParquetForce, "force", false, "Overwrite an existing store at --out")
+	f.BoolVar(&vcfToVarstoreNoCallable, "no-callable", false, "Accept a source with no DP field; callable regions will be empty")
+	addPassingFlag(vcfToVarstoreCmd, "Only convert passing variants")
+	f.StringVar(&vcfToVarstoreCompression, "compression", "zstd", "Parquet compression: zstd, snappy, or none")
+	f.IntVar(&vcfToVarstoreRowGroupSize, "row-group-size", 250000, "Rows per parquet row group")
+	addVerboseFlag(vcfToVarstoreCmd, "Report progress and a conversion summary on stderr")
+	f.BoolVar(&vcfToVarstoreForce, "force", false, "Overwrite an existing store at --out")
 
 	// Generated from the library's own list, so the flag names and the keys they
 	// write cannot drift apart, and a key added upstream shows up here for free.
 	for _, key := range varstore.ReservedMetaKeys {
 		p := new(string)
-		vcfToParquetMetaNamed[key] = p
+		vcfToVarstoreMetaNamed[key] = p
 		f.StringVar(p, "meta-"+key, "", metaFlagHelp[key])
 	}
-	f.StringArrayVar(&vcfToParquetMetaPairs, "meta", nil,
+	f.StringArrayVar(&vcfToVarstoreMetaPairs, "meta", nil,
 		"Record KEY=VALUE in the store's metadata (repeatable; lowercase key of [a-z0-9_-])")
 }
 

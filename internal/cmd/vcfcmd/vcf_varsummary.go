@@ -30,7 +30,7 @@ var vcfVarSummaryCmd = &cobra.Command{
 	Long: `Report what a variant source contains, without querying genotypes.
 
 The input may be a VCF (plain or bgzipped) or a Parquet store written by
-vcf-toparquet, local or remote. The backend is inferred from the path; override
+vcf-tovarstore, local or remote. The backend is inferred from the path; override
 with --store.
 
 The default report never reads a single record. It is O(header) on both
@@ -446,6 +446,6 @@ func describeUnreadableStore(ctx context.Context, path string, openErr error) (s
 	fmt.Fprintf(&b, "\na member with a row count was finalized; one marked NEVER FINALIZED is\n")
 	fmt.Fprintf(&b, "where the conversion stopped. Either way a finished member says nothing\n")
 	fmt.Fprintf(&b, "about how much of the input went into it -- that is what the manifest\n")
-	fmt.Fprintf(&b, "records, and why it is required. Re-convert with vcf-toparquet --force.\n\n")
+	fmt.Fprintf(&b, "records, and why it is required. Re-convert with vcf-tovarstore --force.\n\n")
 	return b.String(), true
 }

@@ -14,7 +14,7 @@ import (
 
 func TestVarsummaryOnStoreAndVcf(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "cohort")
-	runVcf(t, "vcf-toparquet", "--out", base, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 
 	store := runVcf(t, "vcf-varsummary", base)
 	vcf := runVcf(t, "vcf-varsummary", "testdata/coverage.vcf")
@@ -58,7 +58,7 @@ func TestVarsummaryOnStoreAndVcf(t *testing.T) {
 // the input list and contig declarations stamped before the first record.
 func TestVarsummaryCensusCountsRows(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "cohort")
-	runVcf(t, "vcf-toparquet", "--out", base, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 
 	out := runVcf(t, "vcf-varsummary", "--counts", base)
 	if !strings.Contains(out, "per chromosome") {
@@ -83,7 +83,7 @@ func TestVarsummaryCensusCountsRows(t *testing.T) {
 // gzipping it acceptable: "| jq" is one pipe away rather than zero.
 func TestVarsummaryJSONIsTheManifest(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "cohort")
-	runVcf(t, "vcf-toparquet", "--out", base, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 
 	var fromCmd, fromDisk varstore.Manifest
 	if err := json.Unmarshal([]byte(runVcf(t, "vcf-varsummary", "--format", "json", base)), &fromCmd); err != nil {
@@ -145,7 +145,7 @@ func TestVarsummaryDefaultDoesNotScan(t *testing.T) {
 // unreadable store and no way to learn anything about it.
 func TestVarsummaryExplainsAMissingManifest(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "cohort")
-	runVcf(t, "vcf-toparquet", "--out", base, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 	if err := os.Remove(varstore.ManifestPath(base)); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestVarsummaryExplainsAMissingManifest(t *testing.T) {
 // genotypes.
 func TestVarsummaryReportsWhatAnUnreadableStoreContains(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "cohort")
-	runVcf(t, "vcf-toparquet", "--out", base, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 	if err := os.Remove(varstore.ManifestPath(base)); err != nil {
 		t.Fatal(err)
 	}

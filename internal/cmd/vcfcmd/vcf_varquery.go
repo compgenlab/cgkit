@@ -37,12 +37,12 @@ var vcfVarQueryCmd = &cobra.Command{
 	Use:         "vcf-varquery <input.vcf | store-base>",
 	Short:       "Query genotypes by site, by sample, or both",
 	Long: `Query genotypes without caring which format holds them. The input may be
-a VCF (plain or bgzipped) or a Parquet store written by vcf-toparquet. A store
+a VCF (plain or bgzipped) or a Parquet store written by vcf-tovarstore. A store
 is a directory, and may be named by it ("cohort" or "cohort/") or by any member
 inside it ("cohort/calls.parquet", "cohort/manifest.json.gz"). The backend is
 inferred from the path; override with --store.
 
-A store must carry the manifest vcf-toparquet writes when a conversion
+A store must carry the manifest vcf-tovarstore writes when a conversion
 completes; one written by an older cgkit, or left behind by a conversion that
 was interrupted, is refused rather than queried. Inspect it with vcf-varsummary.
 

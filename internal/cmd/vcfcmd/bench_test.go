@@ -26,7 +26,7 @@ import (
 // single-locus query -- the reason the Store API collapsed to one Calls method,
 // and so far an arithmetic argument rather than a measurement. Second, how the
 // Parquet store compares with querying the plain VCF it came from, which
-// docs/vcf-toparquet.md currently states outright has never been measured.
+// docs/vcf-tovarstore.md currently states outright has never been measured.
 //
 // Wall time and row counts only. Bytes read and row groups decoded would be the
 // more durable numbers, but they need a counter inside varstore, which lives in
@@ -102,7 +102,7 @@ func genCallset(tb testing.TB, nSamples, nSites, rowGroup int, seed int64) (vcfP
 	}
 
 	storeBase = filepath.Join(dir, "store") + string(os.PathSeparator)
-	runVcfTB(tb, "vcf-toparquet", "--out", storeBase,
+	runVcfTB(tb, "vcf-tovarstore", "--out", storeBase,
 		"--row-group-size", strconv.Itoa(rowGroup), vcfPath)
 	return vcfPath, storeBase
 }
@@ -211,7 +211,7 @@ func BenchmarkQueryPanel(b *testing.B) {
 	}
 }
 
-// BenchmarkStoreVsVcf is the comparison docs/vcf-toparquet.md says has never been
+// BenchmarkStoreVsVcf is the comparison docs/vcf-tovarstore.md says has never been
 // made: the same panel query against the store and against the VCF it came from.
 func BenchmarkStoreVsVcf(b *testing.B) {
 	nSamples, nSites, rowGroup := benchSizes()
