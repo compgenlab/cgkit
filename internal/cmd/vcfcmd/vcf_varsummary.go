@@ -10,6 +10,7 @@ import (
 
 	"github.com/compgenlab/cghts/varstore"
 	"github.com/spf13/cobra"
+	"io"
 )
 
 var (
@@ -150,8 +151,56 @@ func writeSummary(cmd *cobra.Command, out *bufio.Writer, store varstore.Store, p
 		return summarizeStore(out, errOut, s, path, samples)
 	case *varstore.VcfStore:
 		return summarizeVcf(ctx, out, errOut, s, path, samples)
+	case *varstore.VarSet:
+		return summarizeSet(out, s, path)
 	}
 	return fmt.Errorf("unknown backend %T", store)
+}
+
+// summarizeSet describes a set as a set: what it holds and what it holds it
+// under, rather than a member's worth of detail repeated.
+//
+// A set's members are checked against its declared agreement as each opens, so
+// reporting one is deliberately NOT the same as reporting each -- printing
+// twenty-five near-identical blocks would bury the one thing a reader wants,
+// which is whether the set is coherent and what it covers.
+func summarizeSet(out io.Writer, s *varstore.VarSet, path string) error {
+	man := s.SetManifest()
+	fmt.Fprintf(out, "\n%s\n", path)
+	fmt.Fprintf(out, "  a varset of %d members over %d samples\n\n", len(man.Members), len(man.Samples))
+
+	var sites, calls int64
+	fmt.Fprintf(out, "  %-24s %-24s %12s %12s\n", "MEMBER", "CHROMOSOMES", "SITES", "CALLS")
+	for _, m := range man.Members {
+		fmt.Fprintf(out, "  %-24s %-24s %12s %12s\n",
+			m.Name, strings.Join(m.Chroms, " "), comma(m.Sites), comma(m.Calls))
+		sites += m.Sites
+		calls += m.Calls
+	}
+	fmt.Fprintf(out, "  %-24s %-24s %12s %12s\n\n", "", "", comma(sites), comma(calls))
+
+	// The agreement, stated once, because it is the set's whole claim: these
+	// members answer one population under one set of rules.
+	fmt.Fprintf(out, "  min-dp        %d at conversion\n", man.Params.MinDP)
+	if len(man.Params.DepthBands) > 0 {
+		fmt.Fprintf(out, "  depth bands   %v\n", man.Params.DepthBands)
+	}
+	if len(man.Params.Info) > 0 {
+		var names []string
+		for _, f := range man.Params.Info {
+			names = append(names, f.Name)
+		}
+		fmt.Fprintf(out, "  info          %s\n", strings.Join(names, ", "))
+	}
+	if len(man.Params.Format) > 0 {
+		var names []string
+		for _, f := range man.Params.Format {
+			names = append(names, f.Name)
+		}
+		fmt.Fprintf(out, "  format        %s\n", strings.Join(names, ", "))
+	}
+	fmt.Fprintln(out)
+	return nil
 }
 
 // writeStoreMeta reports the metadata a conversion recorded, or nothing at all
