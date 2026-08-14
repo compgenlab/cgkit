@@ -921,7 +921,7 @@ func TestStoreOutSlashIsOptional(t *testing.T) {
 		runVcf(t, "vcf-tovarstore", "--out", dir+suffix, "testdata/coverage.vcf")
 		for _, p := range []string{
 			varstore.CallsPath(dir), varstore.SitesPath(dir),
-			varstore.RegionsPath(dir), varstore.ManifestPath(dir),
+			varstore.RegionsPath(dir), varstore.VolumeManifestPath(dir),
 		} {
 			if _, err := os.Stat(p); err != nil {
 				t.Errorf("--out %q: %s missing: %v", dir+suffix, filepath.Base(p), err)
@@ -1044,7 +1044,7 @@ func TestFailedConversionLeavesNothing(t *testing.T) {
 		"testdata/multi_chr1.vcf", "testdata/multi_chr2_othersamples.vcf"); err == nil {
 		t.Fatal("expected the conversion to fail")
 	}
-	if found := varstore.ExistingMembers(base); len(found) > 0 {
+	if found := varstore.ExistingTables(base); len(found) > 0 {
 		t.Errorf("failed conversion left %v behind", found)
 	}
 	// The retry must succeed without --force.

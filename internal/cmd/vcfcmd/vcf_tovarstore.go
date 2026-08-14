@@ -123,9 +123,9 @@ written today, behind an interface this package owns, and the design keeps room
 for another backend -- so naming the command after the format would be a promise
 about something deliberately left changeable. Several varstores, disjoint by
 chromosome, can then be grouped into a VARSET and queried as one -- see
-cgkit vcf-varset.
+cgkit vcf-varstore.
 
-The store is written to --out, and its members form one inseparable set:
+The store is written to --out, and its tables form one inseparable set:
 
   cohort/
     calls.parquet      one row per ALT-carrying genotype
@@ -134,28 +134,28 @@ The store is written to --out, and its members form one inseparable set:
     manifest.json.gz   written last; the store is unreadable without it
 
 A store is a directory, created if needed; a trailing "/" on --out is optional
-and means nothing. The members are only meaningful together, so this keeps the
+and means nothing. The tables are only meaningful together, so this keeps the
 set as one thing to copy, move or delete, and it is the layout every Parquet
-tool expects -- DuckDB or pyarrow can be pointed straight at a member.
-vcf-varquery accepts the directory, with or without the slash, or any member
+tool expects -- DuckDB or pyarrow can be pointed straight at a table.
+vcf-varquery accepts the directory, with or without the slash, or any table
 path within it.
 
 The manifest is what makes a store readable rather than merely present. It is
-written after every member is closed, so its presence means the conversion
+written after every table is closed, so its presence means the conversion
 reached the end -- which nothing else can tell you. The parquet footers prove
-each member was finished, but a set of finished members says nothing about how
+each table was finished, but a set of finished tables says nothing about how
 much of the input went into them, and a store that covered three of twenty-two
 chromosomes answers "not assayed" for the rest, exactly as a complete store
 answers for a position the source never reported. So the manifest also records
-what was written: per-chromosome site and call counts, per-member row counts,
+what was written: per-chromosome site and call counts, per-table row counts,
 the sample roster. Read it with vcf-varsummary.
 
 A store written by an older cgkit has no manifest and must be re-converted.
 
-Conversion refuses to overwrite an existing store: if any member is already
+Conversion refuses to overwrite an existing store: if any table is already
 present under --out it stops and asks for --force. Writing truncates them all,
 and a half-replaced set is worse than either keeping or replacing the old one.
-The check keys on the members, so an existing directory holding unrelated files
+The check keys on the tables, so an existing directory holding unrelated files
 is a fine target and its contents are left alone.
 
 The sites file carries both allele counts (AC, AN) and sample counts
@@ -196,7 +196,7 @@ reference blocks carry END and MIN_DP, makes positive statements about spans and
 could answer off-catalog positions.
 
   --out DIR             the store directory, created if needed (required).
-                        May be s3://bucket/store, which streams the members
+                        May be s3://bucket/store, which streams the tables
                         straight there and needs no local scratch.
   --force               overwrite an existing store at --out
   --min-dp N            depth at or above which a site counts as callable
@@ -346,7 +346,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			return err
 		}
 		// Refuse to clobber an existing store before opening anything: the
-		// writer truncates every member, so this is the last moment the
+		// writer truncates every table, so this is the last moment the
 		// previous one still exists.
 		//
 		// Asked of the SINK the writer will use, not of the base again: opening
@@ -442,7 +442,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			return discarding(w, err)
 		}
 		// Before Close, and discarding: this used to run after the store was
-		// written, so the failure left all three members on disk -- which then
+		// written, so the failure left all three tables on disk -- which then
 		// tripped the overwrite guard on the --no-callable retry the message
 		// itself asks for.
 		if conv.sawDP == 0 && !vcfToVarstoreNoCallable {
@@ -450,10 +450,10 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 				"       re-run with --no-callable to accept a store that cannot distinguish\n"+
 				"       non-carrier from not-assayed", strings.Join(args, ", ")))
 		}
-		// Finish closes the members and writes the manifest that marks the store
+		// Finish closes the tables and writes the manifest that marks the store
 		// complete; without it the store is unreadable by design. Discard on
 		// failure: this was the one error path that returned without cleaning up,
-		// and Close is exactly where a full disk shows up -- leaving members that
+		// and Close is exactly where a full disk shows up -- leaving tables that
 		// look like a store and then block the retry through the overwrite guard.
 		if err := w.Finish(); err != nil {
 			return discarding(w, err)
@@ -982,7 +982,7 @@ func init() {
 	addRegionFlag(vcfToVarstoreCmd)
 	f.IntVar(&vcfToVarstoreMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
 	f.IntVar(&vcfToVarstoreShardSites, "shard-sites", 0,
-		"Split each member every N sites, so a locus query reads one small file instead of pruning a large one (0 writes one file per member)")
+		"Split each table every N sites, so a locus query reads one small file instead of pruning a large one (0 writes one file per table)")
 	f.IntSliceVar(&vcfToVarstoreBands, "depth-bands", []int{10, 20, 50},
 		"Depth boundaries at which a callable run is broken, so each run's min_dp bounds the whole of it (empty leaves runs unbanded)")
 	f.StringSliceVar(&vcfToVarstoreFormat, "format", nil,

@@ -24,7 +24,7 @@ func TestToParquetRecordsEveryReservedMetaKey(t *testing.T) {
 	}
 	runVcf(t, append(args, "testdata/coverage.vcf")...)
 
-	m, err := varstore.ReadManifest(base)
+	m, err := varstore.ReadVolumeManifest(base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestToParquetGenericMetaFlag(t *testing.T) {
 		"--meta", "url=https://example.org/?a=1&b=2",
 		"testdata/coverage.vcf")
 
-	m, err := varstore.ReadManifest(base)
+	m, err := varstore.ReadVolumeManifest(base)
 	if err != nil {
 		t.Fatal(err)
 	}

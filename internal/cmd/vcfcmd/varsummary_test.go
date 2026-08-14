@@ -65,7 +65,7 @@ func TestVarsummaryCensusCountsRows(t *testing.T) {
 		t.Fatalf("--counts produced no census:\n%s", out)
 	}
 
-	m, err := varstore.ReadManifest(base)
+	m, err := varstore.ReadVolumeManifest(base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,11 +85,11 @@ func TestVarsummaryJSONIsTheManifest(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "cohort")
 	runVcf(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 
-	var fromCmd, fromDisk varstore.Manifest
+	var fromCmd, fromDisk varstore.VolumeManifest
 	if err := json.Unmarshal([]byte(runVcf(t, "vcf-varsummary", "--format", "json", base)), &fromCmd); err != nil {
 		t.Fatal(err)
 	}
-	m, err := varstore.ReadManifest(base)
+	m, err := varstore.ReadVolumeManifest(base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestVarsummaryDefaultDoesNotScan(t *testing.T) {
 func TestVarsummaryExplainsAMissingManifest(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "cohort")
 	runVcf(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
-	if err := os.Remove(varstore.ManifestPath(base)); err != nil {
+	if err := os.Remove(varstore.VolumeManifestPath(base)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -154,7 +154,7 @@ func TestVarsummaryExplainsAMissingManifest(t *testing.T) {
 	if err == nil {
 		t.Fatal("a manifest-less store was summarized as though it were fine")
 	}
-	if !strings.Contains(err.Error(), varstore.ManifestFile) {
+	if !strings.Contains(err.Error(), varstore.VolumeManifestFile) {
 		t.Errorf("the error does not name what is missing: %v", err)
 	}
 }
@@ -166,7 +166,7 @@ func TestVarsummaryExplainsAMissingManifest(t *testing.T) {
 func TestVarsummaryReportsWhatAnUnreadableStoreContains(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "cohort")
 	runVcf(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
-	if err := os.Remove(varstore.ManifestPath(base)); err != nil {
+	if err := os.Remove(varstore.VolumeManifestPath(base)); err != nil {
 		t.Fatal(err)
 	}
 
