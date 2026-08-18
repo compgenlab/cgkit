@@ -11,11 +11,11 @@ import (
 	"github.com/compgenlab/cghts/varstore"
 )
 
-// convert runs vcf-toparquet into a temp dir and returns the store base name.
+// convert runs vcf-tovarstore into a temp dir and returns the store base name.
 func convert(t *testing.T, input string, extra ...string) string {
 	t.Helper()
 	base := filepath.Join(t.TempDir(), "store")
-	args := append([]string{"vcf-toparquet", "--out", base}, extra...)
+	args := append([]string{"vcf-tovarstore", "--out", base}, extra...)
 	runVcf(t, append(args, input)...)
 	return base
 }
@@ -46,7 +46,7 @@ func readCalls(t *testing.T, base string) []varstore.Call {
 }
 
 func TestVcfToParquetRequiresOut(t *testing.T) {
-	err := runVcfErr(t, "vcf-toparquet", "testdata/multiallelic.vcf")
+	err := runVcfErr(t, "vcf-tovarstore", "testdata/multiallelic.vcf")
 	if err == nil || !strings.Contains(err.Error(), "--out") {
 		t.Errorf("expected an --out error, got %v", err)
 	}
@@ -190,7 +190,7 @@ func TestVcfToParquetLowDepthIsNotAssayed(t *testing.T) {
 // TestVcfToParquetNoCallableRefuses pins that a source without DP is rejected
 // rather than quietly producing a store that cannot classify.
 func TestVcfToParquetNoCallableRefuses(t *testing.T) {
-	err := runVcfErr(t, "vcf-toparquet", "--out", filepath.Join(t.TempDir(), "s"), "testdata/sample.vcf")
+	err := runVcfErr(t, "vcf-tovarstore", "--out", filepath.Join(t.TempDir(), "s"), "testdata/sample.vcf")
 	if err == nil || !strings.Contains(err.Error(), "--no-callable") {
 		t.Errorf("expected a --no-callable error for a DP-less VCF, got %v", err)
 	}
@@ -206,7 +206,7 @@ func TestVcfToParquetNoCallableRefuses(t *testing.T) {
 // about the store that legitimately has no callable runs.
 func TestVarQueryHomRefRefusesWithoutRegions(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "store")
-	runVcf(t, "vcf-toparquet", "--no-callable", "--out", base, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--no-callable", "--out", base, "testdata/coverage.vcf")
 	err := runVcfErr(t, "vcf-varquery", "--variant", "1:100:A:G", "--hom-ref", base)
 	if err == nil {
 		t.Fatal("expected an error when the regions file is missing")
@@ -724,7 +724,7 @@ func TestVerboseReportsAbsentQualityFields(t *testing.T) {
 // time, so a store built from quality-less input says so when it is created.
 func TestVerboseConversionReportsFieldPresence(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "s")
-	out := runVcf(t, "vcf-toparquet", "-v", "--no-callable", "--out", base, "testdata/sample.vcf")
+	out := runVcf(t, "vcf-tovarstore", "-v", "--no-callable", "--out", base, "testdata/sample.vcf")
 	for _, want := range []string{"fields present", "GQ  ABSENT", "DP  ABSENT"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("verbose conversion report missing %q, got:\n%s", want, out)
@@ -733,7 +733,7 @@ func TestVerboseConversionReportsFieldPresence(t *testing.T) {
 
 	// And with quality present it should report coverage rather than absence.
 	base2 := filepath.Join(t.TempDir(), "s2")
-	out2 := runVcf(t, "vcf-toparquet", "-v", "--out", base2, "testdata/coverage.vcf")
+	out2 := runVcf(t, "vcf-tovarstore", "-v", "--out", base2, "testdata/coverage.vcf")
 	if strings.Contains(out2, "DP  ABSENT") {
 		t.Errorf("coverage.vcf has DP; should not be reported absent:\n%s", out2)
 	}
@@ -775,7 +775,7 @@ func TestQuietByDefault(t *testing.T) {
 // bare names, with no prefix dot.
 func TestStoreDirLayout(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "cohort") + string(os.PathSeparator)
-	runVcf(t, "vcf-toparquet", "--out", dir, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", dir, "testdata/coverage.vcf")
 
 	for _, name := range []string{"calls.parquet", "sites.parquet", "regions.parquet"} {
 		p := filepath.Join(dir, name)
@@ -800,8 +800,8 @@ func TestStoreDirAndPrefixAgree(t *testing.T) {
 	tmp := t.TempDir()
 	dir := filepath.Join(tmp, "d") + string(os.PathSeparator)
 	pfx := filepath.Join(tmp, "p")
-	runVcf(t, "vcf-toparquet", "--out", dir, "testdata/coverage.vcf")
-	runVcf(t, "vcf-toparquet", "--out", pfx, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", dir, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", pfx, "testdata/coverage.vcf")
 
 	a := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--hom-ref", dir))
 	b := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", "--hom-ref", pfx))
@@ -816,7 +816,7 @@ func TestStoreDirAndPrefixAgree(t *testing.T) {
 func TestStoreDirAcceptedEveryWay(t *testing.T) {
 	tmp := t.TempDir()
 	dir := filepath.Join(tmp, "cohort")
-	runVcf(t, "vcf-toparquet", "--out", dir+string(os.PathSeparator), "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", dir+string(os.PathSeparator), "testdata/coverage.vcf")
 
 	want := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G",
 		dir+string(os.PathSeparator)))
@@ -868,9 +868,9 @@ func TestStoreOverwriteRequiresForce(t *testing.T) {
 	} {
 		t.Run(form.name, func(t *testing.T) {
 			base := filepath.Join(t.TempDir(), "store") + form.suffix
-			runVcf(t, "vcf-toparquet", "--out", base, "testdata/coverage.vcf")
+			runVcf(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 
-			err := runVcfErr(t, "vcf-toparquet", "--out", base, "testdata/coverage.vcf")
+			err := runVcfErr(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 			if err == nil {
 				t.Fatal("expected a refusal to overwrite an existing store")
 			}
@@ -883,7 +883,7 @@ func TestStoreOverwriteRequiresForce(t *testing.T) {
 				t.Errorf("refusal damaged the existing store:\n%s", out)
 			}
 			// And --force must go through.
-			runVcf(t, "vcf-toparquet", "--force", "--out", base, "testdata/coverage.vcf")
+			runVcf(t, "vcf-tovarstore", "--force", "--out", base, "testdata/coverage.vcf")
 		})
 	}
 }
@@ -898,7 +898,7 @@ func TestStoreOverwriteRefusesOnPartialSet(t *testing.T) {
 	if err := os.Remove(varstore.RegionsPath(base)); err != nil {
 		t.Fatal(err)
 	}
-	err := runVcfErr(t, "vcf-toparquet", "--out", base, "testdata/coverage.vcf")
+	err := runVcfErr(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 	if err == nil {
 		t.Fatal("expected a refusal with only the sites member present")
 	}
@@ -918,10 +918,10 @@ func TestStoreOutSlashIsOptional(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		runVcf(t, "vcf-toparquet", "--out", dir+suffix, "testdata/coverage.vcf")
+		runVcf(t, "vcf-tovarstore", "--out", dir+suffix, "testdata/coverage.vcf")
 		for _, p := range []string{
 			varstore.CallsPath(dir), varstore.SitesPath(dir),
-			varstore.RegionsPath(dir), varstore.ManifestPath(dir),
+			varstore.RegionsPath(dir), varstore.VolumeManifestPath(dir),
 		} {
 			if _, err := os.Stat(p); err != nil {
 				t.Errorf("--out %q: %s missing: %v", dir+suffix, filepath.Base(p), err)
@@ -948,7 +948,7 @@ func TestStoreDirWithUnrelatedContentIsFine(t *testing.T) {
 	if err := os.WriteFile(other, []byte("keep me"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runVcf(t, "vcf-toparquet", "--out", dir, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", dir, "testdata/coverage.vcf")
 
 	b, err := os.ReadFile(other)
 	if err != nil || string(b) != "keep me" {
@@ -959,7 +959,7 @@ func TestStoreDirWithUnrelatedContentIsFine(t *testing.T) {
 // TestMultiVcfCombines pins that several inputs land in one store.
 func TestMultiVcfCombines(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "s") + string(os.PathSeparator)
-	runVcf(t, "vcf-toparquet", "--out", base,
+	runVcf(t, "vcf-tovarstore", "--out", base,
 		"testdata/multi_chr1.vcf", "testdata/multi_chr2.vcf")
 
 	s, err := varstore.OpenParquet(base)
@@ -989,9 +989,9 @@ func TestMultiVcfCombines(t *testing.T) {
 func TestMultiVcfRemapsSampleOrder(t *testing.T) {
 	canonical := filepath.Join(t.TempDir(), "a") + string(os.PathSeparator)
 	reordered := filepath.Join(t.TempDir(), "b") + string(os.PathSeparator)
-	runVcf(t, "vcf-toparquet", "--out", canonical,
+	runVcf(t, "vcf-tovarstore", "--out", canonical,
 		"testdata/multi_chr1.vcf", "testdata/multi_chr2.vcf")
-	runVcf(t, "vcf-toparquet", "--out", reordered,
+	runVcf(t, "vcf-tovarstore", "--out", reordered,
 		"testdata/multi_chr1.vcf", "testdata/multi_chr2_reordered.vcf")
 
 	for _, l := range []string{"chr2:100:G:C", "chr2:200:T:A"} {
@@ -1008,7 +1008,7 @@ func TestMultiVcfRemapsSampleOrder(t *testing.T) {
 // that the message names what differs rather than just saying they differ.
 func TestMultiVcfRejectsDifferentSamples(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "s") + string(os.PathSeparator)
-	err := runVcfErr(t, "vcf-toparquet", "--out", base,
+	err := runVcfErr(t, "vcf-tovarstore", "--out", base,
 		"testdata/multi_chr1.vcf", "testdata/multi_chr2_othersamples.vcf")
 	if err == nil {
 		t.Fatal("expected a refusal for differing sample sets")
@@ -1024,7 +1024,7 @@ func TestMultiVcfRejectsDifferentSamples(t *testing.T) {
 // would write the same site twice and split its AC/AN across two rows.
 func TestMultiVcfRejectsOverlap(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "s") + string(os.PathSeparator)
-	err := runVcfErr(t, "vcf-toparquet", "--out", base,
+	err := runVcfErr(t, "vcf-tovarstore", "--out", base,
 		"testdata/multi_chr1.vcf", "testdata/multi_chr1.vcf")
 	if err == nil {
 		t.Fatal("expected a refusal for overlapping inputs")
@@ -1040,15 +1040,15 @@ func TestMultiVcfRejectsOverlap(t *testing.T) {
 func TestFailedConversionLeavesNothing(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "s") + string(os.PathSeparator)
-	if err := runVcfErr(t, "vcf-toparquet", "--out", base,
+	if err := runVcfErr(t, "vcf-tovarstore", "--out", base,
 		"testdata/multi_chr1.vcf", "testdata/multi_chr2_othersamples.vcf"); err == nil {
 		t.Fatal("expected the conversion to fail")
 	}
-	if found := varstore.ExistingMembers(base); len(found) > 0 {
+	if found := varstore.ExistingTables(base); len(found) > 0 {
 		t.Errorf("failed conversion left %v behind", found)
 	}
 	// The retry must succeed without --force.
-	runVcf(t, "vcf-toparquet", "--out", base,
+	runVcf(t, "vcf-tovarstore", "--out", base,
 		"testdata/multi_chr1.vcf", "testdata/multi_chr2.vcf")
 }
 
@@ -1102,7 +1102,7 @@ func TestSpanningRecordBackendsAgree(t *testing.T) {
 	gz := filepath.Join(dir, "spanning.vcf.gz")
 	runVcf(t, "vcf-filter", "-o", gz, "--tbi", src)
 	store := filepath.Join(dir, "store") + string(os.PathSeparator)
-	runVcf(t, "vcf-toparquet", "--out", store, "--min-dp", "10", src)
+	runVcf(t, "vcf-tovarstore", "--out", store, "--min-dp", "10", src)
 
 	for _, region := range []string{
 		"chr1:1400-1600", // inside the symbolic DEL, via INFO/END
@@ -1138,7 +1138,7 @@ func TestSpanningRecordBackendsAgree(t *testing.T) {
 // reduced to its first base. Refusing is the only honest outcome until a blocks
 // store exists.
 func TestToParquetRefusesGvcf(t *testing.T) {
-	err := runVcfErr(t, "vcf-toparquet", "--out",
+	err := runVcfErr(t, "vcf-tovarstore", "--out",
 		filepath.Join(t.TempDir(), "g")+string(os.PathSeparator), "testdata/gvcf.vcf")
 	if err == nil {
 		t.Fatal("converting a gVCF should be refused")
@@ -1161,7 +1161,7 @@ func TestToParquetRefusesGvcf(t *testing.T) {
 // argument about reference blocks the file does not contain.
 func TestToParquetConvertsMsVcf(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "ms") + string(os.PathSeparator)
-	runVcf(t, "vcf-toparquet", "--out", store, "testdata/msvcf.vcf")
+	runVcf(t, "vcf-tovarstore", "--out", store, "testdata/msvcf.vcf")
 
 	got := runVcf(t, "vcf-varquery", "--variant", "chr8", store)
 	// The block allele is masked out of a mixed "A,<NON_REF>" record the way any
@@ -1194,7 +1194,7 @@ func TestToParquetConvertsMsVcf(t *testing.T) {
 // say nothing, which on a per-chromosome callset is most of them.
 func TestToParquetProgressReportsPosition(t *testing.T) {
 	store := filepath.Join(t.TempDir(), "p") + string(os.PathSeparator)
-	out := runVcf(t, "vcf-toparquet", "-v", "--out", store, "testdata/msvcf.vcf")
+	out := runVcf(t, "vcf-tovarstore", "-v", "--out", store, "testdata/msvcf.vcf")
 	if !strings.Contains(out, "chr8: starting at 1000") {
 		t.Errorf("progress did not report the first coordinate:\n%s", out)
 	}
@@ -1210,7 +1210,7 @@ func TestToParquetDiscardsOnNoDP(t *testing.T) {
 	dir := t.TempDir()
 	store := filepath.Join(dir, "s") + string(os.PathSeparator)
 	// sample.vcf carries no DP, so callable runs cannot be built.
-	if err := runVcfErr(t, "vcf-toparquet", "--out", store, "testdata/sample.vcf"); err == nil {
+	if err := runVcfErr(t, "vcf-tovarstore", "--out", store, "testdata/sample.vcf"); err == nil {
 		t.Fatal("converting a VCF with no DP should fail without --no-callable")
 	}
 	left, err := os.ReadDir(store)
@@ -1222,7 +1222,7 @@ func TestToParquetDiscardsOnNoDP(t *testing.T) {
 		t.Errorf("failed conversion left a store behind: %v", names)
 	}
 	// The retry the error message asks for must not be blocked by the wreckage.
-	runVcf(t, "vcf-toparquet", "--no-callable", "--out", store, "testdata/sample.vcf")
+	runVcf(t, "vcf-tovarstore", "--no-callable", "--out", store, "testdata/sample.vcf")
 }
 
 // TestGvcfQueryAnswersOffCatalog is the CLI-level contract for gVCF support.

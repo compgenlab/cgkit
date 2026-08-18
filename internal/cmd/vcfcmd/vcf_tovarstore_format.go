@@ -15,7 +15,7 @@ import (
 // The counterpart to --info, and the cardinality fits better: a call row is one
 // sample at one ALT, so Number=A maps to it exactly.
 //
-// AN OPTION, NOT A DEFAULT. calls.parquet is the large member -- roughly a
+// AN OPTION, NOT A DEFAULT. calls.parquet is the large table -- roughly a
 // hundred rows for every one in the sites catalog -- so a column here is a
 // hundred times the cost of the same column there. DP, GQ and AD are stored on
 // every call already; this is for the ones that are not.

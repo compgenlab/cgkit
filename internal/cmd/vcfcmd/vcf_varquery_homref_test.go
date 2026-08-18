@@ -247,12 +247,12 @@ func TestHomRefOffCatalogReportsNothing(t *testing.T) {
 // cannot tell a reference call from an unassayed position must error in both
 // modes rather than silently report nobody as reference.
 func TestHomRefRefusesIncompleteStore(t *testing.T) {
-	// --no-callable rather than a deleted regions file: removing a member the
+	// --no-callable rather than a deleted regions file: removing a table the
 	// manifest vouched for is corruption and is caught at open with a different
 	// (also correct) error. What this pins is the store that never tracked
 	// coverage in the first place.
 	base := filepath.Join(t.TempDir(), "store")
-	runVcf(t, "vcf-toparquet", "--no-callable", "--out", base, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--no-callable", "--out", base, "testdata/coverage.vcf")
 	for _, args := range [][]string{
 		{"vcf-varquery", "--variant", "1:100:A:G", "--hom-ref", base},
 		{"vcf-varquery", "--sample", "S1", "--hom-ref", base},

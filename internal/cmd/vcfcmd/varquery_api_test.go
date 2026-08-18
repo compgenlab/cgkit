@@ -144,10 +144,10 @@ func TestQuerySiblingAltDisqualifiesReference(t *testing.T) {
 // silently ALT-only stream for a complete answer.
 func TestQueryIncludeRefRefusesAtSetup(t *testing.T) {
 	// --no-callable rather than a deleted regions file: since the manifest
-	// records what each member held, removing one is corruption and is caught
+	// records what each table held, removing one is corruption and is caught
 	// at open. This is about the store that legitimately tracked no coverage.
 	base := filepath.Join(t.TempDir(), "store")
-	runVcf(t, "vcf-toparquet", "--no-callable", "--out", base, "testdata/coverage.vcf")
+	runVcf(t, "vcf-tovarstore", "--no-callable", "--out", base, "testdata/coverage.vcf")
 	p, err := varstore.OpenParquet(base)
 	if err != nil {
 		t.Fatal(err)

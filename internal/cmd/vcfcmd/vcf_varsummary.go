@@ -10,6 +10,7 @@ import (
 
 	"github.com/compgenlab/cghts/varstore"
 	"github.com/spf13/cobra"
+	"io"
 )
 
 var (
@@ -29,7 +30,7 @@ var vcfVarSummaryCmd = &cobra.Command{
 	Long: `Report what a variant source contains, without querying genotypes.
 
 The input may be a VCF (plain or bgzipped) or a Parquet store written by
-vcf-toparquet, local or remote. The backend is inferred from the path; override
+vcf-tovarstore, local or remote. The backend is inferred from the path; override
 with --store.
 
 The default report never reads a single record. It is O(header) on both
@@ -49,7 +50,7 @@ rather than sprung on you.
 What each backend can say differs, and the report says which it is rather than
 inventing the missing half. A store carries a manifest: when it was written, by
 what command, from which inputs, at what --min-dp, how many rows landed in each
-member, and how many sites and calls each chromosome contributed. A VCF carries
+table, and how many sites and calls each chromosome contributed. A VCF carries
 none of that -- it is not a conversion, so there is nothing to record about one.
 What a VCF does carry is its header: the sample roster, the ##contig
 declarations, and whether a tabix index sits beside it.
@@ -146,12 +147,60 @@ func writeSummary(cmd *cobra.Command, out *bufio.Writer, store varstore.Store, p
 	}
 
 	switch s := store.(type) {
-	case *varstore.ParquetStore:
+	case *varstore.ParquetVolume:
 		return summarizeStore(out, errOut, s, path, samples)
 	case *varstore.VcfStore:
 		return summarizeVcf(ctx, out, errOut, s, path, samples)
+	case *varstore.VarStore:
+		return summarizeMultiVolume(out, s, path)
 	}
 	return fmt.Errorf("unknown backend %T", store)
+}
+
+// summarizeMultiVolume describes an archive as an archive: what it holds and
+// what it holds it under, rather than a volume's worth of detail repeated.
+//
+// A store's volumes are checked against its declared agreement as each opens,
+// so reporting one is deliberately NOT the same as reporting each -- printing
+// twenty-five near-identical blocks would bury the one thing a reader wants,
+// which is whether the archive is coherent and what it covers.
+func summarizeMultiVolume(out io.Writer, s *varstore.VarStore, path string) error {
+	man := s.StoreManifest()
+	fmt.Fprintf(out, "\n%s\n", path)
+	fmt.Fprintf(out, "  a varstore of %d volumes over %d samples\n\n", len(man.Volumes), len(man.Samples))
+
+	var sites, calls int64
+	fmt.Fprintf(out, "  %-24s %-24s %12s %12s\n", "VOLUME", "CHROMOSOMES", "SITES", "CALLS")
+	for _, m := range man.Volumes {
+		fmt.Fprintf(out, "  %-24s %-24s %12s %12s\n",
+			m.Name, strings.Join(m.Chroms, " "), comma(m.Sites), comma(m.Calls))
+		sites += m.Sites
+		calls += m.Calls
+	}
+	fmt.Fprintf(out, "  %-24s %-24s %12s %12s\n\n", "", "", comma(sites), comma(calls))
+
+	// The agreement, stated once, because it is the archive's whole claim: these
+	// volumes answer one population under one set of rules.
+	fmt.Fprintf(out, "  min-dp        %d at conversion\n", man.Params.MinDP)
+	if len(man.Params.DepthBands) > 0 {
+		fmt.Fprintf(out, "  depth bands   %v\n", man.Params.DepthBands)
+	}
+	if len(man.Params.Info) > 0 {
+		var names []string
+		for _, f := range man.Params.Info {
+			names = append(names, f.Name)
+		}
+		fmt.Fprintf(out, "  info          %s\n", strings.Join(names, ", "))
+	}
+	if len(man.Params.Format) > 0 {
+		var names []string
+		for _, f := range man.Params.Format {
+			names = append(names, f.Name)
+		}
+		fmt.Fprintf(out, "  format        %s\n", strings.Join(names, ", "))
+	}
+	fmt.Fprintln(out)
+	return nil
 }
 
 // writeStoreMeta reports the metadata a conversion recorded, or nothing at all
@@ -196,11 +245,11 @@ func writeStoreMeta(out *bufio.Writer, meta map[string]string) {
 }
 
 func summarizeStore(out *bufio.Writer, errOut interface{ Write([]byte) (int, error) },
-	s *varstore.ParquetStore, path string, samples []string) error {
-	m := s.Manifest()
+	s *varstore.ParquetVolume, path string, samples []string) error {
+	m := s.VolumeManifest()
 	p := s.Provenance()
 
-	fmt.Fprintf(out, "source     parquet store %s\n", path)
+	fmt.Fprintf(out, "source     varstore volume %s\n", path)
 	fmt.Fprintf(out, "samples    %d\n", len(samples))
 	fmt.Fprintf(out, "created    %s\n", m.Created.Format("2006-01-02 15:04:05 MST"))
 	if m.Program != "" {
@@ -227,9 +276,9 @@ func summarizeStore(out *bufio.Writer, errOut interface{ Write([]byte) (int, err
 
 	fmt.Fprintf(out, "\nmembers\n")
 	for _, name := range []string{
-		varstore.CallsMember, varstore.SitesMember, varstore.RegionsMember,
+		varstore.CallsTable, varstore.SitesTable, varstore.RegionsTable,
 	} {
-		info, ok := m.Members[name]
+		info, ok := m.Tables[name]
 		if !ok {
 			continue
 		}
@@ -331,8 +380,8 @@ func writeSummaryJSON(out *bufio.Writer, store varstore.Store, path string) erro
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	switch s := store.(type) {
-	case *varstore.ParquetStore:
-		return enc.Encode(s.Manifest())
+	case *varstore.ParquetVolume:
+		return enc.Encode(s.VolumeManifest())
 	case *varstore.VcfStore:
 		samples, err := s.Samples()
 		if err != nil {
@@ -371,10 +420,10 @@ func describeUnreadableStore(ctx context.Context, path string, openErr error) (s
 
 	any := false
 	for _, name := range []string{
-		varstore.CallsMember, varstore.SitesMember, varstore.RegionsMember,
+		varstore.CallsTable, varstore.SitesTable, varstore.RegionsTable,
 	} {
-		p := varstore.MemberPath(base, name)
-		rows, size, err := varstore.MemberShape(ctx, p)
+		p := varstore.TablePath(base, name)
+		rows, size, err := varstore.TableShape(ctx, p)
 		switch {
 		case err != nil:
 			fmt.Fprintf(&b, "  %-9s absent\n", name)
@@ -388,15 +437,15 @@ func describeUnreadableStore(ctx context.Context, path string, openErr error) (s
 			fmt.Fprintf(&b, "  %-9s %12d rows  %14d bytes\n", name, rows, size)
 		}
 	}
-	if _, err := varstore.ReadManifestContext(ctx, base); err != nil {
-		fmt.Fprintf(&b, "  %-9s missing\n", varstore.ManifestMember)
+	if _, err := varstore.ReadVolumeManifestContext(ctx, base); err != nil {
+		fmt.Fprintf(&b, "  %-9s missing\n", varstore.VolumeManifestName)
 	}
 	if !any {
 		return "", false
 	}
-	fmt.Fprintf(&b, "\na member with a row count was finalized; one marked NEVER FINALIZED is\n")
-	fmt.Fprintf(&b, "where the conversion stopped. Either way a finished member says nothing\n")
+	fmt.Fprintf(&b, "\na table with a row count was finalized; one marked NEVER FINALIZED is\n")
+	fmt.Fprintf(&b, "where the conversion stopped. Either way a finished table says nothing\n")
 	fmt.Fprintf(&b, "about how much of the input went into it -- that is what the manifest\n")
-	fmt.Fprintf(&b, "records, and why it is required. Re-convert with vcf-toparquet --force.\n\n")
+	fmt.Fprintf(&b, "records, and why it is required. Re-convert with vcf-tovarstore --force.\n\n")
 	return b.String(), true
 }
