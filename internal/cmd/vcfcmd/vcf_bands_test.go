@@ -60,15 +60,15 @@ func convertBands(t *testing.T, bands []int) string {
 	}
 	out := filepath.Join(dir, "store")
 
-	vcfToParquetOut = out
-	vcfToParquetMinDP = 10
-	vcfToParquetBands = bands
-	vcfToParquetForce = true
+	vcfToVarstoreOut = out
+	vcfToVarstoreMinDP = 10
+	vcfToVarstoreBands = bands
+	vcfToVarstoreForce = true
 	t.Cleanup(func() {
-		vcfToParquetOut, vcfToParquetMinDP, vcfToParquetBands, vcfToParquetForce = "", 10, []int{10, 20, 50}, false
+		vcfToVarstoreOut, vcfToVarstoreMinDP, vcfToVarstoreBands, vcfToVarstoreForce = "", 10, []int{10, 20, 50}, false
 	})
 
-	cmd := vcfToParquetCmd
+	cmd := vcfToVarstoreCmd
 	cmd.SetArgs([]string{in})
 	if err := cmd.RunE(cmd, []string{in}); err != nil {
 		t.Fatalf("convert: %v", err)

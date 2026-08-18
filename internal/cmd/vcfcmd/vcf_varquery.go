@@ -37,12 +37,12 @@ var vcfVarQueryCmd = &cobra.Command{
 	Use:         "vcf-varquery <input.vcf | store-base>",
 	Short:       "Query genotypes by site, by sample, or both",
 	Long: `Query genotypes without caring which format holds them. The input may be
-a VCF (plain or bgzipped) or a Parquet store written by vcf-toparquet. A store
+a VCF (plain or bgzipped) or a Parquet store written by vcf-tovarstore. A store
 is a directory, and may be named by it ("cohort" or "cohort/") or by any member
 inside it ("cohort/calls.parquet", "cohort/manifest.json.gz"). The backend is
 inferred from the path; override with --store.
 
-A store must carry the manifest vcf-toparquet writes when a conversion
+A store must carry the manifest vcf-tovarstore writes when a conversion
 completes; one written by an older cgkit, or left behind by a conversion that
 was interrupted, is refused rather than queried. Inspect it with vcf-varsummary.
 
@@ -267,7 +267,7 @@ written where nothing is known would assert a depth the data never had.`,
 // resolved to nothing. All this adds is the flag advice, which is a CLI concern
 // and the one thing the library should not be spelling out.
 func openVarStore(ctx context.Context, path, kind string) (varstore.Store, error) {
-	store, err := varstore.OpenStore(ctx, path, kind)
+	store, err := varstore.Open(ctx, path, kind)
 	if err != nil && kind == "" && errors.Is(err, varstore.ErrUnknownStoreKind) {
 		return nil, fmt.Errorf("%w; pass --store vcf or --store parquet", err)
 	}
@@ -292,7 +292,7 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 	ctx := cmd.Context()
 	out := cmd.ErrOrStderr()
 	switch s := store.(type) {
-	case *varstore.ParquetStore:
+	case *varstore.ParquetVolume:
 		p := s.Provenance()
 		fmt.Fprintf(out, "store    parquet %s (%d samples)\n", path, p.NumSamples)
 		if p.Source != "" {
@@ -663,7 +663,7 @@ func gtMatrixHeader(names []string, source string, store varstore.Store, q varst
 	h.AddLine("##cgkit_vcf-varquerySource=" + source)
 	h.AddLine("##cgkit_vcf-varqueryNote=AC/AN/AF/NS/nhomalt are recomputed over the samples in " +
 		"this file; AN counts only samples the source can vouch for as called at the depth threshold")
-	if ps, ok := store.(*varstore.ParquetStore); ok {
+	if ps, ok := store.(*varstore.ParquetVolume); ok {
 		p := ps.Provenance()
 		if p.Source != "" {
 			h.AddLine("##cgkit_vcf-varqueryStoreSource=" + p.Source)
@@ -681,7 +681,7 @@ func gtMatrixHeader(names []string, source string, store varstore.Store, q varst
 // unchanged -- so a length, an assembly, an md5 or anything else the source
 // declared survives rather than being rebuilt from the parts we happen to model.
 func addRecordedContigs(h *vcf.VcfHeader, store varstore.Store) bool {
-	ps, ok := store.(*varstore.ParquetStore)
+	ps, ok := store.(*varstore.ParquetVolume)
 	if !ok {
 		return false // a VCF backend: its own header is not exposed for replay
 	}
@@ -817,7 +817,7 @@ func tsvHeader() []string {
 // for a backend with no such threshold -- a VCF, where a call either carries its
 // own depth or none is knowable.
 func vouchedMinDP(store varstore.Store) int32 {
-	if ps, ok := store.(*varstore.ParquetStore); ok {
+	if ps, ok := store.(*varstore.ParquetVolume); ok {
 		if p := ps.Provenance(); !p.NoCallable {
 			return p.MinDP
 		}
@@ -915,7 +915,7 @@ func reportQuery(cmd *cobra.Command, store varstore.Store, q varstore.Query, t *
 			// Allele frequency from the catalog, which knows the site even when
 			// nobody carries it -- so this stays meaningful at AC 0. Note these are
 			// the store's counts over ALL its samples, not the query's subset.
-			if ps, ok := store.(*varstore.ParquetStore); ok {
+			if ps, ok := store.(*varstore.ParquetVolume); ok {
 				if site, found, err := ps.Site(l); err == nil && found {
 					fmt.Fprintf(out, "  site        AC=%d AN=%d AF=%.6g  n_carriers=%d n_called=%d n_lowdp=%d\n",
 						site.AC, site.AN, site.AF(), site.NCarriers, site.NCalled, site.NLowDP)
