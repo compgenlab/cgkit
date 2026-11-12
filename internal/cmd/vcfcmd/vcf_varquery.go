@@ -97,7 +97,7 @@ sample is not a carrier of allele 1, yet it is not reference either, so it
 appears under neither -- writing 0/0 for it would be a genotype the source never
 contained.
 
-With no site restriction --hom-ref walks the entire sites catalog, since being
+With no site restriction --hom-ref walks the entire catalog, since being
 reference is a statement about every site the callset interrogated -- expect
 roughly one row per variant in the source. --variant bounds it.
 
@@ -111,8 +111,8 @@ no DP/AD/GQ, where the same query against a VCF reports the recorded genotype
 and its quality fields.
 
 A VCF can always answer, because it stores an explicit genotype for every sample
-at every record. A Parquet store reconstructs the reference calls from its sites
-and callable-regions files, and refuses if either is missing or it was built
+at every record. A Parquet store reconstructs the reference calls from its catalog
+and catalog_runs tables, and refuses if either is missing or it was built
 without coverage information.
 
   --sample SUBJECT    a subject, or a file of subject names (repeatable)
@@ -313,7 +313,7 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 		}
 		fmt.Fprintf(out, "  spans       %s", p.Spans)
 		if p.Spans == varstore.SpansSites {
-			fmt.Fprintf(out, "  (answers only for variants in the sites catalog)")
+			fmt.Fprintf(out, "  (answers only for variants in the catalog)")
 		}
 		fmt.Fprintln(out)
 		if p.NoCallable {

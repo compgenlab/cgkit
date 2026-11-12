@@ -1,11 +1,11 @@
-# vcf-toparquet: the Parquet genotype store
+# vcf-tovarstore: the Parquet genotype store
 
-A columnar, sparse on-disk format for cohort genotypes, written by `cgkit vcf-toparquet` and queried by `cgkit vcf-varquery`. It answers "who carries this variant" and "what does this subject carry" without reading every genotype in the callset, and — unlike a plain VCF — it keeps enough context to tell a confidently-called reference genotype apart from a position that was never assayed.
+A columnar, sparse on-disk format for cohort genotypes, written by `cgkit vcf-tovarstore` and queried by `cgkit vcf-varquery`. It answers "who carries this variant" and "what does this subject carry" without reading every genotype in the callset, and — unlike a plain VCF — it keeps enough context to tell a confidently-called reference genotype apart from a position that was never assayed.
 
 ## Usage
 
 ```
-cgkit vcf-toparquet --out DIR|s3://bucket/store <input.vcf> [input2.vcf ...]
+cgkit vcf-tovarstore --out DIR|s3://bucket/store <input.vcf> [input2.vcf ...]
 cgkit vcf-varquery [--variant LOCUS | --sample NAME] <input.vcf | store>
 cgkit vcf-varsummary <input.vcf | store>
 ```
@@ -17,8 +17,8 @@ cgkit vcf-varsummary <input.vcf | store>
 ```
 cohort/
   calls.parquet      one row per ALT-carrying genotype
-  sites.parquet      one row per interrogated site, with allele counts
-  regions.parquet    one row per run of called sites, per sample
+  catalog.parquet      one row per interrogated site, with allele counts
+  catalog_runs.parquet    one row per run of called sites, per sample
   manifest.json.gz   written last; the store is unreadable without it
 ```
 
@@ -35,7 +35,7 @@ pointed straight at `cohort/calls.parquet`.
 ### `--out` may name a bucket
 
 ```sh
-cgkit vcf-toparquet --out s3://bucket/cohort input.vcf.gz
+cgkit vcf-tovarstore --out s3://bucket/cohort input.vcf.gz
 ```
 
 The members are streamed as they are produced, so nothing is written locally
@@ -77,7 +77,7 @@ GRCh38, but implying is not declaring, and a store read against the wrong
 assumption does not fail. It answers, with coordinates that mean something else.
 
 ```
-cgkit vcf-toparquet \
+cgkit vcf-tovarstore \
   --meta-dataset 20201028_CCDG_14151_B01_GRM_WGS_2020-08-05 \
   --meta-reference GRCh38 \
   --meta-caller 'GATK 4.2.6.1' \
@@ -137,7 +137,7 @@ a result should be read.
 | `ad_ref`, `ad_alt` | int32 | per-allele, not summed; `-1` when absent |
 | `gq` | int32 | `-1` when absent |
 
-`sites.parquet` — one row per interrogated site, independent of any sample. A site with zero carriers still gets a row; that is the entire point of the file.
+`catalog.parquet` — one row per interrogated site, independent of any sample. A site with zero carriers still gets a row; that is the entire point of the file.
 
 | column | type | notes |
 |---|---|---|
@@ -148,7 +148,7 @@ a result should be read.
 | `n_called` | int32 | **samples** called and passing `--min-dp` |
 | `n_lowdp` | int32 | **samples** failing `--min-dp` here |
 
-`regions.parquet` — runs of consecutive catalog sites at which one sample was called at adequate depth.
+`catalog_runs.parquet` — runs of consecutive catalog sites at which one sample was called at adequate depth.
 
 | column | type | notes |
 |---|---|---|
@@ -167,7 +167,7 @@ A VCF is row-major over samples: one line per site, one column per sample. That 
 
 Two properties fix that:
 
-**Columnar.** Parquet stores each column contiguously, so a query touches only the columns it names, and per-column-chunk statistics let a reader skip whole blocks. `vcf-toparquet` writes rows in coordinate order and declares that ordering, which makes the per-row-group `min`/`max` on `pos` tight and non-overlapping — so a locus lookup can skip every block that cannot contain it. See [row-group pruning](#row-group-pruning).
+**Columnar.** Parquet stores each column contiguously, so a query touches only the columns it names, and per-column-chunk statistics let a reader skip whole blocks. `vcf-tovarstore` writes rows in coordinate order and declares that ordering, which makes the per-row-group `min`/`max` on `pos` tight and non-overlapping — so a locus lookup can skip every block that cannot contain it. See [row-group pruning](#row-group-pruning).
 
 **Sparse.** Only ALT-carrying genotypes are stored. Most genotypes in a cohort callset are homozygous reference, and writing them down costs a great deal to say very little. On the 1000 Genomes 30x BRCA1 slice — 3,747 sites × 3,202 samples ≈ 12.0M genotypes — the store holds **439,183 calls, about 3.7%**.
 
@@ -206,7 +206,7 @@ So at 50 samples, seven out of eight interrogated sites would silently look neve
 
 ### Runs are not coverage
 
-`regions.parquet` looks like a coverage track and must never be read as one. A run records that one sample was successfully called, at adequate depth, at **every catalog site in `[start, end]`**. The interval form is a *compression of a per-site fact* — "called here, and here, and here" — and it says **nothing whatsoever about the bases in between**.
+`catalog_runs.parquet` looks like a coverage track and must never be read as one. A run records that one sample was successfully called, at adequate depth, at **every catalog site in `[start, end]`**. The interval form is a *compression of a per-site fact* — "called here, and here, and here" — and it says **nothing whatsoever about the bases in between**.
 
 This follows from what the source asserted. A plain VCF reports variants and makes no claim about any other position: an unreported base was not observed to be reference, it simply was not reported. The caller may never have looked.
 
@@ -217,7 +217,7 @@ Every store records `cgkit.span_semantics`:
 | value | meaning |
 |---|---|
 | `sites` | intervals mark catalog sites only. All a plain VCF can support. |
-| `blocks` | intervals came from gVCF reference blocks — positive statements about spans. Not yet produced by any converter -- `vcf-toparquet` **refuses** a gVCF rather than mis-storing one. Query a gVCF directly with `vcf-varquery`, which reads reference blocks as coverage. |
+| `blocks` | intervals came from gVCF reference blocks — positive statements about spans. Not yet produced by any converter -- `vcf-tovarstore` **refuses** a gVCF rather than mis-storing one. Query a gVCF directly with `vcf-varquery`, which reads reference blocks as coverage. |
 
 Only a `blocks` store could answer for a position absent from the catalog. Stores predating the key are read as `sites`, the conservative reading.
 
@@ -277,7 +277,7 @@ chr1	200	C	G	S4	1/1	27	27	0	27	99
 
 ## AC/AN versus the sample counts
 
-`sites.parquet` carries both, because they answer different questions and **neither can be derived from the other**.
+`catalog.parquet` carries both, because they answer different questions and **neither can be derived from the other**.
 
 - `ac` / `an` are **allele** counts, per the VCF convention. A `1/1` genotype contributes 2 to each. They come from `GT` alone and are not depth-gated, so `AF` is exactly `AC/AN`.
 - `n_carriers` / `n_called` / `n_lowdp` are **sample** counts. A `1/1` genotype is one carrier, and `n_called`/`n_lowdp` additionally reflect the `--min-dp` used at conversion.
@@ -436,10 +436,10 @@ Note this is a different thing from the section below, which is about a store th
 
 ### Stores that cannot classify refuse rather than degrade
 
-If `sites.parquet` or `regions.parquet` is missing, or the store was built with `--no-callable`, then `--hom-ref` returns `ErrNotClassifiable` instead of an answer:
+If `catalog.parquet` or `catalog_runs.parquet` is missing, or the store was built with `--no-callable`, then `--hom-ref` returns `ErrNotClassifiable` instead of an answer:
 
 ```
-Error: store cannot distinguish non-carrier from not-assayed: cohort/regions.parquet is missing
+Error: store cannot distinguish non-carrier from not-assayed: cohort/catalog_runs.parquet is missing
 ```
 
 Reporting an unobserved sample as reference would invent an observation, so the failure is loud.
@@ -538,7 +538,7 @@ Inputs must **not overlap**: a chromosome cannot be revisited once left, and pos
 
 ## Flags
 
-### vcf-toparquet
+### vcf-tovarstore
 
 | flag | default | description |
 |---|---|---|
@@ -600,6 +600,6 @@ The roster lives in metadata rather than a fourth file because reconstructing re
 
 ## See also
 
-- `cgkit vcf-toparquet --help`, `cgkit vcf-varquery --help`
+- `cgkit vcf-tovarstore --help`, `cgkit vcf-varquery --help`
 - `cgkit vcf-gtcount` — genotype distribution summarized per site
 - The implementation lives in the `varstore` package; its doc comments carry the design rationale in more detail.

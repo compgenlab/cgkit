@@ -140,7 +140,7 @@ out.bed` cannot proceed with help text as its input.
 | `vcf-tobed` | Export allele positions from a VCF file to BED format |
 | `vcf-tobedpe` | Convert a structural-variant VCF to BEDPE format |
 | `vcf-tocount` | Convert a VCF to a count file using the AD (or RO/AO) format field |
-| `vcf-toparquet` | Convert a VCF to a sparse Parquet genotype store ([format docs](docs/vcf-toparquet.md)) |
+| `vcf-tovarstore` | Convert a VCF to a sparse Parquet genotype store ([format docs](docs/vcf-tovarstore.md)) |
 | `vcf-tstv` | Calculate a Ts/Tv ratio for SNVs |
-| `vcf-varquery` | Query genotypes by site, by sample, or both ([format docs](docs/vcf-toparquet.md)) |
+| `vcf-varquery` | Query genotypes by site, by sample, or both ([format docs](docs/vcf-tovarstore.md)) |
 | `vcf-varsummary` | Describe a store or VCF: samples, contigs, provenance, per-chromosome census |

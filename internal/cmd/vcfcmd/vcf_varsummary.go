@@ -263,7 +263,7 @@ func summarizeStore(out *bufio.Writer, errOut interface{ Write([]byte) (int, err
 	}
 	fmt.Fprintf(out, "spans      %s", p.Spans)
 	if p.Spans == varstore.SpansSites {
-		fmt.Fprintf(out, "  (answers only for variants in the sites catalog)")
+		fmt.Fprintf(out, "  (answers only for variants in the catalog)")
 	}
 	fmt.Fprintln(out)
 	if p.NoCallable {
@@ -276,13 +276,13 @@ func summarizeStore(out *bufio.Writer, errOut interface{ Write([]byte) (int, err
 
 	fmt.Fprintf(out, "\nmembers\n")
 	for _, name := range []string{
-		varstore.CallsTable, varstore.SitesTable, varstore.RegionsTable,
+		varstore.CallsTable, varstore.CatalogTable, varstore.CatalogRunsTable,
 	} {
 		info, ok := m.Tables[name]
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(out, "  %-9s %12d rows  %14d bytes\n", name, info.Rows, info.Bytes)
+		fmt.Fprintf(out, "  %-12s %12d rows  %14d bytes\n", name, info.Rows, info.Bytes)
 	}
 
 	if !vcfVarSummaryCounts {
@@ -420,25 +420,25 @@ func describeUnreadableStore(ctx context.Context, path string, openErr error) (s
 
 	any := false
 	for _, name := range []string{
-		varstore.CallsTable, varstore.SitesTable, varstore.RegionsTable,
+		varstore.CallsTable, varstore.CatalogTable, varstore.CatalogRunsTable,
 	} {
 		p := varstore.TablePath(base, name)
 		rows, size, err := varstore.TableShape(ctx, p)
 		switch {
 		case err != nil:
-			fmt.Fprintf(&b, "  %-9s absent\n", name)
+			fmt.Fprintf(&b, "  %-12s absent\n", name)
 		case rows < 0:
 			// Present with no footer: the writer never closed it, so this is
 			// where the conversion died.
 			any = true
-			fmt.Fprintf(&b, "  %-9s %14d bytes, NEVER FINALIZED\n", name, size)
+			fmt.Fprintf(&b, "  %-12s %14d bytes, NEVER FINALIZED\n", name, size)
 		default:
 			any = true
-			fmt.Fprintf(&b, "  %-9s %12d rows  %14d bytes\n", name, rows, size)
+			fmt.Fprintf(&b, "  %-12s %12d rows  %14d bytes\n", name, rows, size)
 		}
 	}
 	if _, err := varstore.ReadVolumeManifestContext(ctx, base); err != nil {
-		fmt.Fprintf(&b, "  %-9s missing\n", varstore.VolumeManifestName)
+		fmt.Fprintf(&b, "  %-12s missing\n", varstore.VolumeManifestName)
 	}
 	if !any {
 		return "", false
