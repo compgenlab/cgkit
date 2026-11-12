@@ -34,7 +34,7 @@ What shipped:
   from `max(ref_end)`, since a matching record may start below a row group's
   minimum.
 - `vcf-strip` refuses to drop `INFO/END` from a gVCF without `--force-end`;
-  `vcf-tobed` reports true spans and skips reference blocks; `vcf-toparquet`
+  `vcf-tobed` reports true spans and skips reference blocks; `vcf-tovarstore`
   records the span.
 
 ## 2. gVCF support — querying DONE; conversion deliberately refused
@@ -58,7 +58,7 @@ over `DP` for that reason: `Missing` passes every gate by design, so a block-der
 call with no `DP` would otherwise be admitted unconditionally — the gate silently
 doing nothing on exactly the state gVCF makes trustworthy.
 
-**`vcf-toparquet` refuses a gVCF.** It used to convert one happily and produce a
+**`vcf-tovarstore` refuses a gVCF.** It used to convert one happily and produce a
 store wrong in three ways nothing downstream could detect: `<NON_REF>` in the sites
 catalog, `AC`/`AN` counting a block allele as an allele, and every block reduced to
 its first base.
@@ -90,13 +90,13 @@ What it needs, in rough order of difficulty:
   shared locus is joint genotyping. Either compute them over the merged cohort or
   refuse to emit them — but not the current behaviour, which would report a
   per-sample count as if it were a cohort count.
-- **The block schema**: block spans in `regions.parquet` with a per-block `MIN_DP`
+- **The block schema**: block spans in `catalog_runs.parquet` with a per-block `MIN_DP`
   column, `SpansBlocks` set, `Classify`'s off-catalog branch wired to the regions
   scan (it already tests `s.spans != SpansBlocks`), and `callsWithRef` given a second
   emission source — it is driven by the sites catalog, so it emits nothing
   off-catalog no matter what the metadata says.
 
-Until then `vcf-toparquet` refuses a gVCF, which is the right answer rather than a
+Until then `vcf-tovarstore` refuses a gVCF, which is the right answer rather than a
 placeholder: the store it would write is wrong in ways nothing downstream can detect.
 
 The refusal keys on **a reference block record**, not on the header. It once used
@@ -107,7 +107,7 @@ GATK-derived callsets. `##ALT=<ID=*>` is worse than incidental: VCF 4.5 gives th
 gVCF unspecified allele and the ordinary spanning-deletion allele the same ALT ID,
 so no header test can separate them even in principle. `vcf-strip` still has to
 decide from the header, because it writes its output header before reading a record;
-`vcf-toparquet` does not, and a failed conversion `Discard()`s, so reading first
+`vcf-tovarstore` does not, and a failed conversion `Discard()`s, so reading first
 costs nothing recoverable. A mixed `G,<NON_REF>` record is a variant record and
 converts, with the block allele masked out the way any non-focal alternate is.
 
@@ -127,7 +127,7 @@ change. Not required by anything.
 
 ## 4. Indel normalization — not started, and mostly not ours
 
-`vcf-toparquet` splits multiallelics but does **not** normalize allele
+`vcf-tovarstore` splits multiallelics but does **not** normalize allele
 representation. Splitting and normalization are routinely conflated because one
 `bcftools norm` invocation does both; they are separate operations and only the
 first is handled here. `bcftools norm -m -both` — a common pre-step — does the
@@ -159,7 +159,7 @@ kilobases at an expanded repeat locus.
 ### Three things it breaks
 
 1. **Sort order.** `checkOrder` errors on `pos < lastPos`
-   (`internal/cmd/vcfcmd/vcf_toparquet.go:833`), which is the correct failure but
+   (`internal/cmd/vcfcmd/vcf_tovarstore.go:833`), which is the correct failure but
    means normalization cannot be a filter inside the record loop. It needs a
    reorder buffer, and the window cannot be computed — only chosen, with an
    explicit error when a record shifts past it. `bcftools norm -w/--site-win`

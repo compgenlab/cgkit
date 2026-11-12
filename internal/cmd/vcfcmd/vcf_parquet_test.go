@@ -55,7 +55,7 @@ func TestVcfToParquetRequiresOut(t *testing.T) {
 func TestVcfToParquetWritesAllThreeFiles(t *testing.T) {
 	base := convert(t, "testdata/multiallelic.vcf")
 	for _, p := range []string{
-		varstore.CallsPath(base), varstore.SitesPath(base), varstore.RegionsPath(base),
+		varstore.CallsPath(base), varstore.CatalogPath(base), varstore.CatalogRunsPath(base),
 	} {
 		st, err := os.Stat(p)
 		if err != nil {
@@ -777,7 +777,7 @@ func TestStoreDirLayout(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "cohort") + string(os.PathSeparator)
 	runVcf(t, "vcf-tovarstore", "--out", dir, "testdata/coverage.vcf")
 
-	for _, name := range []string{"calls.parquet", "sites.parquet", "regions.parquet"} {
+	for _, name := range []string{"calls.parquet", "catalog.parquet", "catalog_runs.parquet"} {
 		p := filepath.Join(dir, name)
 		st, err := os.Stat(p)
 		if err != nil {
@@ -823,8 +823,8 @@ func TestStoreDirAcceptedEveryWay(t *testing.T) {
 	for _, spelling := range []string{
 		dir,                                   // bare directory, no slash
 		filepath.Join(dir, "calls.parquet"),   // a member
-		filepath.Join(dir, "sites.parquet"),   // a different member
-		filepath.Join(dir, "regions.parquet"), // and the third
+		filepath.Join(dir, "catalog.parquet"), // a different member
+		filepath.Join(dir, "catalog_runs.parquet"), // and the third
 	} {
 		got := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", spelling))
 		if got != want {
@@ -837,23 +837,23 @@ func TestStoreDirAcceptedEveryWay(t *testing.T) {
 // directory, and the trailing separator is optional noise.
 func TestStorePathHelpers(t *testing.T) {
 	cases := []struct{ base, calls, sites, regions string }{
-		{"cohort", "cohort/calls.parquet", "cohort/sites.parquet", "cohort/regions.parquet"},
-		{"cohort/", "cohort/calls.parquet", "cohort/sites.parquet", "cohort/regions.parquet"},
-		{"a/b/", "a/b/calls.parquet", "a/b/sites.parquet", "a/b/regions.parquet"},
-		{"a/b", "a/b/calls.parquet", "a/b/sites.parquet", "a/b/regions.parquet"},
+		{"cohort", "cohort/calls.parquet", "cohort/catalog.parquet", "cohort/catalog_runs.parquet"},
+		{"cohort/", "cohort/calls.parquet", "cohort/catalog.parquet", "cohort/catalog_runs.parquet"},
+		{"a/b/", "a/b/calls.parquet", "a/b/catalog.parquet", "a/b/catalog_runs.parquet"},
+		{"a/b", "a/b/calls.parquet", "a/b/catalog.parquet", "a/b/catalog_runs.parquet"},
 		// A locator keeps its scheme; filepath.Join would eat the "//".
 		{"s3://bucket/cohort", "s3://bucket/cohort/calls.parquet",
-			"s3://bucket/cohort/sites.parquet", "s3://bucket/cohort/regions.parquet"},
+			"s3://bucket/cohort/catalog.parquet", "s3://bucket/cohort/catalog_runs.parquet"},
 	}
 	for _, tc := range cases {
 		if got := varstore.CallsPath(tc.base); got != tc.calls {
 			t.Errorf("CallsPath(%q) = %q, want %q", tc.base, got, tc.calls)
 		}
-		if got := varstore.SitesPath(tc.base); got != tc.sites {
-			t.Errorf("SitesPath(%q) = %q, want %q", tc.base, got, tc.sites)
+		if got := varstore.CatalogPath(tc.base); got != tc.sites {
+			t.Errorf("CatalogPath(%q) = %q, want %q", tc.base, got, tc.sites)
 		}
-		if got := varstore.RegionsPath(tc.base); got != tc.regions {
-			t.Errorf("RegionsPath(%q) = %q, want %q", tc.base, got, tc.regions)
+		if got := varstore.CatalogRunsPath(tc.base); got != tc.regions {
+			t.Errorf("CatalogRunsPath(%q) = %q, want %q", tc.base, got, tc.regions)
 		}
 	}
 }
@@ -895,14 +895,14 @@ func TestStoreOverwriteRefusesOnPartialSet(t *testing.T) {
 	if err := os.Remove(varstore.CallsPath(base)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(varstore.RegionsPath(base)); err != nil {
+	if err := os.Remove(varstore.CatalogRunsPath(base)); err != nil {
 		t.Fatal(err)
 	}
 	err := runVcfErr(t, "vcf-tovarstore", "--out", base, "testdata/coverage.vcf")
 	if err == nil {
 		t.Fatal("expected a refusal with only the sites member present")
 	}
-	if !strings.Contains(err.Error(), varstore.SitesPath(base)) {
+	if !strings.Contains(err.Error(), varstore.CatalogPath(base)) {
 		t.Errorf("error should name the surviving member, got: %v", err)
 	}
 }
@@ -920,8 +920,8 @@ func TestStoreOutSlashIsOptional(t *testing.T) {
 		}
 		runVcf(t, "vcf-tovarstore", "--out", dir+suffix, "testdata/coverage.vcf")
 		for _, p := range []string{
-			varstore.CallsPath(dir), varstore.SitesPath(dir),
-			varstore.RegionsPath(dir), varstore.VolumeManifestPath(dir),
+			varstore.CallsPath(dir), varstore.CatalogPath(dir),
+			varstore.CatalogRunsPath(dir), varstore.VolumeManifestPath(dir),
 		} {
 			if _, err := os.Stat(p); err != nil {
 				t.Errorf("--out %q: %s missing: %v", dir+suffix, filepath.Base(p), err)
