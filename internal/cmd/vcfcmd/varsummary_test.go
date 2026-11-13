@@ -171,7 +171,7 @@ func TestVarsummaryReportsWhatAnUnreadableStoreContains(t *testing.T) {
 	}
 
 	report := captureStderr(t, "vcf-varsummary", base)
-	for _, want := range []string{"could not be opened", "calls", "sites", "regions", "rows"} {
+	for _, want := range []string{"could not be opened", "calls", "catalog", "catalog_runs", "rows"} {
 		if !strings.Contains(report, want) {
 			t.Errorf("the diagnostic omits %q:\n%s", want, report)
 		}

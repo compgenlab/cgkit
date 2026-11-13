@@ -121,17 +121,17 @@ about 1.8x on a locus query (166ms against 298ms).
 The name is the STORE rather than its encoding. Parquet is how a varstore is
 written today, behind an interface this package owns, and the design keeps room
 for another backend -- so naming the command after the format would be a promise
-about something deliberately left changeable. Several varstores, disjoint by
-chromosome, can then be grouped into a VARSET and queried as one -- see
-cgkit vcf-varstore.
+about something deliberately left changeable. What this writes is one VOLUME;
+several volumes, disjoint by chromosome, then form a single varstore queried as
+one -- see cgkit vcf-varstore.
 
 The store is written to --out, and its tables form one inseparable set:
 
   cohort/
-    calls.parquet      one row per ALT-carrying genotype
-    sites.parquet      one row per interrogated site, with AC/AN and counts
-    regions.parquet    contiguous runs of adequately-covered sites, per sample
-    manifest.json.gz   written last; the store is unreadable without it
+    calls.parquet          one row per ALT-carrying genotype
+    catalog.parquet        one row per interrogated site, with AC/AN and counts
+    catalog_runs.parquet   runs of catalog sites called at adequate depth, per sample
+    manifest.json.gz       written last; the store is unreadable without it
 
 A store is a directory, created if needed; a trailing "/" on --out is optional
 and means nothing. The tables are only meaningful together, so this keeps the
@@ -158,7 +158,7 @@ and a half-replaced set is worse than either keeping or replacing the old one.
 The check keys on the tables, so an existing directory holding unrelated files
 is a fine target and its contents are left alone.
 
-The sites file carries both allele counts (AC, AN) and sample counts
+The catalog table carries both allele counts (AC, AN) and sample counts
 (n_carriers, n_called, n_lowdp). They are not interchangeable: a 1/1 genotype is
 one carrier but two alt alleles, so AC >= n_carriers wherever a homozygote
 occurs, and AN counts alleles without regard to depth while n_called counts
@@ -167,7 +167,7 @@ samples in this store rather than copied from the source's INFO fields, which
 would be wrong after splitting a multiallelic record or converting a subset of a
 cohort.
 
-The sites file is not redundant with the calls. Deriving the site list from the
+The catalog table is not redundant with the calls. Deriving the site list from the
 distinct loci in the calls only works when the store holds an entire joint
 callset; over a subset of samples, every site where nobody in that subset
 carries an ALT disappears, and a later query would report those positions as
@@ -181,14 +181,14 @@ so a 1/2 sample is correctly a carrier of both alleles. AD is taken per allele
 depth supporting one alternate says nothing about another. Indels are NOT
 left-aligned; normalize beforehand if the source is not already.
 
-The regions file records, per sample, runs of catalog sites at which that
+The catalog_runs table records, per sample, runs of catalog sites at which that
 sample was successfully called at DP >= --min-dp. The interval form is only a
 compression of that per-site fact; it makes NO claim about the bases between
 those sites.
 
 This bounds what the store can answer. A plain VCF reports variants and says
 nothing whatsoever about any other position -- an unreported base was not
-observed to be reference, it was simply never reported. The sites catalog is
+observed to be reference, it was simply never reported. The catalog is
 therefore the exact boundary of what is knowable, and a query for a locus
 outside it returns not-assayed for every sample rather than a set of reference
 calls, even where run intervals appear to bracket it. Only a gVCF, whose
@@ -200,7 +200,7 @@ could answer off-catalog positions.
                         straight there and needs no local scratch.
   --force               overwrite an existing store at --out
   --min-dp N            depth at or above which a site counts as callable
-  --info ID[,ID...]     capture these INFO fields into the sites catalog
+  --info ID[,ID...]     capture these INFO fields into the catalog
   --no-callable         proceed when the input has no DP field at all
   --passing             skip filtered records
   --compression C       zstd (default), snappy, or none
@@ -208,7 +208,7 @@ could answer off-catalog positions.
   -v, --verbose         report progress and a conversion summary on stderr,
                         including which of DP/GQ/AD the input actually carries
 
---info captures source INFO fields into sites.parquet, each as its own typed
+--info captures source INFO fields into catalog.parquet, each as its own typed
 column named info_<id> in lower case. It is for the things that are properties
 of THIS FILE rather than of the variant -- imputation quality (R2, DR2, INFO),
 an IMP or TYPED flag, a panel allele frequency, VQSLOD. Those cannot be
@@ -446,7 +446,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 		// tripped the overwrite guard on the --no-callable retry the message
 		// itself asks for.
 		if conv.sawDP == 0 && !vcfToVarstoreNoCallable {
-			return discarding(w, fmt.Errorf("no DP field found in %s, so callable regions cannot be built\n"+
+			return discarding(w, fmt.Errorf("no DP field found in %s, so catalog runs cannot be built\n"+
 				"       re-run with --no-callable to accept a store that cannot distinguish\n"+
 				"       non-carrier from not-assayed", strings.Join(args, ", ")))
 		}
@@ -463,8 +463,8 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			conv.report(cmd.ErrOrStderr(), vcfToVarstoreOut, time.Since(started))
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"wrote %s: %d calls, %d sites, %d callable runs over %d samples\n",
-			vcfToVarstoreOut, w.NCalls, w.NSites, w.NRegions, len(samples))
+			"wrote %s: %d calls, %d catalog sites, %d catalog runs over %d samples\n",
+			vcfToVarstoreOut, w.NCalls, w.NSites, w.NCatalogRuns, len(samples))
 		return nil
 	},
 }
@@ -964,8 +964,8 @@ func (c *parquetConverter) report(out io.Writer, base string, elapsed time.Durat
 		n    int64
 	}{
 		{varstore.CallsPath(base), c.w.NCalls},
-		{varstore.SitesPath(base), c.w.NSites},
-		{varstore.RegionsPath(base), c.w.NRegions},
+		{varstore.CatalogPath(base), c.w.NSites},
+		{varstore.CatalogRunsPath(base), c.w.NCatalogRuns},
 	} {
 		size := int64(-1)
 		if st, err := os.Stat(f.path); err == nil {
@@ -988,8 +988,8 @@ func init() {
 	f.StringSliceVar(&vcfToVarstoreFormat, "format", nil,
 		"FORMAT field to capture onto each ALT call, as its own column (repeatable, comma separated, globs allowed)")
 	f.StringSliceVar(&vcfToVarstoreInfo, "info", nil,
-		"INFO field to capture into the sites catalog, as its own column (repeatable, comma separated, globs allowed)")
-	f.BoolVar(&vcfToVarstoreNoCallable, "no-callable", false, "Accept a source with no DP field; callable regions will be empty")
+		"INFO field to capture into the catalog, as its own column (repeatable, comma separated, globs allowed)")
+	f.BoolVar(&vcfToVarstoreNoCallable, "no-callable", false, "Accept a source with no DP field; catalog runs will be empty")
 	addPassingFlag(vcfToVarstoreCmd, "Only convert passing variants")
 	f.StringVar(&vcfToVarstoreCompression, "compression", "zstd", "Parquet compression: zstd, snappy, or none")
 	f.IntVar(&vcfToVarstoreRowGroupSize, "row-group-size", 250000, "Rows per parquet row group")

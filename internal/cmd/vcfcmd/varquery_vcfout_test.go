@@ -106,7 +106,7 @@ func TestVcfOutInfoMatchesStoreWhenComplete(t *testing.T) {
 }
 
 // TestVcfOutInfoIsRecomputedOverTheSubset is the reason the values are recomputed
-// rather than copied from sites.parquet: over a sample subset the store's counts
+// rather than copied from catalog.parquet: over a sample subset the store's counts
 // are for the wrong denominator.
 func TestVcfOutInfoIsRecomputedOverTheSubset(t *testing.T) {
 	base := convert(t, "testdata/contigs.vcf")
