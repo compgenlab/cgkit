@@ -65,9 +65,6 @@ func vcfTestRoot(args ...string) (*cobra.Command, *bytes.Buffer) {
 	vcfStripKeepFilter = nil
 	vcfStripKeepSample = nil
 	vcfConcatChunks = false
-	vcfVarQuerySamples = nil
-	vcfVarQueryVariants = nil
-	vcfToVarstoreForce = false
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
@@ -562,4 +559,18 @@ func TestVcfToBedSkipsRefBlocks(t *testing.T) {
 	if want := "chr1\t5000\t5001\tSNV\n"; got != want {
 		t.Errorf("vcf-tobed on a gVCF:\ngot:\n%s\nwant:\n%s", got, want)
 	}
+}
+
+// captureStderr runs a command expecting failure and returns what it wrote to
+// stderr, which is where a diagnostic belongs: it is commentary, not output.
+func captureStderr(t *testing.T, args ...string) string {
+	t.Helper()
+	// Only the root: the command objects are package-level and shared between
+	// roots, so calling SetErr on a child would leak this buffer into every
+	// later test. ErrOrStderr walks up to the root when a child has none.
+	root, _ := vcfTestRoot(args...)
+	var errBuf bytes.Buffer
+	root.SetErr(&errBuf)
+	_ = root.Execute()
+	return errBuf.String()
 }
