@@ -27,6 +27,7 @@ var (
 	vcfToVarstoreForce        bool
 	vcfToVarstoreInfo         []string
 	vcfToVarstoreBands        []int
+	vcfToVarstoreDepthRatio   float64
 	vcfToVarstoreShardSites   int
 	vcfToVarstoreFormat       []string
 
@@ -35,6 +36,51 @@ var (
 	vcfToVarstoreMetaNamed = map[string]*string{}
 	vcfToVarstoreMetaPairs []string
 )
+
+// depthBandsFor resolves the band boundaries a conversion breaks catalog runs at,
+// and the ratio they came from (zero for an explicit list).
+//
+// An explicit --depth-bands list wins and is used as given; otherwise the bands
+// are generated from --depth-ratio starting at --min-dp, since below the gate
+// nothing is callable and a boundary there would never break a run. Naming both
+// is refused rather than resolved by precedence: they are two answers to the
+// same question, and silently ignoring one is how a store ends up banded
+// differently from what its author believed.
+//
+// The list itself is what gets recorded and compared between volumes, so a
+// ratio is only ever a way of writing one down.
+//
+// --depth-ratio 0 leaves runs unbanded: one run per uninterrupted stretch, whose
+// floor is the worst depth anywhere in it.
+func depthBandsFor(cmd *cobra.Command) ([]int32, float64, error) {
+	// Changed, not merely non-empty, is what makes the list explicit; length
+	// alone is the fallback for callers that set the variable directly.
+	if cmd.Flags().Changed("depth-bands") || len(vcfToVarstoreBands) > 0 {
+		if cmd.Flags().Changed("depth-ratio") {
+			return nil, 0, fmt.Errorf("--depth-bands and --depth-ratio are alternatives; give one")
+		}
+		bands := make([]int32, 0, len(vcfToVarstoreBands))
+		for _, b := range vcfToVarstoreBands {
+			bands = append(bands, int32(b))
+		}
+		if err := varstore.ValidateDepthBands(bands); err != nil {
+			return nil, 0, fmt.Errorf("--depth-bands: %w", err)
+		}
+		return bands, 0, nil
+	}
+	if vcfToVarstoreDepthRatio == 0 {
+		return nil, 0, nil
+	}
+	start := int32(vcfToVarstoreMinDP)
+	if start < 1 {
+		start = 1
+	}
+	bands, err := varstore.GeometricDepthBands(start, vcfToVarstoreDepthRatio, varstore.MaxDepthBand)
+	if err != nil {
+		return nil, 0, fmt.Errorf("--depth-ratio: %w", err)
+	}
+	return bands, vcfToVarstoreDepthRatio, nil
+}
 
 // collectMeta folds the named --meta-<key> flags and the generic --meta
 // KEY=VALUE pairs into the single map the store records.
@@ -200,6 +246,9 @@ could answer off-catalog positions.
                         straight there and needs no local scratch.
   --force               overwrite an existing store at --out
   --min-dp N            depth at or above which a site counts as callable
+  --depth-ratio R       break catalog runs at depths min-dp x R^k (default 1.5;
+                        0 leaves them unbanded)
+  --depth-bands D,...   break catalog runs at exactly these depths instead
   --info ID[,ID...]     capture these INFO fields into the catalog
   --no-callable         proceed when the input has no DP field at all
   --passing             skip filtered records
@@ -207,6 +256,18 @@ could answer off-catalog positions.
   --row-group-size N    rows per parquet row group
   -v, --verbose         report progress and a conversion summary on stderr,
                         including which of DP/GQ/AD the input actually carries
+
+Catalog runs are broken wherever a sample's depth crosses a band boundary, so
+each run's min_dp bounds the whole of it. A store keeps only that floor, not
+the depth at each site, so the boundaries decide which query gates are exact:
+vcf-varquery --hom-ref at a --min-dp on a boundary (or at or below the
+conversion --min-dp) returns exactly the reference calls the source VCF would,
+and a gate inside a band returns a subset of them -- never a reference call the
+source lacks. By default the boundaries are geometric, min-dp x 1.5^k
+(10,15,22,33,50,75,... at the default --min-dp), which bounds that loss at any
+gate: a reference call is never withheld where the site's depth is at least
+1.5 x the gate. --depth-bands names the boundaries outright, e.g. 10,20,30 when
+those are the only gates that will ever be asked.
 
 --info captures source INFO fields into catalog.parquet, each as its own typed
 column named info_<id> in lower case. It is for the things that are properties
@@ -356,18 +417,9 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			return err
 		}
 
-		// Bands must be ascending and above the gate: a boundary below --min-dp
-		// names a class nothing can fall into, which is not an error so much as
-		// a sign the caller meant something else.
-		bands := make([]int32, 0, len(vcfToVarstoreBands))
-		for i, b := range vcfToVarstoreBands {
-			if b <= 0 {
-				return fmt.Errorf("--depth-bands: %d is not a depth", b)
-			}
-			if i > 0 && int32(b) <= bands[i-1] {
-				return fmt.Errorf("--depth-bands must ascend; %d follows %d", b, bands[i-1])
-			}
-			bands = append(bands, int32(b))
+		bands, depthRatio, err := depthBandsFor(cmd)
+		if err != nil {
+			return err
 		}
 
 		// Before the writer exists, since it needs them at construction.
@@ -401,6 +453,7 @@ the order the flags were typed. vcf-varsummary prints all of it, and
 			Info:         infoFields,
 			Format:       formatFields,
 			DepthBands:   bands,
+			DepthRatio:   depthRatio,
 			ShardSites:   int64(vcfToVarstoreShardSites),
 			// A run must lie wholly inside one shard, or every locus it covers
 			// in an earlier one reads as never assayed rather than reference.
@@ -983,8 +1036,10 @@ func init() {
 	f.IntVar(&vcfToVarstoreMinDP, "min-dp", 10, "Minimum DP for a site to count as callable for a sample")
 	f.IntVar(&vcfToVarstoreShardSites, "shard-sites", 0,
 		"Split each table every N sites, so a locus query reads one small file instead of pruning a large one (0 writes one file per table)")
-	f.IntSliceVar(&vcfToVarstoreBands, "depth-bands", []int{10, 20, 50},
-		"Depth boundaries at which a callable run is broken, so each run's min_dp bounds the whole of it (empty leaves runs unbanded)")
+	f.Float64Var(&vcfToVarstoreDepthRatio, "depth-ratio", varstore.DefaultDepthRatio,
+		"Break catalog runs at depths min-dp x ratio^k, so any query gate is answered within this factor (0 leaves runs unbanded)")
+	f.IntSliceVar(&vcfToVarstoreBands, "depth-bands", nil,
+		"Break catalog runs at exactly these depths instead of a ratio, e.g. 10,20,30")
 	f.StringSliceVar(&vcfToVarstoreFormat, "format", nil,
 		"FORMAT field to capture onto each ALT call, as its own column (repeatable, comma separated, globs allowed)")
 	f.StringSliceVar(&vcfToVarstoreInfo, "info", nil,

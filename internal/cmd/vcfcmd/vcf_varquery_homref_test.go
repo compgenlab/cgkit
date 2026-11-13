@@ -324,9 +324,10 @@ func TestBothModesShareOneLayout(t *testing.T) {
 // bound on depth the backend can vouch for.
 //
 // This is the whole reason the column exists. A reference call recovered from a
-// store has no recorded depth, but it came from a run built at the conversion
-// --min-dp -- so the store can still say the site was covered well enough to
-// call, which a bare "." would throw away.
+// store has no recorded depth, but it came from a catalog run whose floor the
+// store did record -- so it can still say how well the site was covered, which a
+// bare "." would throw away. That floor is the run's own min_dp, never lower than
+// the conversion --min-dp and usually higher.
 func TestMinDPReportsTheVouchedFloor(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf") // --min-dp defaults to 10
 
@@ -339,14 +340,14 @@ func TestMinDPReportsTheVouchedFloor(t *testing.T) {
 	}
 
 	// A reconstructed reference call: no depth of its own, but the run vouches
-	// for the conversion threshold.
+	// for its floor -- every site in S1's run was called at 30x.
 	ref, ok := rows["chr1:300"]
 	if !ok {
 		t.Fatalf("expected a reference call at chr1:300; got %v", rows)
 	}
-	if ref[colDP] != "." || ref[colMinDP] != "10" {
-		t.Errorf("store reference call: dp=%s min_dp=%s, want dp=. min_dp=10 "+
-			"(no recorded depth, but callable at the conversion threshold)",
+	if ref[colDP] != "." || ref[colMinDP] != "30" {
+		t.Errorf("store reference call: dp=%s min_dp=%s, want dp=. min_dp=30 "+
+			"(no recorded depth, but the run's floor)",
 			ref[colDP], ref[colMinDP])
 	}
 
