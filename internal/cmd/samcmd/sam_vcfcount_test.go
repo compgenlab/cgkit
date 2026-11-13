@@ -343,3 +343,54 @@ func TestSamVcfCountVcfADNeedsDeclaration(t *testing.T) {
 		t.Errorf("err = %v, want a missing-AD refusal", err)
 	}
 }
+
+func TestSamVcfCountSNVsOnly(t *testing.T) {
+	// read1 (chr1:100-149) is ACGTACGTAC repeated: 101 C, 102 G, 103 T, 104 A, 110 A, 111 C.
+	body := "" +
+		"chr1\t101\t.\tC\tT\t.\tPASS\t.\tGT\t0/1\n" + // SNV: kept
+		"chr1\t102\t.\tGT\tCA\t.\tPASS\t.\tGT\t0/1\n" + // MNV: dropped
+		"chr1\t104\t.\tA\tG,AT\t.\tPASS\t.\tGT\t1/2\n" + // mixed: G row only
+		"chr1\t110\t.\tAC\tA\t.\tPASS\t.\tGT\t0/1\n" // deletion: dropped
+	got, err := runVcfCount(t, body, "--snvs", "--total")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "chrom\tpos\tref\talt\tref_count\talt_count\ttotal_count\n" +
+		"chr1\t101\tC\tT\t1\t0\t1\n" +
+		"chr1\t104\tA\tG\t1\t0\t1"
+	if got != want {
+		t.Errorf("--snvs: got\n%s\nwant\n%s", got, want)
+	}
+
+	got, err = runVcfCount(t, body, "--indels")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = "chrom\tpos\tref\talt\tref_count\talt_count\n" +
+		"chr1\t104\tA\tAT\t1\t0\n" +
+		"chr1\t110\tAC\tA\t1\t0"
+	if got != want {
+		t.Errorf("--indels: got\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestVcfCountHiddenAlleleStillMatched(t *testing.T) {
+	// A read carrying the hidden CA insertion must not count as REF for the
+	// T row: --snvs changes which rows are written, never the counts.
+	reads := []*alignedRead{
+		read("ins", 0, 1, "6M1I4M", "ACGTACAGTAC", ""),
+		read("snv", 0, 1, "10M", "ACGTATGTAC", ""),
+		read("ref", 0, 1, "10M", "ACGTACGTAC", ""),
+	}
+	plain := vcVariantFor(t, 6, "C", "T", "CA")
+	pr, pa, pt := count(t, plain, reads, 13, true)
+
+	v := vcVariantFor(t, 6, "C", "T", "CA")
+	if !v.keepAlleles(isSNV) || v.hidden[0] || !v.hidden[1] {
+		t.Fatalf("keepAlleles(isSNV): hidden=%v, want [false true]", v.hidden)
+	}
+	ref, alts, total := count(t, v, reads, 13, true)
+	if ref != 1 || alts[0] != 1 || total != 3 || ref != pr || alts[0] != pa[0] || total != pt {
+		t.Errorf("with --snvs ref=%d alt=%d total=%d, without %d %d %d; want 1 1 3 both", ref, alts[0], total, pr, pa[0], pt)
+	}
+}

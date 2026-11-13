@@ -90,6 +90,12 @@ only by reads carrying a third allele still counts as covered. --min-depth 1
 drops the uncovered 0/0 rows. It applies per variant, so the rows of a
 multiallelic record are kept or dropped together.
 
+--snvs writes only single-base substitutions (REF and ALT both one base);
+--indels only ALTs whose length differs from REF. Both act per allele, so at
+A>G,AT --snvs keeps the G row and drops the AT row. A read carrying a dropped
+allele is still matched, so the counts on the rows that remain are the same
+as without the filter.
+
 Not counted: symbolic alleles (<DEL>, <NON_REF>, ...), breakends, the spanning
 deletion "*", and gVCF reference blocks.
 
@@ -128,8 +134,8 @@ func init() {
 	// Variant filters.
 	f.StringVar(&o.region, "region", "", "Only count variants in this region (chrom, or chrom:start-end, 1-based)")
 	f.BoolVar(&o.passing, "passing", false, "Only count variants with FILTER PASS or '.'")
-	f.BoolVar(&o.snvsOnly, "snvs", false, "Only count SNVs")
-	f.BoolVar(&o.indelsOnly, "indels", false, "Only count indels")
+	f.BoolVar(&o.snvsOnly, "snvs", false, "Only write SNVs: single-base REF and ALT (drops MNVs, indels and complex alleles)")
+	f.BoolVar(&o.indelsOnly, "indels", false, "Only write indels: ALT alleles whose length differs from REF")
 	f.BoolVar(&o.het, "het", false, "Only count variants heterozygous in --sample (requires GT)")
 	f.StringVar(&o.sample, "sample", "", "VCF sample for --het, --gt, --vcf-counts and --vcf-af (default: the first sample)")
 	f.BoolVar(&o.skipMissing, "skip-missing", false, "Skip variants on contigs absent from the alignment file (default: error)")
@@ -159,6 +165,7 @@ type vcVariant struct {
 	isIndel bool     // any countable ALT differs in length from REF
 	gt      string
 	ad      []string // the sample's AD values, one per allele; nil when absent
+	hidden  []bool   // ALT rows not written (--snvs/--indels); still matched
 
 	// Results, filled by countVariants.
 	refCount   int
@@ -364,7 +371,11 @@ func runSamVcfCount(cmd *cobra.Command, bamPath, vcfPath string, o *vcfCountOpts
 			sum.uncountable++
 			continue
 		}
-		if (o.snvsOnly && v.isIndel) || (o.indelsOnly && !v.isIndel) {
+		if o.snvsOnly && !v.keepAlleles(isSNV) {
+			sum.filtered++
+			continue
+		}
+		if o.indelsOnly && !v.keepAlleles(isIndelAllele) {
 			sum.filtered++
 			continue
 		}
@@ -454,6 +465,31 @@ func sameContig(a, b string) bool {
 
 // newVcVariant prepares rec for counting, or returns nil when no ALT allele can
 // be matched against reads.
+func isSNV(ref, alt string) bool         { return len(ref) == 1 && len(alt) == 1 }
+func isIndelAllele(ref, alt string) bool { return len(ref) != len(alt) }
+
+// keepAlleles hides the rows of every countable ALT for which keep is false
+// and reports whether any row remains. Filtering per allele rather than per
+// record keeps the SNV row of a mixed record such as A>G,AT.
+//
+// Only output is affected: a hidden ALT is still matched, so a read carrying
+// it is not mistaken for REF and the remaining rows count exactly as they
+// would without the filter.
+func (v *vcVariant) keepAlleles(keep func(ref, alt string) bool) bool {
+	any := false
+	for i, a := range v.alts {
+		if a == "" || v.hidden[i] {
+			continue
+		}
+		if !keep(v.ref, a) {
+			v.hidden[i] = true
+			continue
+		}
+		any = true
+	}
+	return any
+}
+
 func newVcVariant(rec *vcf.VcfRecord) *vcVariant {
 	if rec.IsRefBlock() || !isCountableAlt(rec.Ref) {
 		return nil
@@ -481,6 +517,7 @@ func newVcVariant(rec *vcf.VcfRecord) *vcVariant {
 		return nil
 	}
 	v.altCounts = make([]int, len(v.alts))
+	v.hidden = make([]bool, len(v.alts))
 	return v
 }
 
@@ -547,7 +584,7 @@ func isHet(gt string) bool {
 
 func writeVcfCountRows(w io.Writer, v *vcVariant, o *vcfCountOpts) {
 	for i, alt := range v.alts {
-		if alt == "" {
+		if alt == "" || v.hidden[i] {
 			continue
 		}
 		other := v.total - v.refCount - v.altCounts[i]
