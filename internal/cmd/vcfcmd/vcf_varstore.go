@@ -29,7 +29,7 @@ import (
 // it composes volumes into a larger archive of the same kind.
 
 var vcfVarstoreCmd = &cobra.Command{
-	GroupID:     "vcfcmd",
+	GroupID:     "varstore",
 	Annotations: map[string]string{"since": "v0.6.9"},
 	Use:         "vcf-varstore",
 	Short:       "Combine volumes into one varstore, queried as one",
