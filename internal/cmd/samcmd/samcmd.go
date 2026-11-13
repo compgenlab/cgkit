@@ -9,5 +9,6 @@ func InitCmd(rootCmd *cobra.Command) {
 	rootCmd.AddCommand(samStatsCmd)
 	rootCmd.AddCommand(samToFastaCmd)
 	rootCmd.AddCommand(samToFastqCmd)
+	rootCmd.AddCommand(samVcfCountCmd)
 	rootCmd.AddGroup(&cobra.Group{ID: "samcmd", Title: "SAM/BAM/CRAM"})
 }
