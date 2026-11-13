@@ -742,20 +742,29 @@ func TestVerboseConversionReportsFieldPresence(t *testing.T) {
 	}
 }
 
-// TestVerboseNotesMinDPMismatch pins the warning for querying at a threshold the
-// store's runs were not built at, which silently breaks backend agreement.
+// TestVerboseNotesMinDPMismatch pins the note for a query gate the store cannot
+// answer exactly. A store keeps each catalog run's floor rather than each site's
+// depth, so a gate inside a depth band returns a subset of the reference calls a
+// direct VCF query would -- and nothing in the output says so except this.
 func TestVerboseNotesMinDPMismatch(t *testing.T) {
-	base := convert(t, "testdata/coverage.vcf") // built at the default --min-dp 10
-	out := runVcf(t, "vcf-varquery", "-v", "--variant", "chr1:100:A:G",
-		"--hom-ref", "--min-dp", "25", base)
-	if !strings.Contains(out, "the runs were built at 10") {
-		t.Errorf("expected a min-dp mismatch note, got:\n%s", out)
+	// Built at the default --min-dp 10 with geometric bands 10,15,22,33,...
+	base := convert(t, "testdata/coverage.vcf")
+	note := func(gate string) string {
+		return runVcf(t, "vcf-varquery", "-v", "--variant", "chr1:100:A:G",
+			"--hom-ref", "--min-dp", gate, base)
 	}
-	// Matching the conversion threshold must not warn.
-	ok := runVcf(t, "vcf-varquery", "-v", "--variant", "chr1:100:A:G",
-		"--hom-ref", "--min-dp", "10", base)
-	if strings.Contains(ok, "the runs were built at") {
-		t.Errorf("matching --min-dp should not warn, got:\n%s", ok)
+
+	if out := note("25"); !strings.Contains(out, "falls inside the depth band 22-32") {
+		t.Errorf("--min-dp 25 is inside a band and should say so, got:\n%s", out)
+	}
+	if out := note("5"); !strings.Contains(out, "below the conversion gate 10") {
+		t.Errorf("--min-dp 5 is below the conversion gate and should say so, got:\n%s", out)
+	}
+	// The conversion gate and a band boundary are both answered exactly.
+	for _, exact := range []string{"10", "22"} {
+		if out := note(exact); strings.Contains(out, "NOTE: --min-dp") || strings.Contains(out, "NOTE: querying at") {
+			t.Errorf("--min-dp %s is answered exactly and should not warn, got:\n%s", exact, out)
+		}
 	}
 }
 

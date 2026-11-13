@@ -183,7 +183,11 @@ func summarizeMultiVolume(out io.Writer, s *varstore.VarStore, path string) erro
 	// volumes answer one population under one set of rules.
 	fmt.Fprintf(out, "  min-dp        %d at conversion\n", man.Params.MinDP)
 	if len(man.Params.DepthBands) > 0 {
-		fmt.Fprintf(out, "  depth bands   %v\n", man.Params.DepthBands)
+		how := "explicit list"
+		if man.Params.DepthRatio > 0 {
+			how = fmt.Sprintf("ratio %g", man.Params.DepthRatio)
+		}
+		fmt.Fprintf(out, "  depth bands   %v (%s)\n", man.Params.DepthBands, how)
 	}
 	if len(man.Params.Info) > 0 {
 		var names []string
@@ -270,6 +274,14 @@ func summarizeStore(out *bufio.Writer, errOut interface{ Write([]byte) (int, err
 		fmt.Fprintf(out, "callable   not tracked (--no-callable): --hom-ref will refuse\n")
 	} else {
 		fmt.Fprintf(out, "min-dp     %d at conversion\n", p.MinDP)
+		if len(m.Params.DepthBands) > 0 {
+			how := "explicit list"
+			if m.Params.DepthRatio > 0 {
+				how = fmt.Sprintf("ratio %g", m.Params.DepthRatio)
+			}
+			fmt.Fprintf(out, "bands      %v (%s): the --min-dp gates answered exactly\n",
+				m.Params.DepthBands, how)
+		}
 	}
 
 	writeStoreMeta(out, m.Meta)
