@@ -31,6 +31,7 @@ func InitCmd(rootCmd *cobra.Command) {
 	rootCmd.AddCommand(vcfToBedpeCmd)
 	rootCmd.AddCommand(vcfSvToFastaCmd)
 	rootCmd.AddCommand(vcfToVarstoreCmd)
+	rootCmd.AddCommand(vcfRefBlocksCmd)
 	rootCmd.AddCommand(vcfVarQueryCmd)
 	rootCmd.AddGroup(&cobra.Group{ID: "vcfcmd", Title: "VCF"})
 }
