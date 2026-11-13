@@ -170,9 +170,13 @@ func TestIsHet(t *testing.T) {
 // ACGTACGTAC repeated, so chr1:101 is C and chr1:103 is T; read5 is chr2:200-249.
 func runVcfCount(t *testing.T, vcfBody string, args ...string) (string, error) {
 	t.Helper()
+	return runVcfCountHeader(t, "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n", vcfBody, args...)
+}
+
+func runVcfCountHeader(t *testing.T, hdr, vcfBody string, args ...string) (string, error) {
+	t.Helper()
 	dir := t.TempDir()
 	vcfPath := filepath.Join(dir, "in.vcf")
-	hdr := "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
 	if err := os.WriteFile(vcfPath, []byte(hdr+vcfBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -294,5 +298,48 @@ func TestVcfCountMinDepthCountsOtherReads(t *testing.T) {
 	ref, alts, total := count(t, v, []*alignedRead{read("g", 0, 1, "10M", "ACGTAGGTAC", "")}, 13, true)
 	if ref != 0 || alts[0] != 0 || total != 1 {
 		t.Errorf("ref=%d alt=%d total=%d, want 0 0 1", ref, alts[0], total)
+	}
+}
+
+func runVcfCountAD(t *testing.T, body string, args ...string) (string, error) {
+	t.Helper()
+	return runVcfCountHeader(t, "##fileformat=VCFv4.2\n"+
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n"+
+		"##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths\">\n"+
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n", body, args...)
+}
+
+func TestSamVcfCountVcfAD(t *testing.T) {
+	body := "" +
+		"chr1\t101\t.\tC\tT\t.\tPASS\t.\tGT:AD\t0/1:6,2\t0/0:9,0\n" +
+		"chr1\t300\t.\tA\tG\t.\tPASS\t.\tGT\t0/1\t0/1\n" + // no AD: "."
+		"chr2\t210\t.\tA\tC,G\t.\tPASS\t.\tGT:AD\t1/2:0,3,1\t0/0:.\n"
+	got, err := runVcfCountAD(t, body, "--vcf-counts", "--vcf-af")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "chrom\tpos\tref\talt\tvcf_ref_count\tvcf_alt_count\tvcf_alt_freq\tref_count\talt_count\n" +
+		"chr1\t101\tC\tT\t6\t2\t0.25\t1\t0\n" +
+		"chr1\t300\tA\tG\t.\t.\t.\t0\t0\n" +
+		"chr2\t210\tA\tC\t0\t3\t1\t1\t0\n" +
+		"chr2\t210\tA\tG\t0\t1\t1\t1\t0"
+	if got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+
+	// --sample picks the AD column; a missing AD value reports ".".
+	got, err = runVcfCountAD(t, body, "--vcf-counts", "--sample", "S2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "chr1\t101\tC\tT\t9\t0\t1\t0") || !strings.Contains(got, "chr2\t210\tA\tC\t.\t.\t1\t0") {
+		t.Errorf("--sample S2:\n%s", got)
+	}
+}
+
+func TestSamVcfCountVcfADNeedsDeclaration(t *testing.T) {
+	_, err := runVcfCount(t, "chr1\t101\t.\tC\tT\t.\tPASS\t.\tGT\t0/1\n", "--vcf-af")
+	if err == nil || !strings.Contains(err.Error(), "AD") {
+		t.Errorf("err = %v, want a missing-AD refusal", err)
 	}
 }
