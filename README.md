@@ -116,6 +116,7 @@ out.bed` cannot proceed with help text as its input.
 |---------|-------------|
 | `tab-sort` | Sort a tab-delimited file and write as BGZF with optional tabix index |
 | `tabix-index` | Build a tabix (.tbi) index for an existing BGZF-compressed file |
+| `bgzf-check` | Check a BGZF file's block sizes and EOF marker, and validate its tabix index against it |
 
 ### VCF
 
