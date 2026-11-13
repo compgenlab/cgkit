@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/compgenlab/cghts/varstore"
 	"github.com/compgenlab/cghts/vcf"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
 	"github.com/spf13/cobra"
@@ -121,11 +122,11 @@ type gtRow struct {
 }
 
 // collectGtSites resolves the positional loci and any --sites files into concrete
-// sites, through the same target grammar vcf-varquery --variant uses -- so one
-// file works with both commands, and a VCF or a colon-delimited list works here
+// sites, through the same target grammar `varstore query --variant` uses (cghts's
+// varstore.ParseTargets) -- so one file works with both tools, and a VCF or a colon-delimited list works here
 // too. One grammar, one parser, nothing to drift.
 func collectGtSites(ctx context.Context, loci []string, sitesFiles []string) ([]gtSite, error) {
-	t, err := parseTargets(ctx, append(append([]string{}, loci...), sitesFiles...))
+	t, err := varstore.ParseTargets(ctx, append(append([]string{}, loci...), sitesFiles...))
 	if err != nil {
 		return nil, err
 	}
@@ -133,14 +134,14 @@ func collectGtSites(ctx context.Context, loci []string, sitesFiles []string) ([]
 	// they were given -- this command looks each up in turn and its output follows.
 	var sites []gtSite
 	for _, ref := range t.Order {
-		if ref.locus {
-			l := t.Loci[ref.i]
+		if ref.Locus {
+			l := t.Loci[ref.Index]
 			sites = append(sites, gtSite{
 				chrom: l.Chrom, pos: int(l.Pos), ref: l.Ref, alt: l.Alt, hasRA: true,
 			})
 			continue
 		}
-		sp := t.Spans[ref.i]
+		sp := t.Spans[ref.Index]
 		// A one-base span is a concrete position: "chrom:pos", or a two-column
 		// site-list line. Anything wider names a range, and this command looks up one
 		// position at a time rather than scanning, so it cannot expand one. Refusing

@@ -33,8 +33,21 @@ jobs:
 
       # Remote/CI builds use the latest released cghts from GitHub. Local builds
       # instead use the live sibling checkout via the go.work workspace.
-      - name: Use latest cghts from GitHub
-        run: GOCACHE=/tmp/go-build-cache go get github.com/compgenlab/cghts@latest
+      #
+      # EXCEPT while go.mod pins an unreleased cghts. A feature spanning both
+      # repos is built against a cghts commit before it is tagged, and the pin is
+      # then a pseudo-version (v0.12.1-0.<date>-<sha>) or a pre-release -- either
+      # way it carries a "-", which a release tag never does. @latest skips those,
+      # so following it would build this branch against code that lacks what the
+      # branch needs. The pin is honoured instead, and named in the log. make
+      # release-check refuses such a pin, so it cannot reach a release.
+      - name: Resolve cghts
+        run: |
+          pin=$(GOCACHE=/tmp/go-build-cache go list -m -f '{{.Version}}' github.com/compgenlab/cghts)
+          case "$pin" in
+            *-*) echo "go.mod pins unreleased cghts $pin; building against the pin" ;;
+            *)   GOCACHE=/tmp/go-build-cache go get github.com/compgenlab/cghts@latest ;;
+          esac
 
       - name: Install samtools
         run: sudo apt-get update && sudo apt-get install -y samtools
