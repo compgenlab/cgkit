@@ -218,7 +218,7 @@ func stripQueryProvenance(s string) string {
 // a server that speaks the protocol.
 func TestStoreOutMayBeRemote(t *testing.T) {
 	if !varstore.CanWrite("s3://bucket/cohort") {
-		t.Error("s3:// is not writable; the sinks3 blank import is missing from vcf_toparquet.go")
+		t.Error("s3:// is not writable; the sinks3 blank import is missing from vcf_tovarstore.go")
 	}
 	if !varstore.CanWrite(t.TempDir() + "/cohort") {
 		t.Error("a local directory is not writable")

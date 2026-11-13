@@ -42,7 +42,7 @@ func runsOf(t *testing.T, dir string) []varstore.CalledSiteRun {
 	}
 	defer s.Close()
 	var out []varstore.CalledSiteRun
-	if err := s.Regions(func(r varstore.CalledSiteRun) bool {
+	if err := s.CatalogRuns(func(r varstore.CalledSiteRun) bool {
 		out = append(out, r)
 		return true
 	}); err != nil {
