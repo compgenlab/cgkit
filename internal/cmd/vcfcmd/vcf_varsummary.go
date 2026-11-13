@@ -292,7 +292,7 @@ func summarizeStore(out *bufio.Writer, errOut interface{ Write([]byte) (int, err
 
 	fmt.Fprintf(out, "\nmembers\n")
 	for _, name := range []string{
-		varstore.CallsTable, varstore.CatalogTable, varstore.CatalogRunsTable,
+		varstore.CallsTable, varstore.CatalogTable, varstore.CatalogRunsTable, varstore.RefBlocksTable,
 	} {
 		info, ok := m.Tables[name]
 		if !ok {
