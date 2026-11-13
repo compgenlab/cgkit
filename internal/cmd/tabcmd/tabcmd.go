@@ -11,6 +11,7 @@ import (
 func InitCmd(rootCmd *cobra.Command) {
 	rootCmd.AddCommand(tabSortCmd)
 	rootCmd.AddCommand(tabixIndexCmd)
+	rootCmd.AddCommand(bgzfCheckCmd)
 	rootCmd.AddGroup(&cobra.Group{ID: "tabcmd", Title: "Tabix"})
 }
 
