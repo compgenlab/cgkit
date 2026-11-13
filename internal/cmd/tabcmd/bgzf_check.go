@@ -3,6 +3,7 @@ package tabcmd
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -93,6 +94,10 @@ type bgzfScan struct {
 	blocks []bgzfBlock
 	total  int64 // uncompressed bytes
 	hasEOF bool
+
+	// stoppedAt is the offset just past the last block read when that is
+	// before the end of the data, or -1. See scanBgzf.
+	stoppedAt int64
 }
 
 // scanBgzf reads the whole file through cghts's IndexingReader, which
@@ -102,7 +107,7 @@ func scanBgzf(path string) (*bgzfScan, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &bgzfScan{size: st.Size()}
+	s := &bgzfScan{size: st.Size(), stoppedAt: -1}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -146,6 +151,21 @@ func scanBgzf(path string) (*bgzfScan, error) {
 			uoff: b.Uncompressed, usize: nextU - b.Uncompressed,
 		})
 	}
+
+	// The last block's size above is "whatever is left", which is only right if
+	// the reader got to the end. Its own header says how long it really is (the
+	// BC subfield's BSIZE, total length minus one, at bytes 16-17). If it ends
+	// short of the data, the reader stopped early -- at an empty block in
+	// mid-file, which cghts's IndexingReader takes for the end of the file.
+	last := &s.blocks[len(s.blocks)-1]
+	var hdr [18]byte
+	if _, err := f.ReadAt(hdr[:], last.coff); err != nil {
+		return nil, err
+	}
+	if bsize := int64(binary.LittleEndian.Uint16(hdr[16:18])) + 1; last.coff+bsize < dataEnd {
+		last.csize = bsize
+		s.stoppedAt = last.coff + bsize
+	}
 	return s, nil
 }
 
@@ -179,11 +199,22 @@ func runBgzfCheck(w io.Writer, path, indexPath string, dumpBlocks bool) error {
 
 	var problems, warnings []string
 
+	// The usual cause of a short read is an empty block (an EOF marker) in
+	// mid-file -- several BGZF streams concatenated, e.g. a separately
+	// compressed header and body. htslib reads straight through that; cghts's
+	// IndexingReader, which this check reads with, takes it as the end.
+	stoppedAt := s.stoppedAt
+	if stoppedAt >= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"reading stopped at offset %d of %d: most likely an empty BGZF block (EOF marker) in mid-file, i.e. several BGZF streams concatenated. The file itself may be fine -- htslib reads through such a marker -- but cghts's BGZF block reader stops at it, so the block statistics cover only the data before it and the index was not checked",
+			stoppedAt, s.size))
+	}
+
 	fmt.Fprintf(out, "File:\t%s\n", path)
 	fmt.Fprintf(out, "Format:\tBGZF (all blocks decompressed and CRC-checked)\n")
 	fmt.Fprintf(out, "Compressed size:\t%s\n", humanBytes(s.size))
 	fmt.Fprintf(out, "Uncompressed size:\t%s\n", humanBytes(s.total))
-	if s.total > 0 {
+	if s.total > 0 && stoppedAt < 0 {
 		fmt.Fprintf(out, "Compression ratio:\t%.2fx\n", float64(s.total)/float64(s.size))
 	}
 	if s.hasEOF {
@@ -221,7 +252,9 @@ func runBgzfCheck(w io.Writer, path, indexPath string, dumpBlocks bool) error {
 	if err != nil {
 		return err
 	}
-	if idx == "" {
+	if stoppedAt >= 0 {
+		fmt.Fprintf(out, "\n[Index]\nIndex:\tnot checked: the block list is incomplete, so every offset past offset %d would be reported as wrong\n", stoppedAt)
+	} else if idx == "" {
 		fmt.Fprintf(out, "\n[Index]\nIndex:\tnone found (looked for %s.tbi and %s.csi)\n", path, path)
 	} else {
 		p, wn, err := checkIndex(out, s, path, idx)
