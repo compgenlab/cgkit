@@ -46,6 +46,15 @@ How the `cghts` dependency resolves, by context:
   pushed cghts tag is fetched directly from GitHub (no module-proxy/sumdb lag).
 - The committed `go.mod` pin is the fallback for `go install` users and the
   source archive; keep it current with `make bump-cghts`.
+- **Building against unreleased cghts.** A feature spanning both repos can pin a
+  cghts *commit* instead of a tag:
+  `GOWORK=off go get github.com/compgenlab/cghts@<sha> && GOWORK=off go mod tidy`,
+  which writes a pseudo-version (`v0.12.1-0.<date>-<sha>`). CI honours any pin
+  carrying a `-` (pseudo-version or pre-release) rather than following `@latest`,
+  which skips those and would build the branch against code lacking what it needs;
+  a release pin (`vX.Y.Z`) still means `@latest`. Re-pin as the cghts side moves.
+  `make release-check` **refuses** a pseudo-version pin, so tag cghts and
+  `make bump-cghts` before releasing.
 
 ### Cutting a release
 The cghts tag must land on GitHub before cgkit builds against it:
