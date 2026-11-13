@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strings"
 
@@ -320,11 +321,11 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 			fmt.Fprintf(out, "  callable    not tracked (--no-callable): --hom-ref will refuse\n")
 		} else {
 			fmt.Fprintf(out, "  min-dp      %d at conversion\n", p.MinDP)
-			if g.MinDP > 0 && g.MinDP != p.MinDP {
-				fmt.Fprintf(out, "  NOTE: querying at --min-dp %d but the runs were built at %d;\n"+
-					"        non-carrier vs not-assayed will not match a direct VCF query.\n",
-					g.MinDP, p.MinDP)
+			var bands []int32
+			if m := s.VolumeManifest(); m != nil {
+				bands = m.Params.DepthBands
 			}
+			describeGate(out, g.MinDP, p.MinDP, bands)
 		}
 		// The one place the backends cannot agree, so it is worth saying rather
 		// than leaving a column of dots to be puzzled over.
@@ -348,6 +349,47 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 			fmt.Fprintf(out, "  spans       blocks  (reference blocks answer for positions no variant reports)\n")
 			fmt.Fprintf(out, "  NOTE        min_dp on a reference row is the block's MIN_DP; dp is \".\"\n")
 		}
+	}
+}
+
+// describeGate says when a store's reference calls are a subset of what the
+// source VCF would return rather than the same set.
+//
+// A store keeps each catalog run's floor, not the depth at each site, and runs
+// break only at the conversion gate and at depth-band boundaries. So a query gate
+// on a boundary, or at or below the conversion gate, refuses or admits every run
+// whole and matches a direct VCF query exactly. Anywhere else a run whose floor
+// sits under the gate is refused even at a deeper site inside it. The store never
+// invents a reference call, but it can withhold one, and a reader comparing it
+// against the VCF needs to know which of those they are looking at.
+func describeGate(out io.Writer, gate, convMinDP int32, bands []int32) {
+	switch {
+	case gate <= 0 || gate == convMinDP:
+		return
+	case gate < convMinDP:
+		fmt.Fprintf(out, "  NOTE: querying at --min-dp %d, below the conversion gate %d. The store\n"+
+			"        holds no runs under %d, so 0/0 calls at depth %d-%d are not reported\n"+
+			"        where a direct VCF query would report them.\n",
+			gate, convMinDP, convMinDP, gate, convMinDP-1)
+		return
+	}
+	// Unbanded runs form one band from the conversion gate up.
+	if len(bands) == 0 {
+		bands = []int32{convMinDP}
+	}
+	lo, hi, inside := varstore.BandContaining(bands, gate)
+	if !inside {
+		return // on a boundary: exact
+	}
+	if hi > 0 {
+		fmt.Fprintf(out, "  NOTE: --min-dp %d falls inside the depth band %d-%d. 0/0 calls are\n"+
+			"        guaranteed only where depth >= %d; between %d and %d a sample in a run\n"+
+			"        that dips below %d reads as not assayed. Exact gates: %v.\n",
+			gate, lo, hi-1, hi, gate, hi-1, gate, bands)
+	} else {
+		fmt.Fprintf(out, "  NOTE: --min-dp %d is above the last depth band boundary %d, so a 0/0\n"+
+			"        is reported only from a run whose own floor reaches %d. Exact gates: %v.\n",
+			gate, lo, gate, bands)
 	}
 }
 
