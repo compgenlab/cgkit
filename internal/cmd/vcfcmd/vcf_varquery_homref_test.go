@@ -30,6 +30,7 @@ const (
 	colADRef
 	colADAlt
 	colGQ
+	colRefSource
 	numCols
 )
 
@@ -223,8 +224,8 @@ func TestNoMinGQFlag(t *testing.T) {
 	}
 	// The gq column is still emitted, so the filter is available downstream.
 	out := dataRowsOnly(runVcf(t, "vcf-varquery", "--variant", "chr1:100:A:G", base))
-	if !strings.HasSuffix(strings.Split(out, "\n")[0], "\tgq") {
-		t.Errorf("gq should still be the last column:\n%s", out)
+	if !strings.Contains(strings.Split(out, "\n")[0], "\tgq\t") {
+		t.Errorf("gq should still be a column:\n%s", out)
 	}
 }
 
@@ -306,6 +307,7 @@ func TestBothModesShareOneLayout(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
 	want := strings.Join([]string{
 		"chrom", "pos", "ref", "alt", "sample", "gt", "dp", "min_dp", "ad_ref", "ad_alt", "gq",
+		"ref_source",
 	}, "\t")
 	for _, args := range [][]string{
 		{"vcf-varquery", "--sample", "S1", base},

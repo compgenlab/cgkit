@@ -265,11 +265,15 @@ func summarizeStore(out *bufio.Writer, errOut interface{ Write([]byte) (int, err
 			fmt.Fprintf(out, "  %s\n", src)
 		}
 	}
-	fmt.Fprintf(out, "spans      %s", p.Spans)
-	if p.Spans == varstore.SpansSites {
-		fmt.Fprintf(out, "  (answers only for variants in the catalog)")
+	if p.RefBlocks {
+		fmt.Fprintf(out, "ref blocks yes  (off-catalog positions are answerable)")
+		if m.Params.MaxGap > 0 {
+			fmt.Fprintf(out, ", merged across gaps up to %d bp", m.Params.MaxGap)
+		}
+		fmt.Fprintln(out)
+	} else {
+		fmt.Fprintf(out, "ref blocks no   (answers only for variants in the catalog)\n")
 	}
-	fmt.Fprintln(out)
 	if p.NoCallable {
 		fmt.Fprintf(out, "callable   not tracked (--no-callable): --hom-ref will refuse\n")
 	} else {
@@ -337,7 +341,7 @@ func summarizeVcf(ctx context.Context, out *bufio.Writer, errOut interface{ Writ
 		fmt.Fprintf(out, "indexed    no  (region queries scan the whole file)\n")
 	}
 	fmt.Fprintf(out, "provenance none -- a VCF is not a conversion, so there is nothing recorded\n")
-	fmt.Fprintf(out, "           about how it was made; --min-dp and span semantics are\n")
+	fmt.Fprintf(out, "           about how it was made; --min-dp and reference blocks are\n")
 	fmt.Fprintf(out, "           properties of a store, not of this file\n")
 
 	if !vcfVarSummaryCounts {

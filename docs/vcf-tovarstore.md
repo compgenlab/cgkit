@@ -212,14 +212,7 @@ This follows from what the source asserted. A plain VCF reports variants and mak
 
 Consequently a run is only meaningful at positions that appear in the site catalog, and the reconstruction checks the catalog *first and returns early* for exactly that reason. Reading a run as territory would manufacture reference observations for positions never interrogated.
 
-Every store records `cgkit.span_semantics`:
-
-| value | meaning |
-|---|---|
-| `sites` | intervals mark catalog sites only. All a plain VCF can support. |
-| `blocks` | intervals came from gVCF reference blocks — positive statements about spans. Not yet produced by any converter -- `vcf-tovarstore` **refuses** a gVCF rather than mis-storing one. Query a gVCF directly with `vcf-varquery`, which reads reference blocks as coverage. |
-
-Only a `blocks` store could answer for a position absent from the catalog. Stores predating the key are read as `sites`, the conservative reading.
+A position absent from the catalog is answerable only by a store carrying the optional `ref_blocks` table -- reference blocks from per-sample gVCFs, positive statements about every base they span. Such a store answers there for loci named exactly (never by enumerating a region), and never at a catalog site, where a sample with no run is a genotype the caller declined and a block must not overrule it. `vcf-varquery`'s `ref_source` column says which kind of evidence each `0/0` rests on. `vcf-tovarstore` itself writes no blocks and **refuses** a gVCF; query a gVCF directly with `vcf-varquery`, which reads its reference blocks as coverage.
 
 ## What it can and cannot answer
 
@@ -590,7 +583,6 @@ Conversion records these keys in the calls file, reported by `vcf-varquery -v`:
 |---|---|
 | `cgkit.samples` | the sample roster, in source order |
 | `cgkit.min_dp` | the callable threshold used |
-| `cgkit.span_semantics` | `sites` or `blocks` |
 | `cgkit.contigs` | the source's `##contig` lines, verbatim — so an export can declare its reference |
 | `cgkit.nocallable` | `1` when regions are absent by request |
 | `cgkit.source` | input filename(s) |

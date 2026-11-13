@@ -240,3 +240,47 @@ func TestDepthRatioIsTheDefaultAndExcludesExplicitBands(t *testing.T) {
 		t.Errorf("--depth-bands with --depth-ratio: err = %v, want a refusal", err)
 	}
 }
+
+// ref_source on a store carrying reference blocks. No cgkit command writes
+// blocks yet, so the store is built through the library: a catalog site with a
+// genotyped reference, and an off-catalog position a block covers. A 0/0 from the
+// first is catalog_run, one from the second is ref_block, and an ALT row is ".".
+func TestRefSourceColumnOnAStoreWithRefBlocks(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "store")
+	w, err := varstore.NewWriter(base, varstore.WriterOpts{
+		Samples: []string{"S1", "S2"}, MinDP: 10, RefBlocks: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(w.WriteSite(varstore.Site{Chrom: "chr1", Pos: 1000, Ref: "G", Alt: "A", AC: 1, AN: 4, NCarriers: 1, NCalled: 2}))
+	must(w.WriteCall(varstore.Call{SampleID: "S1", Chrom: "chr1", Pos: 1000, Ref: "G", Alt: "A",
+		GT: "0/1", DP: 30, ADRef: 15, ADAlt: 15, GQ: 99}))
+	must(w.WriteRegion(varstore.CalledSiteRun{SampleID: "S1", Chrom: "chr1", Start: 1000, End: 1000, NSites: 1, MinDP: 30}))
+	must(w.WriteRegion(varstore.CalledSiteRun{SampleID: "S2", Chrom: "chr1", Start: 1000, End: 1000, NSites: 1, MinDP: 30}))
+	must(w.WriteRefBlock(varstore.RefBlock{SampleID: "S2", Chrom: "chr1", Start: 900, End: 2500, MinDP: 25, GQ: varstore.Missing}))
+	must(w.Finish())
+
+	rows := map[string]string{}
+	for _, l := range strings.Split(dataRowsOnly(runVcf(t, "vcf-varquery", "--hom-ref",
+		"--variant", "chr1:1000:G:A", "--variant", "chr1:2000:C:T", base)), "\n") {
+		f := strings.Split(l, "\t")
+		if len(f) == numCols && f[colChrom] != "chrom" {
+			rows[f[colPos]+" "+f[colSample]] = f[colGT] + " " + f[colRefSource]
+		}
+	}
+	want := map[string]string{
+		"1000 S1": "0/1 .",
+		"1000 S2": "0/0 catalog_run",
+		"2000 S2": "0/0 ref_block",
+	}
+	if !reflect.DeepEqual(rows, want) {
+		t.Errorf("rows = %v, want %v", rows, want)
+	}
+}
