@@ -421,17 +421,18 @@ func TestOffCatalogAgreesAcrossBackends(t *testing.T) {
 	}
 }
 
-// TestSpanSemanticsRecorded pins that a VCF-derived store declares the
-// conservative reading, so a future gVCF converter has to opt in explicitly.
-func TestSpanSemanticsRecorded(t *testing.T) {
+// A store from a plain VCF must not claim reference blocks: they are what lets a
+// store answer off its catalog, and a plain VCF asserts nothing between records.
+func TestAConvertedStoreCarriesNoRefBlocks(t *testing.T) {
 	base := convert(t, "testdata/coverage.vcf")
 	s, err := varstore.OpenParquet(base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if got := s.SpanSemantics(); got != varstore.SpansSites {
-		t.Errorf("span semantics = %q, want %q", got, varstore.SpansSites)
+	if s.HasRefBlocks() || s.Provenance().RefBlocks {
+		t.Error("a store converted from a plain VCF claims reference blocks, so it would " +
+			"answer off its catalog with nothing to answer from")
 	}
 }
 
@@ -569,11 +570,11 @@ func TestVarQueryLocusColumnsAreSplit(t *testing.T) {
 		header string
 	}{
 		{"carriers", []string{"vcf-varquery", "--variant", "chr1:100:A:G", base},
-			"chrom\tpos\tref\talt\tsample\tgt\tdp\tmin_dp\tad_ref\tad_alt\tgq"},
+			"chrom\tpos\tref\talt\tsample\tgt\tdp\tmin_dp\tad_ref\tad_alt\tgq\tref_source"},
 		// S2 is the carrier at chr1:100, so --sample lands on the same locus the
 		// other cases assert -- which is what makes the shared layout checkable.
 		{"samples", []string{"vcf-varquery", "--sample", "S2", base},
-			"chrom\tpos\tref\talt\tsample\tgt\tdp\tmin_dp\tad_ref\tad_alt\tgq"},
+			"chrom\tpos\tref\talt\tsample\tgt\tdp\tmin_dp\tad_ref\tad_alt\tgq\tref_source"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1243,8 +1244,9 @@ func TestGvcfQueryAnswersOffCatalog(t *testing.T) {
 		got := tsvDataRows(runVcf(t, "vcf-varquery", "--variant", "chr1:2000-2100",
 			"--hom-ref", "--min-dp", "10", gz))
 		// alt is "." and min_dp is the block's own MIN_DP, not the query threshold;
-		// dp is "." because a block measures no single base.
-		want := []string{"chr1\t100\tA\t.\tS1\t0/0\t.\t28\t.\t.\t60"}
+		// dp is "." because a block measures no single base; and ref_source says
+		// the reference rests on a block rather than a genotyped site.
+		want := []string{"chr1\t100\tA\t.\tS1\t0/0\t.\t28\t.\t.\t60\tref_block"}
 		if !slices.Equal(got, want) {
 			t.Errorf("got %q, want %q", got, want)
 		}

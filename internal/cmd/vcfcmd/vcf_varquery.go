@@ -134,7 +134,15 @@ without coverage information.
 Every non-VCF output uses one layout, whichever axes were named, so results can
 be concatenated, sorted and cut the same way:
 
-  chrom pos ref alt sample gt dp min_dp ad_ref ad_alt gq
+  chrom pos ref alt sample gt dp min_dp ad_ref ad_alt gq ref_source
+
+ref_source says what a 0/0 rests on: catalog_run where the sample was genotyped
+at a catalog site (a run in a store, a record in a VCF), ref_block where only a
+reference block covers the position (a gVCF, or a store carrying ref_blocks,
+which answers off its catalog for loci named exactly). The second is the weaker
+claim -- reads were present at that depth, not that a caller genotyped the
+sample -- and the column is there so a consumer can tell them apart. It is "."
+on every non-reference row.
 
 The locus leads as four columns rather than one packed chrom:pos:ref:alt field,
 so rows cut and sort on position directly. The chromosome is echoed the way it
@@ -206,7 +214,7 @@ written where nothing is known would assert a depth the data never had.`,
 		if err := checkSamples(store, q.Samples); err != nil {
 			return err
 		}
-		warnUnknownSites(cmd, store, q)
+		offCatalog := warnUnknownSites(cmd, store, q)
 
 		var t *tally
 		if format == "vcf" {
@@ -235,11 +243,11 @@ written where nothing is known would assert a depth the data never had.`,
 
 		switch format {
 		case "json":
-			t, err = writeCallsJSON(out, store, q)
+			t, err = writeCallsJSON(out, store, q, offCatalog)
 		case "list":
 			t, err = writeCallsList(out, store, q)
 		default:
-			t, err = writeCallsTSV(out, store, q, args[0])
+			t, err = writeCallsTSV(out, store, q, args[0], offCatalog)
 		}
 		if err != nil {
 			return err
@@ -312,11 +320,11 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 		if v := p.Meta[varstore.MetaKeyReference]; v != "" {
 			fmt.Fprintf(out, "  reference   %s\n", v)
 		}
-		fmt.Fprintf(out, "  spans       %s", p.Spans)
-		if p.Spans == varstore.SpansSites {
-			fmt.Fprintf(out, "  (answers only for variants in the catalog)")
+		if p.RefBlocks {
+			fmt.Fprintf(out, "  ref blocks  yes  (off-catalog positions are answered where a block covers them)\n")
+		} else {
+			fmt.Fprintf(out, "  ref blocks  no   (answers only for variants in the catalog)\n")
 		}
-		fmt.Fprintln(out)
 		if p.NoCallable {
 			fmt.Fprintf(out, "  callable    not tracked (--no-callable): --hom-ref will refuse\n")
 		} else {
@@ -346,7 +354,7 @@ func describeStore(cmd *cobra.Command, store varstore.Store, path string, g vars
 			// a row for a position no variant record mentions. Only a gVCF can
 			// answer there, and the depth reported is the block's floor rather than
 			// a depth measured at that base.
-			fmt.Fprintf(out, "  spans       blocks  (reference blocks answer for positions no variant reports)\n")
+			fmt.Fprintf(out, "  ref blocks  yes  (reference blocks answer for positions no variant reports)\n")
 			fmt.Fprintf(out, "  NOTE        min_dp on a reference row is the block's MIN_DP; dp is \".\"\n")
 		}
 	}
@@ -416,16 +424,55 @@ func isGvcfPath(ctx context.Context, path string) bool {
 // Without this, such a variant returns zero carriers -- or all not-assayed
 // under --hom-ref -- which reads exactly like a real negative result. The
 // source simply never looked there, and only a gVCF could say otherwise.
-func warnUnknownSites(cmd *cobra.Command, store varstore.Store, q varstore.Query) {
+//
+// A store carrying reference blocks CAN answer such a locus, so for one the
+// note says where the answer comes from instead of predicting there is none.
+// It returns the off-catalog loci, which is how ref_source tells a block-derived
+// 0/0 from a catalog one without asking the store row by row.
+func warnUnknownSites(cmd *cobra.Command, store varstore.Store, q varstore.Query) map[string]bool {
+	blocks := false
+	if b, ok := store.(interface{ HasRefBlocks() bool }); ok {
+		blocks = b.HasRefBlocks()
+	}
+	off := map[string]bool{}
 	for _, locus := range q.Loci {
 		known, err := store.SiteKnown(locus)
 		if err != nil || known {
+			continue
+		}
+		off[locusKey(locus)] = true
+		if blocks {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"note: %s is not in the catalog; samples are reported from reference blocks\n"+
+					"      where a block covers it, and are otherwise not assayed.\n", locus)
 			continue
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"warning: %s is not in the source; reporting not-assayed for every sample.\n"+
 				"         A VCF only supports queries for the variants it contains.\n", locus)
 	}
+	return off
+}
+
+// locusKey identifies a locus across contig spellings.
+func locusKey(l varstore.Locus) string {
+	return fmt.Sprintf("%s:%d:%s:%s", varstore.CanonKey(l.Chrom), l.Pos, l.Ref, l.Alt)
+}
+
+// refSourceOf names the evidence a reference row rests on, "." for anything else.
+//
+// The same two answers SampleState.RefSource gives, recovered from the row: a
+// gVCF block row has no alternate ("."), and a 0/0 at a locus the catalog lacks
+// can only have come from the store's reference blocks. Any other reference row
+// was genotyped at a catalog site -- a run in a store, a record in a VCF.
+func refSourceOf(c varstore.Call, offCatalog map[string]bool) string {
+	if !varstore.IsHomRef(c.GT) {
+		return "."
+	}
+	if c.Alt == "." || offCatalog[locusKey(c.Locus())] {
+		return string(varstore.RefFromBlock)
+	}
+	return string(varstore.RefFromCatalog)
 }
 
 // buildQuery turns the flags into one Query.
@@ -503,15 +550,16 @@ func streamCalls(store varstore.Store, q varstore.Query, fn func(varstore.Call) 
 }
 
 // writeCallsTSV streams the shared tabular layout.
-func writeCallsTSV(out *bufio.Writer, store varstore.Store, q varstore.Query, source string) (*tally, error) {
+func writeCallsTSV(out *bufio.Writer, store varstore.Store, q varstore.Query, source string, offCatalog map[string]bool) (*tally, error) {
 	provenance(out, source)
 	fmt.Fprintln(out, strings.Join(tsvHeader(), "\t"))
 	minDP := vouchedMinDP(store)
 	return streamCalls(store, q, func(c varstore.Call) error {
-		row := fmt.Sprintf("%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
+		row := fmt.Sprintf("%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
 			c.Chrom, c.Pos, c.Ref, c.Alt, c.SampleID, c.GT,
 			intOrDot(c.DP), minDPOf(c, minDP),
-			intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ))
+			intOrDot(c.ADRef), intOrDot(c.ADAlt), intOrDot(c.GQ),
+			refSourceOf(c, offCatalog))
 		if vcfVarQueryDosage {
 			row += "\t" + dosageOf(c.GT)
 		}
@@ -522,7 +570,7 @@ func writeCallsTSV(out *bufio.Writer, store varstore.Store, q varstore.Query, so
 
 // writeCallsJSON streams a JSON array rather than buffering one, so the shape is
 // the same at any scale.
-func writeCallsJSON(out *bufio.Writer, store varstore.Store, q varstore.Query) (*tally, error) {
+func writeCallsJSON(out *bufio.Writer, store varstore.Store, q varstore.Query, offCatalog map[string]bool) (*tally, error) {
 	fmt.Fprintln(out, "[")
 	first := true
 	t, err := streamCalls(store, q, func(c varstore.Call) error {
@@ -530,7 +578,16 @@ func writeCallsJSON(out *bufio.Writer, store varstore.Store, q varstore.Query) (
 			fmt.Fprintln(out, ",")
 		}
 		first = false
-		b, err := json.Marshal(c)
+		// ref_source rides beside the call rather than inside it: Call is the
+		// store's row type, and provenance is a property of the answer.
+		row := struct {
+			varstore.Call
+			RefSource string `json:"ref_source,omitempty"`
+		}{Call: c}
+		if s := refSourceOf(c, offCatalog); s != "." {
+			row.RefSource = s
+		}
+		b, err := json.Marshal(row)
 		if err != nil {
 			return err
 		}
@@ -826,6 +883,7 @@ func intOrDot(v int32) string {
 // sort and cut on position without re-splitting a composite key.
 var tsvColumns = []string{
 	"chrom", "pos", "ref", "alt", "sample", "gt", "dp", "min_dp", "ad_ref", "ad_alt", "gq",
+	"ref_source",
 }
 
 // dosageOf renders the alt-allele dosage of a genotype: how many of its called
