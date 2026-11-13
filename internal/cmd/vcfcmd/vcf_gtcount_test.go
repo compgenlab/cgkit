@@ -41,7 +41,7 @@ func TestGtColumnOrder(t *testing.T) {
 }
 
 // TestGtCountSiteGrammar pins that this command reads targets through the same
-// grammar as vcf-varquery --variant, and that it refuses the shapes it cannot
+// grammar as `varstore query --variant`, and that it refuses the shapes it cannot
 // answer rather than silently taking the first base of a range.
 func TestGtCountSiteGrammar(t *testing.T) {
 	got, err := collectGtSites(context.Background(), []string{"chr1:100", "chr1:300:G:GA"}, nil)

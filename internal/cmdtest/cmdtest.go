@@ -24,8 +24,14 @@ import (
 //
 // Callers with flags whose values do not round-trip through Set -- custom
 // chain-valued flags, mostly -- still have to clear those by hand afterwards.
+//
+// It walks the whole tree, not only root's children: a subcommand of a
+// subcommand -- vcf-varstore attach-refblocks -- shares its flag objects across
+// runs exactly as a top-level command does, and a --rebuild left set by one
+// test changed what the next one meant.
 func ResetFlags(root *cobra.Command) {
 	for _, c := range root.Commands() {
+		ResetFlags(c)
 		c.Flags().VisitAll(func(f *pflag.Flag) {
 			// Only flags something actually set. Changed persists across runs
 			// for the same reason the values do -- the flag objects are shared --
