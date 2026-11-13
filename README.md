@@ -98,6 +98,7 @@ out.bed` cannot proceed with help text as its input.
 | `sam-stats` | Summary statistics for a SAM/BAM/CRAM file |
 | `sam-tofasta` | Convert SAM/BAM/CRAM reads to FASTA |
 | `sam-tofastq` | Convert SAM/BAM/CRAM reads to FASTQ |
+| `sam-vcfcount` | Count reference and alternate reads for each VCF variant in a SAM/BAM/CRAM |
 
 ### Sequence
 
