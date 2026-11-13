@@ -191,7 +191,7 @@ written where nothing is known would assert a depth the data never had.`,
 			return err
 		}
 		if vcfVerbose {
-			targets.report(cmd.ErrOrStderr())
+			targets.Report(cmd.ErrOrStderr())
 			samples.report(cmd.ErrOrStderr())
 		}
 		// A genotype matrix has to distinguish an observed reference call from an
@@ -481,7 +481,7 @@ func refSourceOf(c varstore.Call, offCatalog map[string]bool) string {
 // legal: naming both is the variants-by-samples question that used to be a hard
 // error, naming only --region asks for a window, and naming only --sample asks
 // what that subject carries.
-func buildQuery(ctx context.Context) (varstore.Query, *targetSet, *sampleSet, error) {
+func buildQuery(ctx context.Context) (varstore.Query, *varstore.Targets, *sampleSet, error) {
 	q := varstore.Query{
 		Gate: varstore.Gate{
 			MinDP:         int32(vcfVarQueryMinDP),
@@ -491,7 +491,7 @@ func buildQuery(ctx context.Context) (varstore.Query, *targetSet, *sampleSet, er
 		},
 		IncludeRef: vcfVarQueryHomRef,
 	}
-	t, err := parseTargets(ctx, vcfVarQueryVariants)
+	t, err := varstore.ParseTargets(ctx, vcfVarQueryVariants)
 	if err != nil {
 		return q, nil, nil, err
 	}
