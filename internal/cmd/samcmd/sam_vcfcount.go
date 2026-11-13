@@ -47,6 +47,8 @@ type vcfCountOpts struct {
 	outTotal bool
 	outOther bool
 	outGT    bool
+	vcfCount bool
+	vcfAF    bool
 	verbose  bool
 }
 
@@ -91,10 +93,17 @@ multiallelic record are kept or dropped together.
 Not counted: symbolic alleles (<DEL>, <NON_REF>, ...), breakends, the spanning
 deletion "*", and gVCF reference blocks.
 
-Output columns: chrom pos [id] ref alt ref_count alt_count [alt_freq]
-[total_count] [other_count] [gt]. alt_freq is alt_count over every read that
-spanned the variant (total_count), so at a multiallelic site it is not
-alt/(alt+ref).`,
+Output columns: chrom pos [id] ref alt [vcf_ref_count vcf_alt_count]
+[vcf_alt_freq] ref_count alt_count [alt_freq] [total_count] [other_count]
+[gt]. alt_freq is alt_count over every read that spanned the variant
+(total_count), so at a multiallelic site it is not alt/(alt+ref).
+
+--vcf-counts and --vcf-af report what the VCF itself says, from the --sample
+AD field, for comparison with the counts from the alignment file: AD's first
+value is the REF depth and value i+1 that of ALT i. vcf_alt_freq is
+vcf_alt_count/(vcf_ref_count+vcf_alt_count), the caller's own allele balance.
+The VCF must declare FORMAT/AD; a record with no AD for the sample, or a
+missing value, reports ".".`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSamVcfCount(cmd, args[0], args[1], &vcfCount)
@@ -122,7 +131,7 @@ func init() {
 	f.BoolVar(&o.snvsOnly, "snvs", false, "Only count SNVs")
 	f.BoolVar(&o.indelsOnly, "indels", false, "Only count indels")
 	f.BoolVar(&o.het, "het", false, "Only count variants heterozygous in --sample (requires GT)")
-	f.StringVar(&o.sample, "sample", "", "VCF sample for --het and --gt (default: the first sample)")
+	f.StringVar(&o.sample, "sample", "", "VCF sample for --het, --gt, --vcf-counts and --vcf-af (default: the first sample)")
 	f.BoolVar(&o.skipMissing, "skip-missing", false, "Skip variants on contigs absent from the alignment file (default: error)")
 	f.IntVar(&o.minDepth, "min-depth", 0, "Only write variants spanned by at least this many passing reads (total_count; 1 drops uncovered variants)")
 	f.IntVar(&o.batchLen, "batch-len", 10000, "Query the alignment file once per window of up to this many bases")
@@ -133,6 +142,8 @@ func init() {
 	f.BoolVar(&o.outTotal, "total", false, "Add a total_count column (reads spanning the variant)")
 	f.BoolVar(&o.outOther, "other", false, "Add an other_count column (spanning reads matching neither REF nor this ALT)")
 	f.BoolVar(&o.outGT, "gt", false, "Add the --sample genotype from the VCF")
+	f.BoolVar(&o.vcfCount, "vcf-counts", false, "Add vcf_ref_count and vcf_alt_count columns from the --sample AD field")
+	f.BoolVar(&o.vcfAF, "vcf-af", false, "Add a vcf_alt_freq column from the --sample AD field (alt / (ref+alt))")
 	f.BoolVarP(&o.verbose, "verbose", "v", false, "Report a summary of what was counted and skipped on stderr")
 	samVcfCountCmd.MarkFlagsMutuallyExclusive("snvs", "indels")
 }
@@ -147,6 +158,7 @@ type vcVariant struct {
 	alts    []string // upper-cased ALTs; "" for an allele that cannot be counted
 	isIndel bool     // any countable ALT differs in length from REF
 	gt      string
+	ad      []string // the sample's AD values, one per allele; nil when absent
 
 	// Results, filled by countVariants.
 	refCount   int
@@ -248,9 +260,15 @@ func runSamVcfCount(cmd *cobra.Command, bamPath, vcfPath string, o *vcfCountOpts
 		return fmt.Errorf("reading header of %s: %w", vcfPath, err)
 	}
 	sampleIdx := -1
-	if o.het || o.outGT {
+	needAD := o.vcfCount || o.vcfAF
+	if needAD {
+		if _, ok := vh.FormatDef("AD"); !ok {
+			return fmt.Errorf("--vcf-counts and --vcf-af need the AD FORMAT field, which %s does not declare", vcfPath)
+		}
+	}
+	if o.het || o.outGT || needAD {
 		if len(vh.Samples()) == 0 {
-			return fmt.Errorf("--het and --gt need a VCF with samples; %s has none", vcfPath)
+			return fmt.Errorf("--het, --gt, --vcf-counts and --vcf-af need a VCF with samples; %s has none", vcfPath)
 		}
 		sampleIdx = 0
 		if o.sample != "" {
@@ -260,7 +278,7 @@ func runSamVcfCount(cmd *cobra.Command, bamPath, vcfPath string, o *vcfCountOpts
 			}
 		}
 	} else if o.sample != "" {
-		return fmt.Errorf("--sample only applies with --het or --gt")
+		return fmt.Errorf("--sample only applies with --het, --gt, --vcf-counts or --vcf-af")
 	}
 
 	out, err := cmdio.CreateOutput(cmd, "-o/--output", o.output)
@@ -281,7 +299,14 @@ func runSamVcfCount(cmd *cobra.Command, bamPath, vcfPath string, o *vcfCountOpts
 	if o.outID {
 		cols = append(cols, "id")
 	}
-	cols = append(cols, "ref", "alt", "ref_count", "alt_count")
+	cols = append(cols, "ref", "alt")
+	if o.vcfCount {
+		cols = append(cols, "vcf_ref_count", "vcf_alt_count")
+	}
+	if o.vcfAF {
+		cols = append(cols, "vcf_alt_freq")
+	}
+	cols = append(cols, "ref_count", "alt_count")
 	if o.outAF {
 		cols = append(cols, "alt_freq")
 	}
@@ -358,6 +383,11 @@ func runSamVcfCount(cmd *cobra.Command, bamPath, vcfPath string, o *vcfCountOpts
 				}
 			}
 			v.gt = gt
+			if needAD {
+				if v.ad, err = sampleAD(rec, sampleIdx); err != nil {
+					return fail(err)
+				}
+			}
 		}
 		bamRef, ok := contigs.Resolve(rec.Chrom)
 		if !ok {
@@ -466,6 +496,38 @@ func sampleGT(rec *vcf.VcfRecord, idx int) (string, error) {
 	return gt.String(), nil
 }
 
+// sampleAD returns the sample's AD values, or nil when the record has none.
+func sampleAD(rec *vcf.VcfRecord, idx int) ([]string, error) {
+	s, err := rec.Sample(idx)
+	if err != nil {
+		return nil, err
+	}
+	ad, ok := s.Get("AD")
+	if !ok || ad.IsMissing() || ad.IsEmpty() {
+		return nil, nil
+	}
+	return strings.Split(ad.String(), ","), nil
+}
+
+// adValue returns AD value i, or -1 when it is absent, missing or malformed.
+func adValue(ad []string, i int) int {
+	if i >= len(ad) {
+		return -1
+	}
+	n, err := strconv.Atoi(ad[i])
+	if err != nil || n < 0 {
+		return -1
+	}
+	return n
+}
+
+func adString(n int) string {
+	if n < 0 {
+		return "."
+	}
+	return strconv.Itoa(n)
+}
+
 // isHet reports whether gt names at least two different called alleles.
 func isHet(gt string) bool {
 	alleles := strings.FieldsFunc(gt, func(r rune) bool { return r == '/' || r == '|' })
@@ -497,7 +559,21 @@ func writeVcfCountRows(w io.Writer, v *vcVariant, o *vcfCountOpts) {
 			}
 			row = append(row, id)
 		}
-		row = append(row, v.rec.Ref, v.rec.Alt()[i], strconv.Itoa(v.refCount), strconv.Itoa(v.altCounts[i]))
+		row = append(row, v.rec.Ref, v.rec.Alt()[i])
+		if o.vcfCount || o.vcfAF {
+			vRef, vAlt := adValue(v.ad, 0), adValue(v.ad, i+1)
+			if o.vcfCount {
+				row = append(row, adString(vRef), adString(vAlt))
+			}
+			if o.vcfAF {
+				if vRef >= 0 && vAlt >= 0 && vRef+vAlt > 0 {
+					row = append(row, strconv.FormatFloat(float64(vAlt)/float64(vRef+vAlt), 'g', 6, 64))
+				} else {
+					row = append(row, ".")
+				}
+			}
+		}
+		row = append(row, strconv.Itoa(v.refCount), strconv.Itoa(v.altCounts[i]))
 		if o.outAF {
 			if v.total > 0 {
 				row = append(row, strconv.FormatFloat(float64(v.altCounts[i])/float64(v.total), 'g', 6, 64))
