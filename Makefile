@@ -72,6 +72,8 @@ bump-cghts:
 #   make release-check RELEASE_BRANCH=topic   # exercise it off main
 release-check:
 	@sh scripts/release-check.sh "$(RELEASE_BRANCH)" "$(TAG)"
+	@pin=$$(GOWORK=off go list -m -f '{{.Version}}' github.com/compgenlab/cghts); \
+	case "$$pin" in *-*) echo "go.mod pins unreleased cghts $$pin; tag cghts and run make bump-cghts first"; exit 1;; esac
 	@echo "--- verifying against the go.mod pin (GOWORK=off), not the workspace ---"
 	GOWORK=off GOCACHE=/tmp/go-build-cache go vet ./...
 	@out=$$(gofmt -l . 2>/dev/null); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
