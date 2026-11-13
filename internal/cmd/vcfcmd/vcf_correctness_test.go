@@ -72,7 +72,7 @@ func TestOutOfRangeSampleIndexIsRejectedUpFront(t *testing.T) {
 func TestNoArgsIsAUsageErrorNotHelpOnStdout(t *testing.T) {
 	for _, cmd := range []string{
 		"vcf-tobed", "vcf-stats", "vcf-export", "vcf-samples", "vcf-check",
-		"vcf-strip", "vcf-varquery", "vcf-varsummary", "vcf-tovarstore",
+		"vcf-strip",
 	} {
 		root, buf := vcfTestRoot(cmd)
 		err := root.Execute()

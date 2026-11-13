@@ -3,6 +3,9 @@
 CLI commands for computational genomics: sequence and alignment analysis, VCF
 manipulation, BED/tabix wrangling, and NGS data operations.
 
+The sparse genotype store (formerly `vcf-tovarstore`, `vcf-varquery` and
+friends) is its own tool, [`varstore`](https://github.com/compgenlab/varstore).
+
 Oxford Nanopore UMI and poly(A) tooling lives in
 [`nupa`](https://github.com/compgenlab/nupa), a focused toolkit built on the same
 library; the `ont-*` commands that used to be here moved there.
@@ -29,8 +32,8 @@ Inputs may be local paths, `http(s)://` URLs, or `s3://` objects:
 
 ```bash
 cgkit sam-stats s3://bucket/sample.bam
-cgkit vcf-varquery https://host/cohort.vcf.gz --variant chr1:1000:A:T
-cgkit vcf-varquery s3://bucket/cohort/ --sample NA12878
+cgkit vcf-gtcount https://host/cohort.vcf.gz chr1:1000:A:T
+cgkit vcf-stats s3://bucket/cohort.vcf.gz
 ```
 
 Indexes (`.bai`, `.crai`, `.tbi`, `.csi`, `.fai`) are resolved over the same
@@ -45,9 +48,8 @@ gateway such as MinIO or Ceph.
 
 Two costs worth knowing. A *streaming* read of a remote object transfers the
 whole thing, because a stream has no index to skip with — commands taking
-`--region`, and any query against a Parquet store, seek instead. And an
-unindexed remote VCF cannot seek at all, so every query re-reads the object;
-`vcf-varsummary` reports whether an index was found.
+`--region` seek instead. And an unindexed remote VCF cannot seek at all, so
+every query re-reads the object.
 
 **Outputs are always local.** A remote `-o` or `--out` is refused by name rather
 than failing inside a writer.
@@ -140,7 +142,4 @@ out.bed` cannot proceed with help text as its input.
 | `vcf-tobed` | Export allele positions from a VCF file to BED format |
 | `vcf-tobedpe` | Convert a structural-variant VCF to BEDPE format |
 | `vcf-tocount` | Convert a VCF to a count file using the AD (or RO/AO) format field |
-| `vcf-tovarstore` | Convert a VCF to a sparse Parquet genotype store ([format docs](docs/vcf-tovarstore.md)) |
 | `vcf-tstv` | Calculate a Ts/Tv ratio for SNVs |
-| `vcf-varquery` | Query genotypes by site, by sample, or both ([format docs](docs/vcf-tovarstore.md)) |
-| `vcf-varsummary` | Describe a store or VCF: samples, contigs, provenance, per-chromosome census |
