@@ -61,6 +61,7 @@ func TestAttachedStoreAnswersOffCatalogLikeTheGvcfs(t *testing.T) {
 		"chr1:650:C:T",  // a block both share
 		"chr1:705:C:T",  // just past S1's own SNV at 700
 		"chr1:5000:C:T", // no block at all
+		"chr2:150:C:T",  // a chromosome with no catalog site
 	} {
 		var direct []string
 		for _, name := range []string{"S1", "S2"} {
@@ -73,17 +74,16 @@ func TestAttachedStoreAnswersOffCatalogLikeTheGvcfs(t *testing.T) {
 	}
 }
 
-// A chromosome with no catalog site belongs to no volume, so blocks on it have
-// nowhere to go: the fixture's catalog is chr1 only, and S1's chr2 blocks are not
-// attached. Taking them anyway would put every chromosome's blocks into every
-// volume of an archive, whose pVCF headers all declare every contig.
-func TestBlocksOnAChromosomeNoVolumeHoldsAreNotAttached(t *testing.T) {
+// A chromosome with no catalog site used to belong to no volume, so its blocks
+// had nowhere to go and every query there was not assayed. The fixture's
+// catalog is chr1 only; S1's chr2 blocks must still answer.
+func TestBlocksOnAChromosomeWithoutSitesAreAttached(t *testing.T) {
 	roster, s1 := refBlocksFixture(t, "S1")
 	frag := filepath.Join(t.TempDir(), "S1")
 	runVcf(t, "vcf-refblocks", "--roster", roster, "--out", frag, s1)
 	runVcf(t, "vcf-varstore", "attach-refblocks", roster, frag)
-	if got := homRefSamplesAt(t, roster, "chr2:150:C:T"); len(got) != 0 {
-		t.Errorf("chr2 is in no volume, yet the store reports %v as 0/0 there", got)
+	if got := homRefSamplesAt(t, roster, "chr2:150:C:T"); !reflect.DeepEqual(got, []string{"S1"}) {
+		t.Errorf("chr2:150, covered by S1's block on a chromosome with no catalog site: got %v", got)
 	}
 }
 

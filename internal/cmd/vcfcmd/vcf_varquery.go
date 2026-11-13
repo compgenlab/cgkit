@@ -33,7 +33,7 @@ var (
 )
 
 var vcfVarQueryCmd = &cobra.Command{
-	GroupID:     "vcfcmd",
+	GroupID:     "varstore",
 	Annotations: map[string]string{"since": "v0.5.0"},
 	Use:         "vcf-varquery <input.vcf | store-base>",
 	Short:       "Query genotypes by site, by sample, or both",

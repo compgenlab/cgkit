@@ -35,4 +35,7 @@ func InitCmd(rootCmd *cobra.Command) {
 	rootCmd.AddCommand(vcfRefBlocksCmd)
 	rootCmd.AddCommand(vcfVarQueryCmd)
 	rootCmd.AddGroup(&cobra.Group{ID: "vcfcmd", Title: "VCF"})
+	// The genotype store has its own section: it is a product with its own
+	// pipeline (convert, refblocks, attach, query), not a VCF utility.
+	rootCmd.AddGroup(&cobra.Group{ID: "varstore", Title: "Variant store"})
 }

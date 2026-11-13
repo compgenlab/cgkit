@@ -23,7 +23,7 @@ var (
 )
 
 var vcfVarSummaryCmd = &cobra.Command{
-	GroupID:     "vcfcmd",
+	GroupID:     "varstore",
 	Annotations: map[string]string{"since": "v0.6.0"},
 	Use:         "vcf-varsummary <input.vcf | store>",
 	Short:       "Describe a genotype store or VCF: samples, contigs, provenance",

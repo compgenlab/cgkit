@@ -140,7 +140,7 @@ func collectMeta() (map[string]string, error) {
 }
 
 var vcfToVarstoreCmd = &cobra.Command{
-	GroupID:     "vcfcmd",
+	GroupID:     "varstore",
 	Annotations: map[string]string{"since": "v0.5.0"},
 	Use:         "vcf-tovarstore <input.vcf> [input2.vcf ...]",
 	Short:       "Convert a VCF to a varstore",

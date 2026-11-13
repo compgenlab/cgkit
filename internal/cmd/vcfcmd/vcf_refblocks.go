@@ -25,7 +25,7 @@ var (
 )
 
 var vcfRefBlocksCmd = &cobra.Command{
-	GroupID:     "vcfcmd",
+	GroupID:     "varstore",
 	Annotations: map[string]string{"since": "v0.6.11"},
 	Use:         "vcf-refblocks <sample.g.vcf.gz>",
 	Short:       "Extract one sample's reference blocks from a gVCF, for a varstore",

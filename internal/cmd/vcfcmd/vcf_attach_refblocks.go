@@ -39,9 +39,11 @@ too many for a command line. Every fragment must be finished, one per sample,
 for a sample on the store's roster, and built with the store's --min-dp and
 depth bands; fragments must also agree with each other on --max-gap.
 
-Blocks are attached only for chromosomes the store's volumes hold, which is the
-chromosomes with at least one catalog site. A fragment is genome-wide, and
-every volume reads only its own chromosomes from it.
+Every chromosome a fragment has blocks on becomes answerable. A store routes a
+query by chromosome to the volume that holds it, so a chromosome with no
+catalog site -- chrM, unplaced contigs, chrY in an all-female cohort -- gets a
+BLOCKS-ONLY volume of its own on an archive (same samples and settings, empty
+catalog), or joins the volume itself when the store is a single volume.
 
 The first attach builds the table from the fragments. After that, say which:
 
@@ -59,9 +61,9 @@ Fragments are merged in batches of --batch (default 100), through local
 intermediate files, so a ten-thousand-sample cohort never holds ten thousand
 files open. The output is a new generation of files and each volume's manifest
 is rewritten last: until then the volume reads exactly as before, and a run
-that dies leaves the store as it was. On an archive every volume is attached
-and the archive manifest rewritten after them; a run that dies partway leaves
-volumes that disagree, which the archive refuses to open until it is rerun.`,
+that dies leaves it as it was. On an archive every volume is attached and the
+archive manifest rewritten after them; a run that dies partway leaves volumes
+that disagree, which the archive refuses to open until it is rerun.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -85,55 +87,28 @@ volumes that disagree, which the archive refuses to open until it is rerun.`,
 			TempDir: attachTempDir,
 		}
 
-		volumes := []string{base}
-		archive := varstore.IsStore(ctx, base)
-		var names []string
-		if archive {
-			arc, err := varstore.OpenStore(ctx, base)
-			if err != nil {
-				return err
-			}
-			volumes = volumes[:0]
-			for _, v := range arc.StoreManifest().Volumes {
-				names = append(names, v.Name)
-				volumes = append(volumes, volumeLocator(base, v.Name))
-			}
-			arc.Close()
+		res, err := varstore.AttachRefBlocksToStore(ctx, base, frags, opts,
+			buildinfo.String(), buildinfo.CommandLine())
+		if err != nil {
+			return err
 		}
-
 		out := cmd.OutOrStdout()
-		fmt.Fprintf(out, "attaching %d fragment(s) to %d volume(s)\n", len(frags), len(volumes))
-		for _, v := range volumes {
-			res, err := varstore.AttachRefBlocks(ctx, v, frags, opts)
-			if err != nil {
-				return fmt.Errorf("%s: %w", v, err)
-			}
-			fmt.Fprintf(out, "  %-32s %12s blocks in %d file(s), %d sample(s)\n",
-				v, comma(res.Rows), res.Shards, res.Samples)
+		names := make([]string, 0, len(res.Volumes))
+		for n := range res.Volumes {
+			names = append(names, n)
 		}
-		if archive {
-			// Every volume now carries ref_blocks; the archive's own manifest
-			// still says it does not, and the two must agree before it opens.
-			man, err := varstore.BuildStore(ctx, base, names, buildinfo.String(), buildinfo.CommandLine())
-			if err != nil {
-				return err
-			}
-			if err := varstore.WriteStoreManifest(base, *man); err != nil {
-				return err
-			}
+		sort.Strings(names)
+		fmt.Fprintf(out, "attached %d fragment(s) to %d volume(s)\n", len(frags), len(names))
+		for _, n := range names {
+			r := res.Volumes[n]
+			fmt.Fprintf(out, "  %-32s %12s blocks in %d file(s), %d sample(s)\n",
+				n, comma(r.Rows), r.Shards, r.Samples)
+		}
+		for _, n := range res.Created {
+			fmt.Fprintf(out, "  created blocks-only volume %s: a chromosome no volume held\n", n)
 		}
 		return nil
 	},
-}
-
-// volumeLocator resolves an archive's volume name the way the archive does: a
-// bare name is relative to the store, a locator with a scheme or an absolute
-// path is used as given.
-func volumeLocator(base, name string) string {
-	if strings.Contains(name, "://") || strings.HasPrefix(name, "/") {
-		return name
-	}
-	return base + "/" + name
 }
 
 // expandFragments turns arguments and a --from list into fragment directories.
