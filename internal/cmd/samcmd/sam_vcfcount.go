@@ -40,6 +40,7 @@ type vcfCountOpts struct {
 	sample      string
 	skipMissing bool
 	batchLen    int
+	minDepth    int
 
 	outID    bool
 	outAF    bool
@@ -79,7 +80,13 @@ each read separately.
 The alignment file must be coordinate-sorted and indexed (.bai/.crai). The VCF
 may be streamed (or "-" for stdin); its contig names are matched to the
 alignment file's whether they are spelled chr1, 1 or NC_000001.11. A variant
-with no reads gets counts of 0.
+with no reads gets counts of 0 unless --min-depth drops it.
+
+--min-depth N writes only variants spanned by at least N reads that pass the
+filters above -- total_count, which includes "other" reads, so a site covered
+only by reads carrying a third allele still counts as covered. --min-depth 1
+drops the uncovered 0/0 rows. It applies per variant, so the rows of a
+multiallelic record are kept or dropped together.
 
 Not counted: symbolic alleles (<DEL>, <NON_REF>, ...), breakends, the spanning
 deletion "*", and gVCF reference blocks.
@@ -117,6 +124,7 @@ func init() {
 	f.BoolVar(&o.het, "het", false, "Only count variants heterozygous in --sample (requires GT)")
 	f.StringVar(&o.sample, "sample", "", "VCF sample for --het and --gt (default: the first sample)")
 	f.BoolVar(&o.skipMissing, "skip-missing", false, "Skip variants on contigs absent from the alignment file (default: error)")
+	f.IntVar(&o.minDepth, "min-depth", 0, "Only write variants spanned by at least this many passing reads (total_count; 1 drops uncovered variants)")
 	f.IntVar(&o.batchLen, "batch-len", 10000, "Query the alignment file once per window of up to this many bases")
 
 	// Extra output columns.
@@ -164,13 +172,16 @@ func isCountableAlt(alt string) bool {
 }
 
 type vcfCountSummary struct {
-	records, counted, filtered, uncountable, missingContig int
-	contigsMissing                                         map[string]bool
+	records, counted, filtered, uncountable, missingContig, lowDepth int
+	contigsMissing                                                   map[string]bool
 }
 
 func runSamVcfCount(cmd *cobra.Command, bamPath, vcfPath string, o *vcfCountOpts) error {
 	if o.batchLen < 0 {
 		return fmt.Errorf("--batch-len must be >= 0")
+	}
+	if o.minDepth < 0 {
+		return fmt.Errorf("--min-depth must be >= 0")
 	}
 	tagFilters, err := o.tags.parse()
 	if err != nil {
@@ -295,6 +306,10 @@ func runSamVcfCount(cmd *cobra.Command, bamPath, vcfPath string, o *vcfCountOpts
 			return err
 		}
 		for _, v := range batch {
+			if v.total < o.minDepth {
+				sum.lowDepth++
+				continue
+			}
 			writeVcfCountRows(w, v, o)
 		}
 		batch = batch[:0]
@@ -382,6 +397,10 @@ func runSamVcfCount(cmd *cobra.Command, bamPath, vcfPath string, o *vcfCountOpts
 		e := cmd.ErrOrStderr()
 		fmt.Fprintf(e, "sam-vcfcount: %d records read, %d counted, %d filtered out, %d with no countable allele\n",
 			sum.records, sum.counted, sum.filtered, sum.uncountable)
+		if o.minDepth > 0 {
+			fmt.Fprintf(e, "sam-vcfcount: %d of %d counted variants not written: depth below --min-depth %d\n",
+				sum.lowDepth, sum.counted, o.minDepth)
+		}
 		if sum.missingContig > 0 {
 			var names []string
 			for c := range sum.contigsMissing {

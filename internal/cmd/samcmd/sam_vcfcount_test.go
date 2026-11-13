@@ -60,7 +60,7 @@ func TestVcfCountSNV(t *testing.T) {
 		read("r1", 0, 1, "10M", "ACGTACGTAC", ""), // C at 6: ref
 		read("r2", 0, 2, "10M", "CGTATGTACG", ""), // T at 6: alt
 		read("r3", 0, 3, "10M", "GTAGGTACGT", ""), // G at 6: other
-		read("r5", 0, 1, "5M", "ACGTA", ""), // ends before
+		read("r5", 0, 1, "5M", "ACGTA", ""),       // ends before
 		read("r6", 0, 1, "5M2D5M", "ACGTAGTACG", ""),
 		read("r4", 0, 7, "10M", "GTACGTACGT", ""), // starts after: not spanning
 	}
@@ -254,5 +254,45 @@ func TestSamVcfCountMapQFilter(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "chr1\t101\tC\tT\t0\t0") {
 		t.Errorf("--min-mapq 61 should drop the MAPQ-60 read:\n%s", got)
+	}
+}
+
+func TestSamVcfCountMinDepth(t *testing.T) {
+	body := "" +
+		"chr1\t101\t.\tC\tT\t.\tPASS\t.\tGT\t0/1\n" + // one read
+		"chr1\t300\t.\tA\tG\t.\tPASS\t.\tGT\t0/1\n" + // no reads
+		"chr2\t210\t.\tA\tC,G\t.\tPASS\t.\tGT\t1/2\n" // one read, two rows
+	got, err := runVcfCount(t, body, "--min-depth", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "chrom\tpos\tref\talt\tref_count\talt_count\n" +
+		"chr1\t101\tC\tT\t1\t0\n" +
+		"chr2\t210\tA\tC\t1\t0\n" +
+		"chr2\t210\tA\tG\t1\t0"
+	if got != want {
+		t.Errorf("--min-depth 1: got\n%s\nwant\n%s", got, want)
+	}
+
+	got, err = runVcfCount(t, body, "--min-depth", "2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "chrom\tpos\tref\talt\tref_count\talt_count" {
+		t.Errorf("--min-depth 2 should leave only the header:\n%s", got)
+	}
+
+	if _, err := runVcfCount(t, body, "--min-depth", "-1"); err == nil {
+		t.Error("--min-depth -1 should be refused")
+	}
+}
+
+func TestVcfCountMinDepthCountsOtherReads(t *testing.T) {
+	// A site covered only by a third allele is covered: total is 1 though
+	// ref and alt are both 0, so --min-depth 1 keeps it.
+	v := vcVariantFor(t, 6, "C", "T")
+	ref, alts, total := count(t, v, []*alignedRead{read("g", 0, 1, "10M", "ACGTAGGTAC", "")}, 13, true)
+	if ref != 0 || alts[0] != 0 || total != 1 {
+		t.Errorf("ref=%d alt=%d total=%d, want 0 0 1", ref, alts[0], total)
 	}
 }
