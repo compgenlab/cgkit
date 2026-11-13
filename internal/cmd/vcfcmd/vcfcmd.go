@@ -5,6 +5,7 @@ import "github.com/spf13/cobra"
 // InitCmd registers the VCF command group with the root command.
 func InitCmd(rootCmd *cobra.Command) {
 	vcfVarstoreCmd.AddCommand(vcfVarstoreCreateCmd)
+	vcfVarstoreCmd.AddCommand(vcfVarstoreAttachCmd)
 	rootCmd.AddCommand(vcfVarstoreCmd)
 	rootCmd.AddCommand(vcfSamplesCmd)
 	rootCmd.AddCommand(vcfToBedCmd)
