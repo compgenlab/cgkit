@@ -2,6 +2,7 @@ package vcfcmd
 
 import (
 	"context"
+	"github.com/compgenlab/cghts/varstore"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,40 +31,6 @@ func positions(out string) []string {
 	return got
 }
 
-// TestTargetFormatDetection pins the rule that decides what a target file is.
-//
-// A VCF announces itself. Otherwise column 3 decides, because a BED's third
-// column is an end coordinate and always numeric where a site list's is a REF
-// allele and never is.
-func TestTargetFormatDetection(t *testing.T) {
-	cases := []struct {
-		name    string
-		content string
-		want    targetFormat
-	}{
-		{"bed.txt", "chr1\t99\t300\n", targetBED},
-		{"bed-extra-cols.txt", "chr1 99 300 name 0 +\n", targetBED},
-		{"bed-with-track.txt", "track name=x\nchr1 99 300\n", targetBED},
-		{"sites.txt", "chr1 100 A G\n", targetList},
-		{"sites-extra-cols.txt", "chr1 100 A G rs123\n", targetList},
-		{"sites-pos-only.txt", "chr1 100\n", targetList},
-		{"sites-colon.txt", "chr1:100:A:G\n", targetList},
-		{"sites-commented.txt", "# a comment\n\nchr1 100 A G\n", targetList},
-		{"panel.vcf", "##fileformat=VCFv4.2\n#CHROM\tPOS\n", targetVCF},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := detectTargetFile(context.Background(), writeFile(t, tc.name, tc.content))
-			if err != nil {
-				t.Fatalf("detect: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("detected %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 // TestTargetBedIsZeroBased is the coordinate check, and the reason detection has
 // to be right rather than merely plausible: a BED read as a site list does not
 // fail, it shifts every position by one.
@@ -81,7 +48,7 @@ func TestTargetBedIsZeroBased(t *testing.T) {
 
 	// The same interval written as a site list means one position, not a range.
 	list := writeFile(t, "p.txt", "chr1 99 300\n")
-	if f, err := detectTargetFile(context.Background(), list); err != nil || f != targetBED {
+	if f, err := varstore.DetectTargetFile(context.Background(), list); err != nil || f != varstore.TargetBED {
 		t.Fatalf("a three-column numeric line is a BED by construction; got %q %v", f, err)
 	}
 }
@@ -118,7 +85,7 @@ func TestTargetColonContigsAreNotLoci(t *testing.T) {
 		"HLA-B*07:02:01",    // three fields
 		"chr1:100:A",        // a locus missing a field lands here too
 	} {
-		set, err := parseTargets(context.Background(), []string{name})
+		set, err := varstore.ParseTargets(context.Background(), []string{name})
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -131,7 +98,7 @@ func TestTargetColonContigsAreNotLoci(t *testing.T) {
 	}
 
 	// A real locus is still a locus, including an indel whose alleles are long.
-	set, err := parseTargets(context.Background(), []string{"chr1:300:G:GATTACA"})
+	set, err := varstore.ParseTargets(context.Background(), []string{"chr1:300:G:GATTACA"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +155,7 @@ func TestSiteListWorksForBothCommands(t *testing.T) {
 	list := writeFile(t, "shared.txt",
 		"# shared site list\nchr1 100 A G\nchr1 500 A T\nchr2:300:G:C\n")
 
-	targets, err := parseTargets(context.Background(), []string{list})
+	targets, err := varstore.ParseTargets(context.Background(), []string{list})
 	if err != nil {
 		t.Fatalf("target parser: %v", err)
 	}

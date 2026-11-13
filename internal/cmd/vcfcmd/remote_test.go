@@ -21,7 +21,7 @@ func TestTargetLocatorIsAFileNotASelector(t *testing.T) {
 		"http://host/sites.txt",
 		"s3://bucket/panel.vcf",
 	} {
-		if !isTargetFile(v) {
+		if !varstore.IsTargetFile(v) {
 			t.Errorf("%q was classified as an inline selector, not a file", v)
 		}
 	}
@@ -37,13 +37,13 @@ func TestMistypedLocusStillGetsALocusError(t *testing.T) {
 		"HLA-A*01:01:01:01",
 		"chr1",
 	} {
-		if isTargetFile(v) {
+		if varstore.IsTargetFile(v) {
 			t.Errorf("%q was classified as a file", v)
 		}
 	}
 
 	// And the error still names the locus rather than the filesystem.
-	_, err := parseTargets(context.Background(), []string{"chr1:1O0-2000"})
+	_, err := varstore.ParseTargets(context.Background(), []string{"chr1:1O0-2000"})
 	if err == nil {
 		t.Fatal("a mistyped region parsed cleanly")
 	}
@@ -56,7 +56,7 @@ func TestMistypedLocusStillGetsALocusError(t *testing.T) {
 // contig, because its tail is not numeric. Pinned because the scheme check runs
 // just before the code that decides this.
 func TestColonBearingContigIsStillAContig(t *testing.T) {
-	tset, err := parseTargets(context.Background(), []string{"HLA-A*01:01:01:01"})
+	tset, err := varstore.ParseTargets(context.Background(), []string{"HLA-A*01:01:01:01"})
 	if err != nil {
 		t.Fatalf("a colon-bearing contig name was rejected: %v", err)
 	}
@@ -87,8 +87,8 @@ func TestTargetFileFormatIsTheSameOverHTTP(t *testing.T) {
 
 	ctx := context.Background()
 	for name := range files {
-		local, lerr := detectTargetFile(ctx, filepath.Join(dir, name))
-		remote, rerr := detectTargetFile(ctx, srv.URL+"/"+name)
+		local, lerr := varstore.DetectTargetFile(ctx, filepath.Join(dir, name))
+		remote, rerr := varstore.DetectTargetFile(ctx, srv.URL+"/"+name)
 		if lerr != nil || rerr != nil {
 			t.Fatalf("%s: local err %v, remote err %v", name, lerr, rerr)
 		}
@@ -96,11 +96,11 @@ func TestTargetFileFormatIsTheSameOverHTTP(t *testing.T) {
 			t.Errorf("%s: detected as %q locally and %q over http", name, local, remote)
 		}
 
-		lt, err := parseTargets(ctx, []string{filepath.Join(dir, name)})
+		lt, err := varstore.ParseTargets(ctx, []string{filepath.Join(dir, name)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		rt, err := parseTargets(ctx, []string{srv.URL + "/" + name})
+		rt, err := varstore.ParseTargets(ctx, []string{srv.URL + "/" + name})
 		if err != nil {
 			t.Fatal(err)
 		}
