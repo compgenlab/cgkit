@@ -461,7 +461,8 @@ func TestVcfFilterPassingFailing(t *testing.T) {
 }
 
 func TestVcfStats(t *testing.T) {
-	want := "Total variants:\t5\n" +
+	want := "Samples:\t2\n" +
+		"Total variants:\t5\n" +
 		"Filtered variants:\t1\n" +
 		"Passing variants:\t4\n" +
 		"\n" +
@@ -477,6 +478,22 @@ func TestVcfStats(t *testing.T) {
 		"lowqual: 1\n"
 	if got := runVcf(t, "vcf-stats", "testdata/sample.vcf"); got != want {
 		t.Errorf("vcf-stats mismatch.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// The sample count comes from the #CHROM header: a sites-only VCF has none, and
+// --region narrows the records counted, never the samples.
+func TestVcfStatsSampleCount(t *testing.T) {
+	if got := runVcf(t, "vcf-stats", "testdata/source.vcf"); !strings.HasPrefix(got, "Samples:\t0\n") {
+		t.Errorf("a sites-only VCF should report 0 samples:\n%s", got)
+	}
+	full := runVcf(t, "vcf-stats", "testdata/sample.vcf.gz")
+	region := runVcf(t, "vcf-stats", "--region", "chr1:1-1", "testdata/sample.vcf.gz")
+	if !strings.HasPrefix(full, "Samples:\t2\n") || !strings.HasPrefix(region, "Samples:\t2\n") {
+		t.Errorf("--region must not change the sample count:\n full: %q\n region: %q", full, region)
+	}
+	if !strings.Contains(region, "Total variants:\t0\n") {
+		t.Errorf("an empty region should still count no records:\n%s", region)
 	}
 }
 

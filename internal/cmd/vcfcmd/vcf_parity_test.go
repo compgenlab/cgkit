@@ -104,11 +104,24 @@ func TestParityWithNgsutilsj(t *testing.T) {
 				want = tc.normalize(want)
 			}
 			got := stripProvenance(runVcf(t, tc.args...))
+			if tc.args[0] == "vcf-stats" {
+				got = dropSampleCount(got)
+			}
 			if got != want {
 				t.Errorf("parity mismatch for %v\n java: %q\n cgkit: %q", tc.args, want, got)
 			}
 		})
 	}
+}
+
+// dropSampleCount removes vcf-stats' leading "Samples:" line, which cgkit adds
+// deliberately and ngsutilsj never had. It is taken off cgkit's side rather than
+// faked onto ngsutilsj's, so the comparison still covers every line both tools
+// print.
+var samplesLine = regexp.MustCompile(`\ASamples:\t\d+\n`)
+
+func dropSampleCount(s string) string {
+	return samplesLine.ReplaceAllString(s, "")
 }
 
 // dashTsTv rewrites ngsutilsj's zero-denominator Ts/Tv rendering -- an empty
@@ -332,5 +345,19 @@ func TestParityExportValues(t *testing.T) {
 	got := normalize(runVcf(t, args...))
 	if got != want {
 		t.Errorf("export value parity mismatch\n java: %q\n cgkit: %q", want, got)
+	}
+}
+
+// The parity harness needs ngsutilsj to run, so the one normalization it does
+// to cgkit's own output is checked here, where it always runs: only a leading
+// Samples line goes, and nothing else.
+func TestDropSampleCount(t *testing.T) {
+	stats := runVcf(t, "vcf-stats", "testdata/sample.vcf")
+	got := dropSampleCount(stats)
+	if !strings.HasPrefix(got, "Total variants:\t5\n") || got != strings.TrimPrefix(stats, "Samples:\t2\n") {
+		t.Errorf("dropSampleCount should remove only the leading Samples line:\n%q", got)
+	}
+	if s := "Total variants:\t5\nSamples:\t2\n"; dropSampleCount(s) != s {
+		t.Error("a Samples line that is not the first line must be left alone")
 	}
 }
