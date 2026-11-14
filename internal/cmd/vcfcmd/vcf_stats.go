@@ -21,8 +21,11 @@ var vcfStatsCmd = &cobra.Command{
 	Annotations: map[string]string{"since": sinceVersion},
 	Use:         "vcf-stats <input.vcf>",
 	Short:       "Summary statistics about a VCF file",
-	Long: `Summary statistics about a VCF file: variant counts, SNV/indel/reference-only
-breakdown, Ts/Tv counts and ratio, and filter tallies.
+	Long: `Summary statistics about a VCF file: sample count, variant counts,
+SNV/indel/reference-only breakdown, Ts/Tv counts and ratio, and filter tallies.
+
+The sample count is read from the #CHROM header line, so a sites-only VCF
+reports 0, and --region restricts which records are counted, not which samples.
 
 --info-tally counts the distinct values of an INFO field; --info-present counts
 how often a field is present or absent. Both may be repeated or
@@ -108,6 +111,10 @@ comma-separated.`,
 		}
 
 		out := bufio.NewWriter(cmd.OutOrStdout())
+		// From the #CHROM line, so it costs nothing: often the first thing
+		// wanted from a wide cohort VCF, and not recoverable from the rest of
+		// this report. ngsutilsj has no such line; see the parity test.
+		fmt.Fprintf(out, "Samples:\t%d\n", len(src.header.Samples()))
 		fmt.Fprintf(out, "Total variants:\t%d\n", count)
 		fmt.Fprintf(out, "Filtered variants:\t%d\n", filtered)
 		fmt.Fprintf(out, "Passing variants:\t%d\n", passing)
