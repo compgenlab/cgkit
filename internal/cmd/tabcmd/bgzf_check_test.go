@@ -214,34 +214,41 @@ func TestBgzfCheckRefusesRemote(t *testing.T) {
 }
 
 // A separately compressed header and body, concatenated, leaves an EOF marker
-// in mid-file. cghts's block reader stops there; the check must say so rather
-// than report a 100 KB "block" and blame the index for every offset past it.
+// (an empty block) in mid-file. cghts before v0.12.2 stopped there, so this
+// check reported a one-block file and, with the index, blamed every offset past
+// the join. Now the whole file is read, and the file's own index -- which the
+// tabix writer could not build before either -- checks clean.
 func TestBgzfCheckConcatenatedStreams(t *testing.T) {
 	dir := t.TempDir()
 	hdr := filepath.Join(dir, "hdr.gz")
 	body := filepath.Join(dir, "body.gz")
+	lines := bedLines()
 	writeBgzf(t, hdr, []string{"#chrom\tstart\tend\tname"})
-	writeBgzf(t, body, bedLines())
+	writeBgzf(t, body, lines)
 	a, _ := os.ReadFile(hdr)
 	b, _ := os.ReadFile(body)
 	path := filepath.Join(dir, "concat.bed.gz")
 	if err := os.WriteFile(path, append(a, b...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// An index that is in fact right for the file: built for the body alone,
-	// it would point at the wrong offsets -- so use the body's own file to
-	// prove the check is skipped, not passed or failed.
-	indexBed(t, body)
-	got, err := check(t, path, body+".tbi", false)
-	if err == nil {
-		t.Fatalf("want a problem reported:\n%s", got)
+	if err := tabix.NewIndexWriter(tabix.NewWriterOpts().BED().Meta('#')).WriteIndex(path); err != nil {
+		t.Fatalf("indexing a concatenated file: %v", err)
 	}
-	for _, want := range []string{"reading stopped at offset ", "EOF marker) in mid-file", "Index:\tnot checked"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("report lacks %q:\n%s", want, got)
+
+	got, err := check(t, path, "", false)
+	if err != nil {
+		t.Fatalf("a concatenated file with its own index should pass: %v\n%s", err, got)
+	}
+	want := int64(len("#chrom\tstart\tend\tname\n") + len(strings.Join(lines, "\n")) + 1)
+	for _, w := range []string{
+		"Uncompressed size:\t" + humanBytes(want),
+		"Chunks not on a block boundary:\t0",
+	} {
+		if !strings.Contains(got, w) {
+			t.Errorf("report lacks %q:\n%s", w, got)
 		}
 	}
-	if strings.Contains(got, "not block boundaries") || strings.Contains(got, "Compression ratio") {
-		t.Errorf("must not blame the index or report a ratio from a partial read:\n%s", got)
+	if strings.Contains(got, "reading stopped") {
+		t.Errorf("must read through the mid-file marker:\n%s", got)
 	}
 }

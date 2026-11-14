@@ -155,8 +155,10 @@ func scanBgzf(path string) (*bgzfScan, error) {
 	// The last block's size above is "whatever is left", which is only right if
 	// the reader got to the end. Its own header says how long it really is (the
 	// BC subfield's BSIZE, total length minus one, at bytes 16-17). If it ends
-	// short of the data, the reader stopped early -- at an empty block in
-	// mid-file, which cghts's IndexingReader takes for the end of the file.
+	// short of the data, the reader stopped early. cghts before v0.12.2 did
+	// exactly that at an empty block in mid-file (concatenated BGZF streams);
+	// it now reads through one, so this is a guard against the block list
+	// silently covering less of the file than the report claims.
 	last := &s.blocks[len(s.blocks)-1]
 	var hdr [18]byte
 	if _, err := f.ReadAt(hdr[:], last.coff); err != nil {
@@ -199,14 +201,13 @@ func runBgzfCheck(w io.Writer, path, indexPath string, dumpBlocks bool) error {
 
 	var problems, warnings []string
 
-	// The usual cause of a short read is an empty block (an EOF marker) in
-	// mid-file -- several BGZF streams concatenated, e.g. a separately
-	// compressed header and body. htslib reads straight through that; cghts's
-	// IndexingReader, which this check reads with, takes it as the end.
+	// A short read leaves the block list covering only part of the file, so
+	// every statistic below would describe a prefix and the index check would
+	// blame a correct index for every offset past the stop.
 	stoppedAt := s.stoppedAt
 	if stoppedAt >= 0 {
 		problems = append(problems, fmt.Sprintf(
-			"reading stopped at offset %d of %d: most likely an empty BGZF block (EOF marker) in mid-file, i.e. several BGZF streams concatenated. The file itself may be fine -- htslib reads through such a marker -- but cghts's BGZF block reader stops at it, so the block statistics cover only the data before it and the index was not checked",
+			"reading stopped at offset %d of %d, before the end of the data, so the block statistics cover only the data before it and the index was not checked",
 			stoppedAt, s.size))
 	}
 
