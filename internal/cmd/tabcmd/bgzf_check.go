@@ -98,6 +98,12 @@ type bgzfScan struct {
 	// stoppedAt is the offset just past the last block read when that is
 	// before the end of the data, or -1. See scanBgzf.
 	stoppedAt int64
+
+	// empty are the offsets of empty blocks before the end of the data: the EOF
+	// markers left in mid-file by concatenated BGZF streams. IndexingReader
+	// steps over them, so they are not in blocks, but each is still a block
+	// start an index may point at. See emptyBlocks.
+	empty map[int64]bool
 }
 
 // scanBgzf reads the whole file through cghts's IndexingReader, which
@@ -168,7 +174,61 @@ func scanBgzf(path string) (*bgzfScan, error) {
 		last.csize = bsize
 		s.stoppedAt = last.coff + bsize
 	}
+	if s.empty, err = emptyBlocks(f, s.blocks, dataEnd); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+// emptyBlocks finds the empty blocks hidden between data blocks.
+//
+// AN INDEX MAY LEGITIMATELY POINT AT ONE. A writer records "the end of this
+// block" as the start of the next, as htslib's bgzf_tell does, and in a file of
+// concatenated streams the next block after a stream's last data block is that
+// stream's EOF marker. Reading from it yields exactly what reading from the
+// block after it does, so flagging the offset would blame a correct index --
+// which is what happened once cghts v0.12.4 began reporting block ends that way.
+//
+// Only the gap after each data block can hold one, so each gap is walked by
+// block headers; a file without concatenated streams has no gaps and costs no
+// reads.
+func emptyBlocks(f *os.File, blocks []bgzfBlock, dataEnd int64) (map[int64]bool, error) {
+	var out map[int64]bool
+	var hdr [18]byte
+	for i, b := range blocks {
+		next := dataEnd
+		if i+1 < len(blocks) {
+			next = blocks[i+1].coff
+		}
+		// The data block's own length, from its header; anything after it and
+		// before the next data block is a run of empty blocks.
+		if _, err := f.ReadAt(hdr[:], b.coff); err != nil {
+			return nil, err
+		}
+		off := b.coff + int64(binary.LittleEndian.Uint16(hdr[16:18])) + 1
+		var isize [4]byte
+		for off < next {
+			if _, err := f.ReadAt(hdr[:], off); err != nil {
+				return nil, err
+			}
+			bsize := int64(binary.LittleEndian.Uint16(hdr[16:18])) + 1
+			// ISIZE, the block's uncompressed length, is its last four bytes.
+			// Only a block that holds nothing counts: a gap holding data means
+			// the reader stopped early, which scanBgzf reports separately.
+			if _, err := f.ReadAt(isize[:], off+bsize-4); err != nil {
+				return nil, err
+			}
+			if binary.LittleEndian.Uint32(isize[:]) != 0 {
+				break
+			}
+			if out == nil {
+				out = map[int64]bool{}
+			}
+			out[off] = true
+			off += bsize
+		}
+	}
+	return out, nil
 }
 
 // blockAt returns the index of the block starting exactly at coff, or -1.
@@ -371,7 +431,8 @@ func checkIndex(out io.Writer, s *bgzfScan, dataPath, idxPath string) (problems,
 	// byte may equal the block's size -- "just past its last byte", the same
 	// position as the next block's start -- since index writers record a chunk
 	// boundary as wherever the previous record ended. Offsets may also point at
-	// the EOF marker or the end of the data.
+	// the EOF marker, the end of the data, or an empty block in mid-file (see
+	// emptyBlocks).
 	dataEnd := s.size
 	if s.hasEOF {
 		dataEnd -= int64(len(bgzfEOFMarker))
@@ -381,7 +442,7 @@ func checkIndex(out io.Writer, s *bgzfScan, dataPath, idxPath string) (problems,
 		if i := s.blockAt(c); i >= 0 {
 			return u <= s.blocks[i].usize
 		}
-		return u == 0 && (c == dataEnd || c == s.size)
+		return u == 0 && (c == dataEnd || c == s.size || s.empty[c])
 	}
 
 	// The index is queried a window at a time rather than once per reference:
