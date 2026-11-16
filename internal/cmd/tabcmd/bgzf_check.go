@@ -98,6 +98,13 @@ type bgzfScan struct {
 	// stoppedAt is the offset just past the last block read when that is
 	// before the end of the data, or -1. See scanBgzf.
 	stoppedAt int64
+
+	// empty holds the offsets of empty blocks inside the data: the EOF markers
+	// left in mid-file by concatenated streams. They are not data blocks, but
+	// an index may point at one -- htslib's bgzf_tell moves to the next block as
+	// soon as one is exhausted, and when that next block is a mid-file marker,
+	// the next record's chunk starts there. Reading from it reads through.
+	empty map[int64]bool
 }
 
 // scanBgzf reads the whole file through cghts's IndexingReader, which
@@ -150,6 +157,34 @@ func scanBgzf(path string) (*bgzfScan, error) {
 			coff: b.Compressed, csize: nextC - b.Compressed,
 			uoff: b.Uncompressed, usize: nextU - b.Uncompressed,
 		})
+	}
+
+	// A data block's csize above runs to the next data block, so it also covers
+	// any empty blocks between them. Walk each gap by the blocks' own BSIZEs to
+	// find them.
+	bsizeAt := func(off int64) (int64, error) {
+		var h [18]byte
+		if _, err := f.ReadAt(h[:], off); err != nil {
+			return 0, err
+		}
+		return int64(binary.LittleEndian.Uint16(h[16:18])) + 1, nil
+	}
+	for _, b := range s.blocks[:len(s.blocks)-1] {
+		own, err := bsizeAt(b.coff)
+		if err != nil {
+			return nil, err
+		}
+		for off := b.coff + own; off < b.coff+b.csize; {
+			if s.empty == nil {
+				s.empty = map[int64]bool{}
+			}
+			s.empty[off] = true
+			n, err := bsizeAt(off)
+			if err != nil {
+				return nil, err
+			}
+			off += n
+		}
 	}
 
 	// The last block's size above is "whatever is left", which is only right if
@@ -371,7 +406,8 @@ func checkIndex(out io.Writer, s *bgzfScan, dataPath, idxPath string) (problems,
 	// byte may equal the block's size -- "just past its last byte", the same
 	// position as the next block's start -- since index writers record a chunk
 	// boundary as wherever the previous record ended. Offsets may also point at
-	// the EOF marker or the end of the data.
+	// the EOF marker, a mid-file EOF marker (see bgzfScan.empty), or the end of
+	// the data.
 	dataEnd := s.size
 	if s.hasEOF {
 		dataEnd -= int64(len(bgzfEOFMarker))
@@ -381,7 +417,7 @@ func checkIndex(out io.Writer, s *bgzfScan, dataPath, idxPath string) (problems,
 		if i := s.blockAt(c); i >= 0 {
 			return u <= s.blocks[i].usize
 		}
-		return u == 0 && (c == dataEnd || c == s.size)
+		return u == 0 && (c == dataEnd || c == s.size || s.empty[c])
 	}
 
 	// The index is queried a window at a time rather than once per reference:

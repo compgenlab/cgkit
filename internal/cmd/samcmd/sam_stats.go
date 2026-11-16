@@ -3,11 +3,15 @@ package samcmd
 import (
 	"fmt"
 	"io"
+	"math"
+	"math/big"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 
+	"github.com/compgenlab/cghts/bed"
+	"github.com/compgenlab/cghts/gtf"
 	"github.com/compgenlab/cghts/htsio"
 	_ "github.com/compgenlab/cghts/htsio/bam"
 	_ "github.com/compgenlab/cghts/htsio/cram"
@@ -21,6 +25,9 @@ var (
 	samStatsCalcInsert      bool
 	samStatsUnique          bool
 	samStatsShowUnmappedRef bool
+	samStatsGtf             string
+	samStatsLenient         bool
+	samStatsSilent          bool
 )
 
 func init() {
@@ -30,6 +37,12 @@ func init() {
 	samStatsCmd.Flags().BoolVar(&samStatsCalcInsert, "calc-insert", false, "Calculate the median insert size of proper pairs")
 	samStatsCmd.Flags().BoolVar(&samStatsUnique, "unique", false, "Only count uniquely-mapped reads")
 	samStatsCmd.Flags().BoolVar(&samStatsShowUnmappedRef, "show-unmapped-ref", false, "List references even if they have zero mapped reads")
+	samStatsCmd.Flags().StringVar(&samStatsGtf, "gtf", "", "GTF annotation: add gene-region counts and the library orientation (whole file loaded into memory)")
+	// Accepted so pipelines written for ngsutilsj bam-stats run unchanged.
+	// htsjdk validates records strictly unless told otherwise; cghts does not,
+	// so both are no-ops here.
+	samStatsCmd.Flags().BoolVar(&samStatsLenient, "lenient", false, "Accepted for ngsutilsj compatibility (no effect: validation is already lenient)")
+	samStatsCmd.Flags().BoolVar(&samStatsSilent, "silent", false, "Accepted for ngsutilsj compatibility (no effect: validation is already lenient)")
 }
 
 var samStatsCmd = &cobra.Command{
@@ -39,7 +52,26 @@ var samStatsCmd = &cobra.Command{
 	Short:       "Summary statistics for a SAM/BAM/CRAM file",
 	Long: `Read a SAM/BAM/CRAM file and print summary statistics: read counts,
 mapping rates, Q30 percentage, depth, SAM flag breakdown, per-reference counts,
-and (optionally) tag value distributions and insert-size median.`,
+and (optionally) tag value distributions, insert-size median and gene-region
+counts.
+
+The report is a drop-in replacement for ngsutilsj bam-stats: the same sections,
+labels, ordering and number formatting, so a pipeline that parses one parses
+the other. Only the first read of a pair is profiled.
+
+--gtf classifies each counted read (unpaired, or the first read of a proper
+pair) by the gene region at its 5' end, and from the sense/anti-sense balance
+reports the library orientation (FR, RF or unstranded), exonic, intronic and
+junction counts and their ratios. The GTF must be bgzipped and tabix-indexed
+(.tbi or .csi beside it): it is read through the index, only the genes reads
+land in, never loaded whole as ngsutilsj does. To index one:
+cgkit tab-sort -p gff --meta '#' genes.gtf -o genes.gtf.gz
+
+Gene-region counts can differ slightly from ngsutilsj's. Where a position's
+transcripts or overlapping genes disagree, ngsutilsj's answer depends on the
+order it visits them (Java hash order, partly JVM identity hashes); cghts
+classifies a position the same way whatever that order. Everything else in the
+report matches ngsutilsj exactly.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		tags, err := parseTagSpecs(samStatsTags)
@@ -69,6 +101,14 @@ and (optionally) tag value distributions and insert-size median.`,
 			unique:          samStatsUnique,
 			showUnmappedRef: samStatsShowUnmappedRef,
 		}
+		if samStatsGtf != "" {
+			genes, closeGenes, err := openGeneModel(samStatsGtf)
+			if err != nil {
+				return err
+			}
+			defer closeGenes()
+			opt.genes = genes
+		}
 
 		res, err := computeStats(reader, header, opt, cmd.ErrOrStderr())
 		if err != nil {
@@ -80,27 +120,29 @@ and (optionally) tag value distributions and insert-size median.`,
 	},
 }
 
-// flagBits lists the SAM flag bits reported in the [Flags] section, in order.
+// flagBits lists the SAM flag bits reported in the [Flags] section, in order,
+// with ngsutilsj's labels -- including its "complimented" -- since pipelines
+// match on them.
 var flagBits = []struct {
 	bit  int
 	name string
 }{
-	{0x1, "paired"},
-	{0x2, "proper pair"},
-	{0x4, "unmapped"},
-	{0x8, "mate unmapped"},
-	{0x10, "reverse strand"},
-	{0x20, "mate reverse strand"},
-	{0x40, "first in pair"},
-	{0x80, "second in pair"},
-	{0x100, "secondary"},
-	{0x200, "QC fail"},
-	{0x400, "duplicate"},
-	{0x800, "supplementary"},
+	{0x1, "Multiple fragments"},
+	{0x2, "All fragments aligned"},
+	{0x4, "Unmapped"},
+	{0x8, "Next unmapped"},
+	{0x10, "Reverse complimented"},
+	{0x20, "Next reverse complimented"},
+	{0x40, "First fragment"},
+	{0x80, "Last fragment"},
+	{0x100, "Secondary alignment"},
+	{0x200, "QC Fail"},
+	{0x400, "PCR/Optical duplicate"},
+	{0x800, "Supplementary"},
 }
 
 // tagSpec describes a tag to tally. name is the two-char tag (or "MAPQ");
-// numeric controls whether the distribution is sorted numerically.
+// numeric controls whether it is tallied as integers or strings.
 type tagSpec struct {
 	name    string
 	numeric bool
@@ -139,12 +181,114 @@ func parseTagSpecs(s string) ([]tagSpec, error) {
 	return specs, nil
 }
 
+// openGeneModel opens the --gtf annotation through its tabix index: only the
+// genes reads land in are ever read, a few at a time, never the whole file.
+// ngsutilsj loads the GTF whole -- gigabytes for GENCODE -- and so does cghts's
+// AnnotationSource; that is deliberately not used here, so a GTF without an
+// index is refused rather than quietly loaded.
+func openGeneModel(path string) (geneModel, func() error, error) {
+	indexed := false
+	for _, ext := range []string{".tbi", ".csi"} {
+		if st, err := os.Stat(path + ext); err == nil && !st.IsDir() {
+			indexed = true
+		}
+	}
+	if !indexed {
+		return nil, nil, fmt.Errorf("--gtf %s: no tabix index (.tbi or .csi) beside it; sort, bgzip and index it with: cgkit tab-sort -p gff --meta '#' %s -o NAME.gtf.gz", path, path)
+	}
+	src, err := gtf.NewIndexedAnnotationSource(path, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("--gtf: %w", err) // cghts's error names the file
+	}
+	return src, src.Close, nil
+}
+
+// geneModel is what the --gtf counter needs from a gene annotation.
+type geneModel interface {
+	FindGenicRegionForPos(ref string, pos int, strand bed.Strand, geneID string) gtf.GenicRegion
+}
+
 type statsOpts struct {
 	rgid            string
 	tags            []tagSpec
 	calcInsert      bool
 	unique          bool
 	showUnmappedRef bool
+	genes           geneModel // nil without --gtf
+}
+
+// intTally ports compgen-common TallyCounts: integer values, negative ones
+// ignored outright (neither counted nor missing), written as every integer
+// from min to max -- zeros included -- after the missing count. With nothing
+// counted min and max stay -1, so an all-missing tag writes "-1\t0".
+type intTally struct {
+	counts   map[int]int64
+	min, max int
+	total    int64
+	missing  int64
+}
+
+func newIntTally() *intTally { return &intTally{counts: map[int]int64{}, min: -1, max: -1} }
+
+func (t *intTally) incr(k int) {
+	if k < 0 {
+		return
+	}
+	t.total++
+	if _, ok := t.counts[k]; !ok {
+		if t.min == -1 || k < t.min {
+			t.min = k
+		}
+		if t.max == -1 || k > t.max {
+			t.max = k
+		}
+	}
+	t.counts[k]++
+}
+
+// median ports TallyCounts.getQuantile(0.5), quirk included: it is the first
+// value whose cumulative count exceeds half the total, and when a value's
+// count lands exactly on half the loop stops and the maximum is returned.
+func (t *intTally) median() int {
+	thres := 0.5 * float64(t.total)
+	var count int64
+	for i := t.min; i <= t.max && float64(count) < thres; i++ {
+		count += t.counts[i]
+		if float64(count) > thres {
+			return i
+		}
+	}
+	return t.max
+}
+
+func (t *intTally) write(w io.Writer) {
+	if t.missing > 0 {
+		fmt.Fprintf(w, "missing\t%d\n", t.missing)
+	}
+	for i := t.min; i <= t.max; i++ {
+		fmt.Fprintf(w, "%d\t%d\n", i, t.counts[i])
+	}
+}
+
+// strTally ports compgen-common TallyValues<String>: values in sorted order
+// after the missing count.
+type strTally struct {
+	counts  map[string]int64
+	missing int64
+}
+
+func (t *strTally) write(w io.Writer) {
+	if t.missing > 0 {
+		fmt.Fprintf(w, "missing\t%d\n", t.missing)
+	}
+	keys := make([]string, 0, len(t.counts))
+	for k := range t.counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(w, "%s\t%d\n", k, t.counts[k])
+	}
 }
 
 type statsResult struct {
@@ -160,15 +304,20 @@ type statsResult struct {
 	flagCounts map[int]int
 
 	refCounts map[string]int
-	refOrder  []string
+	refOrder  []string // header order: the insertion order of ngsutilsj's HashMap
 
-	tagCounts  map[string]map[string]int
-	tagMissing map[string]int
+	strTags map[string]*strTally
+	intTags map[string]*intTally
+	// Each kind in the order its keys were first given, which with
+	// javaHashOrder reproduces ngsutilsj's HashMap iteration.
+	strOrder, intOrder []string
 
-	insertSizes      []int
-	paired           bool
-	insertDisabled   bool // calc-insert disabled because gapped alignments were seen
+	inserts *intTally
+	paired  bool
+
 	calcInsertActive bool // calc-insert requested and still active at end
+
+	regions map[gtf.GenicRegion]int64 // nil without --gtf
 }
 
 // isUniquelyMapped ports ReadUtils.isReadUniquelyMapped: prefer the NH tag,
@@ -225,21 +374,61 @@ func countBases(cigar, qual string) (bases, q30 int, hasGaps bool) {
 	return bases, q30, hasGaps
 }
 
+// readGenicRegion ports GTFAnnotationSource.findGenicRegion(read, FR): the
+// region at the read's 5' end, on the strand an FR library puts it, made a
+// junction when the read is spliced and lands in a gene.
+//
+// The position is ngsutilsj's, quirk included: a forward read's first aligned
+// base, but for a reverse read getAlignmentEnd() -- 1-based inclusive -- used as
+// a 0-based coordinate, i.e. the base just past the read. Correcting it would
+// change which reads near an exon edge count as exonic.
+func readGenicRegion(genes geneModel, rec *htsio.SamRecord) gtf.GenicRegion {
+	pos, strand := rec.AlignStart(), bed.StrandPlus
+	if rec.IsReverse() {
+		pos, strand = rec.AlignEnd(), bed.StrandMinus
+	}
+	reg := genes.FindGenicRegionForPos(rec.RefName, pos, strand, "")
+	if strings.ContainsRune(rec.Cigar, 'N') {
+		return gtf.Junctionize(reg)
+	}
+	return reg
+}
+
 func computeStats(reader htsio.SamReader, header *htsio.SamHeader, opt statsOpts, warnw io.Writer) (*statsResult, error) {
 	res := &statsResult{
 		flagCounts:       make(map[int]int),
 		refCounts:        make(map[string]int),
-		tagCounts:        make(map[string]map[string]int),
-		tagMissing:       make(map[string]int),
+		strTags:          map[string]*strTally{},
+		intTags:          map[string]*intTally{},
+		inserts:          newIntTally(),
 		calcInsertActive: opt.calcInsert,
 	}
 	for _, spec := range opt.tags {
-		res.tagCounts[spec.name] = make(map[string]int)
+		if spec.numeric {
+			if _, ok := res.intTags[spec.name]; !ok {
+				res.intOrder = append(res.intOrder, spec.name)
+			}
+			res.intTags[spec.name] = newIntTally()
+		} else {
+			if _, ok := res.strTags[spec.name]; !ok {
+				res.strOrder = append(res.strOrder, spec.name)
+			}
+			res.strTags[spec.name] = &strTally{counts: map[string]int64{}}
+		}
+	}
+	if opt.genes != nil {
+		res.regions = map[gtf.GenicRegion]int64{}
 	}
 	for _, ref := range header.References() {
 		res.refOrder = append(res.refOrder, ref.Name)
 		res.refCounts[ref.Name] = 0
 		res.refLength += int64(ref.Length)
+	}
+	// --rgid matches through the header, as htsjdk's getReadGroup() does: a
+	// read whose RG is not declared by an @RG line has no read group at all.
+	declaredRG := map[string]bool{}
+	for _, id := range header.ReadGroups() {
+		declaredRG[id] = true
 	}
 
 	calcInsert := opt.calcInsert
@@ -249,10 +438,9 @@ func computeStats(reader htsio.SamReader, header *htsio.SamHeader, opt statsOpts
 			return nil, fmt.Errorf("read record: %w", err)
 		}
 
-		// --rgid: restrict to a single read group.
 		if opt.rgid != "" {
 			rg, ok := rec.Tags["RG"]
-			if !ok || rg.Value != opt.rgid {
+			if !ok || !declaredRG[rg.Value] || rg.Value != opt.rgid {
 				continue
 			}
 		}
@@ -266,9 +454,8 @@ func computeStats(reader htsio.SamReader, header *htsio.SamHeader, opt statsOpts
 				res.hasGaps = true
 				if calcInsert {
 					calcInsert = false
-					res.insertDisabled = true
 					res.calcInsertActive = false
-					fmt.Fprintln(warnw, "Warning: gapped alignments found - not calculating insert size.")
+					fmt.Fprintln(warnw, "Warning: Gapped alignments found - not calculating insert-size.")
 				}
 			}
 		}
@@ -303,17 +490,33 @@ func computeStats(reader htsio.SamReader, header *htsio.SamHeader, opt statsOpts
 			}
 		}
 
-		// Tag value distributions.
-		for _, spec := range opt.tags {
-			if spec.name == "MAPQ" {
-				res.tagCounts["MAPQ"][strconv.Itoa(rec.MapQ)]++
+		for _, name := range res.strOrder {
+			t, ok := rec.Tags[name]
+			if !ok {
+				res.strTags[name].missing++
 				continue
 			}
-			if t, ok := rec.Tags[spec.name]; ok {
-				res.tagCounts[spec.name][t.Value]++
-			} else {
-				res.tagMissing[spec.name]++
+			v, ok := t.StringValue()
+			if !ok {
+				return nil, fmt.Errorf("read %s: tag %s is type %c, not a string (Z)", rec.ReadName, name, t.Type)
 			}
+			res.strTags[name].counts[v]++
+		}
+		for _, name := range res.intOrder {
+			if name == "MAPQ" {
+				res.intTags[name].incr(rec.MapQ)
+				continue
+			}
+			t, ok := rec.Tags[name]
+			if !ok {
+				res.intTags[name].missing++
+				continue
+			}
+			v, ok := t.IntValue()
+			if !ok {
+				return nil, fmt.Errorf("read %s: tag %s is type %c, not an integer", rec.ReadName, name, t.Type)
+			}
+			res.intTags[name].incr(v)
 		}
 
 		// Insert size: proper pairs whose mate is on the same reference.
@@ -324,100 +527,285 @@ func computeStats(reader htsio.SamReader, header *htsio.SamHeader, opt statsOpts
 				if size < 0 {
 					size = -size
 				}
-				res.insertSizes = append(res.insertSizes, size)
+				res.inserts.incr(size)
 			}
 		}
 
 		res.refCounts[rec.RefName]++
+
+		// Gene regions: unpaired reads, and the first read of a proper pair.
+		// (Duplicates, QC failures, supplementary and -- under --unique --
+		// multi-mapped reads were already skipped above.)
+		if res.regions != nil && (rec.Flag&0x1 == 0 || rec.Flag&0x2 != 0) {
+			res.regions[readGenicRegion(opt.genes, rec)]++
+		}
 	}
 
 	return res, nil
 }
 
-func median(vals []int) int {
-	if len(vals) == 0 {
-		return 0
+// javaFormat2 renders v as Java's String.format("%.2f", v) does, which is not
+// Go's: Java rounds half-up from the shortest decimal representation of the
+// double, so 1.005 and 2.675 become 1.01 and 2.68 (Go gives 1.00 and 2.67), a
+// negative that rounds to zero keeps its sign ("-0.00"), and NaN and the
+// infinities print as words.
+func javaFormat2(v float64) string {
+	switch {
+	case math.IsNaN(v):
+		return "NaN"
+	case math.IsInf(v, 1):
+		return "Infinity"
+	case math.IsInf(v, -1):
+		return "-Infinity"
 	}
-	s := append([]int(nil), vals...)
-	sort.Ints(s)
-	n := len(s)
-	if n%2 == 1 {
-		return s[n/2]
+	r, _ := new(big.Rat).SetString(strconv.FormatFloat(math.Abs(v), 'g', -1, 64))
+	r.Mul(r, big.NewRat(100, 1))
+	r.Add(r, big.NewRat(1, 2))
+	cents := new(big.Int).Quo(r.Num(), r.Denom()) // floor, r >= 0
+	str := cents.String()
+	for len(str) < 3 {
+		str = "0" + str
 	}
-	return (s[n/2-1] + s[n/2]) / 2
+	out := str[:len(str)-2] + "." + str[len(str)-2:]
+	if math.Signbit(v) {
+		out = "-" + out
+	}
+	return out
 }
 
-func writeStats(w io.Writer, res *statsResult, opt statsOpts) {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "Total reads:\t%d\n", res.total)
-	fmt.Fprintf(tw, "Mapped reads:\t%d\n", res.mapped)
-	fmt.Fprintf(tw, "Unmapped reads:\t%d\n", res.unmapped)
-	fmt.Fprintf(tw, "Multiple-mapped reads:\t%d\n", res.multiple)
-	fmt.Fprintf(tw, "Uniquely-mapped reads:\t%d\n", res.mapped-res.multiple)
-	if res.totalBases > 0 {
-		fmt.Fprintf(tw, "Q30 pct:\t%.2f%%\n", 100.0*float64(res.q30Bases)/float64(res.totalBases))
-	} else {
-		fmt.Fprintf(tw, "Q30 pct:\t0.00%%\n")
+// javaStringHash is Java's String.hashCode for an ASCII string.
+func javaStringHash(s string) int32 {
+	var h int32
+	for i := 0; i < len(s); i++ {
+		h = 31*h + int32(s[i])
 	}
-	fmt.Fprintf(tw, "Total bases:\t%d\n", res.totalBases)
-	fmt.Fprintf(tw, "Reference length:\t%d\n", res.refLength)
-	if !res.hasGaps && res.refLength > 0 {
-		fmt.Fprintf(tw, "Total depth:\t%.2fX\n", float64(res.totalBases)/float64(res.refLength))
-	}
-	if res.calcInsertActive && res.paired {
-		fmt.Fprintf(tw, "Median insert size:\t%d\n", median(res.insertSizes))
-	}
-	tw.Flush()
+	return h
+}
 
-	// [Flags]
+// javaHashOrder returns keys -- given in insertion order -- in the order a
+// java.util.HashMap built from them iterates: by bucket, then by insertion
+// within a bucket. ngsutilsj prints its tag sections and lists its references
+// from HashMaps, so matching its output means matching this.
+func javaHashOrder(keys []string) []string {
+	capacity := 16
+	for float64(len(keys)) > 0.75*float64(capacity) {
+		capacity *= 2
+	}
+	type kb struct {
+		key    string
+		bucket int
+		idx    int
+	}
+	all := make([]kb, len(keys))
+	for i, k := range keys {
+		h := uint32(javaStringHash(k))
+		h ^= h >> 16
+		all[i] = kb{k, int(h & uint32(capacity-1)), i}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].bucket < all[j].bucket })
+	out := make([]string, len(all))
+	for i, e := range all {
+		out[i] = e.key
+	}
+	return out
+}
+
+// naturalLess ports compgen-common's natural sort: names split into runs of
+// digits and non-digits, digit runs compared as numbers and before any text,
+// text runs compared as strings, and a name that runs out first sorting first.
+func naturalLess(a, b string) bool {
+	ta, tb := naturalTokens(a), naturalTokens(b)
+	for i := 0; i < len(ta) || i < len(tb); i++ {
+		switch {
+		case i >= len(ta):
+			return true
+		case i >= len(tb):
+			return false
+		}
+		x, y := ta[i], tb[i]
+		switch {
+		case x.digits && !y.digits:
+			return true
+		case !x.digits && y.digits:
+			return false
+		case x.digits:
+			if x.num != y.num {
+				return x.num < y.num
+			}
+		default:
+			if x.str != y.str {
+				return x.str < y.str
+			}
+		}
+	}
+	return false
+}
+
+type naturalToken struct {
+	digits bool
+	num    int64
+	str    string
+}
+
+func naturalTokens(s string) []naturalToken {
+	var out []naturalToken
+	start := 0
+	for i := 1; i <= len(s); i++ {
+		if i == len(s) || isDigit(s[i]) != isDigit(s[start]) {
+			run := s[start:i]
+			if isDigit(s[start]) {
+				n, _ := strconv.ParseInt(run, 10, 64)
+				out = append(out, naturalToken{digits: true, num: n})
+			} else {
+				out = append(out, naturalToken{str: run})
+			}
+			start = i
+		}
+	}
+	return out
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+func writeStats(w io.Writer, res *statsResult, opt statsOpts) {
+	fmt.Fprintf(w, "Total-reads:\t%d\n", res.total)
+	fmt.Fprintf(w, "Mapped-reads:\t%d\n", res.mapped)
+	fmt.Fprintf(w, "Unmapped-reads:\t%d\n", res.unmapped)
+	fmt.Fprintf(w, "Multiple-mapped-reads:\t%d\n", res.multiple)
+	fmt.Fprintf(w, "Uniquely-mapped-reads:\t%d\n", res.mapped-res.multiple)
+	fmt.Fprintf(w, "Q30-pct:\t%s%%\n", javaFormat2(100.0*float64(res.q30Bases)/float64(res.totalBases)))
+	fmt.Fprintf(w, "Total-bases:\t%d\n", res.totalBases)
+	fmt.Fprintf(w, "Ref-length:\t%d\n", res.refLength)
+	if !res.hasGaps {
+		// With gaps this is RNA-seq, where depth over the genome means nothing.
+		fmt.Fprintf(w, "Total-depth:\t%sX\n", javaFormat2(float64(res.totalBases)/float64(res.refLength)))
+	}
+	if res.paired && res.calcInsertActive {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "Median insert size:\t%d\n", res.inserts.median())
+	}
+
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "[Flags]")
-	ftw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, fb := range flagBits {
 		if c := res.flagCounts[fb.bit]; c > 0 {
-			fmt.Fprintf(ftw, "0x%x\t%s\t%d\n", fb.bit, fb.name, c)
+			fmt.Fprintf(w, "%s (0x%x):\t%d\n", fb.name, fb.bit, c)
 		}
 	}
-	ftw.Flush()
 
-	// Tag distributions.
-	for _, spec := range opt.tags {
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "[%s]\n", spec.name)
-		ttw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		counts := res.tagCounts[spec.name]
-		keys := make([]string, 0, len(counts))
-		for k := range counts {
-			keys = append(keys, k)
-		}
-		if spec.numeric {
-			sort.Slice(keys, func(i, j int) bool {
-				ai, _ := strconv.Atoi(keys[i])
-				aj, _ := strconv.Atoi(keys[j])
-				return ai < aj
-			})
-		} else {
-			sort.Strings(keys)
-		}
-		for _, k := range keys {
-			fmt.Fprintf(ttw, "%s\t%d\n", k, counts[k])
-		}
-		if m := res.tagMissing[spec.name]; m > 0 {
-			fmt.Fprintf(ttw, "missing\t%d\n", m)
-		}
-		ttw.Flush()
+	for _, name := range javaHashOrder(res.strOrder) {
+		fmt.Fprintf(w, "\n[%s]\n", name)
+		res.strTags[name].write(w)
+	}
+	for _, name := range javaHashOrder(res.intOrder) {
+		fmt.Fprintf(w, "\n[%s]\n", name)
+		res.intTags[name].write(w)
 	}
 
-	// [References]
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "[References]")
-	rtw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	for _, ref := range res.refOrder {
-		c := res.refCounts[ref]
-		if c == 0 && !opt.showUnmappedRef {
-			continue
+	refs := javaHashOrder(res.refOrder)
+	sort.SliceStable(refs, func(i, j int) bool { return naturalLess(refs[i], refs[j]) })
+	for _, ref := range refs {
+		if c := res.refCounts[ref]; opt.showUnmappedRef || c > 0 {
+			fmt.Fprintf(w, "%s\t%d\n", ref, c)
 		}
-		fmt.Fprintf(rtw, "%s\t%d\n", ref, c)
 	}
-	rtw.Flush()
+	fmt.Fprintln(w)
+
+	if res.regions != nil {
+		writeGeneRegions(w, res.regions)
+	}
+}
+
+// writeGeneRegions ports the --gtf section of ngsutilsj bam-stats, quirks
+// included -- which junction counts each orientation sums, how a zero
+// denominator prints -- because pipelines parse it.
+func writeGeneRegions(w io.Writer, counts map[gtf.GenicRegion]int64) {
+	regions := gtf.GenicRegions()
+	maxlen := 0
+	for _, r := range regions {
+		maxlen = max(maxlen, len(r.Description()))
+	}
+	fmt.Fprintln(w, "[Gene regions]")
+	for _, r := range regions {
+		fmt.Fprintf(w, "%-*s\t%d\n", maxlen, r.Description(), counts[r])
+	}
+	fmt.Fprintln(w)
+
+	sum := func(rs ...gtf.GenicRegion) int64 {
+		var n int64
+		for _, r := range rs {
+			n += counts[r]
+		}
+		return n
+	}
+	var sense, antisense int64
+	for _, r := range regions {
+		if r.IsGene {
+			if r.IsSense {
+				sense += counts[r]
+			} else {
+				antisense += counts[r]
+			}
+		}
+	}
+
+	// A 10-fold excess of one strand calls the library stranded. The division
+	// is floating point as in Java: no antisense reads gives +Inf (FR), none of
+	// either gives NaN, which matches neither test and so reads as unstranded.
+	var intronic, exonic, junction int64
+	strandedness := math.Log10(float64(sense) / float64(antisense))
+	switch {
+	case strandedness > 1:
+		intronic = sum(gtf.NCIntron, gtf.CodingIntron, gtf.UTR3Intron, gtf.UTR5Intron)
+		exonic = sense - intronic
+		junction = sum(gtf.Junction, gtf.JunctionAnti)
+		fmt.Fprintln(w, "Orientation\tFR")
+	case strandedness < -1:
+		intronic = sum(gtf.NCIntronAnti, gtf.CodingIntronAnti, gtf.UTR3IntronAnti, gtf.UTR5IntronAnti)
+		exonic = antisense - intronic
+		junction = sum(gtf.JunctionAnti, gtf.NCJunctionAnti)
+		fmt.Fprintln(w, "Orientation\tRF")
+	default:
+		intronic = sum(gtf.NCIntron, gtf.CodingIntron, gtf.UTR3Intron, gtf.UTR5Intron,
+			gtf.NCIntronAnti, gtf.CodingIntronAnti, gtf.UTR3IntronAnti, gtf.UTR5IntronAnti)
+		exonic = sense + antisense - intronic
+		junction = sum(gtf.Junction, gtf.JunctionAnti)
+		fmt.Fprintln(w, "Orientation\tunstranded")
+	}
+
+	fmt.Fprintf(w, "Sense      \t%d\n", sense)
+	fmt.Fprintf(w, "Anti-sense \t%d\n", antisense)
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Exonic     \t%d\n", exonic)
+	fmt.Fprintf(w, "Intronic   \t%d\n", intronic)
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Junction   \t%d\n", junction)
+	fmt.Fprintln(w)
+
+	if antisense > 0 {
+		ratio := -float64(antisense) / float64(sense)
+		if sense > antisense {
+			ratio = float64(sense) / float64(antisense)
+		}
+		fmt.Fprintf(w, "Sense/anti-sense ratio     \t%s\n", javaFormat2(ratio))
+	} else {
+		fmt.Fprintln(w, "Sense/anti-sense ratio     \t0")
+	}
+	if intronic > 0 {
+		fmt.Fprintf(w, "Exonic/intronic ratio      \t%s\n", javaFormat2(float64(exonic)/float64(intronic)))
+	} else {
+		fmt.Fprintln(w, "Exonic/intronic ratio      \t0")
+	}
+	if ig := counts[gtf.Intergenic]; ig > 0 {
+		fmt.Fprintf(w, "Exonic/genomic ratio       \t%s\n", javaFormat2(float64(exonic)/float64(ig)))
+	} else {
+		fmt.Fprintln(w, "Exonic/genomic ratio       \t0")
+	}
+	if junction > 0 {
+		fmt.Fprintf(w, "Non-junction/junction ratio\t%s\n", javaFormat2(float64(exonic-junction)/float64(junction)))
+	} else {
+		fmt.Fprintln(w, "Non-junction/junction ratio\t0")
+	}
 }
