@@ -144,3 +144,25 @@ func TestSamStatsGtfNeedsAnIndex(t *testing.T) {
 		t.Errorf("err = %v, want a missing-index refusal", err)
 	}
 }
+
+// An indexed GTF without gene or transcript rows is refused too: through the
+// index an intronic read would overlap none of its gene's rows and count as
+// intergenic, so cghts will not classify from one (gtf.ErrNoGeneExtents).
+func TestSamStatsGtfNeedsGeneRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "exons.gtf.gz")
+	w := tabix.NewWriter(path, tabix.NewWriterOpts().GFF().AutoIndex())
+	for _, line := range strings.Split(strings.TrimSuffix(gtfFixture, "\n"), "\n") {
+		if strings.Contains(line, "\tgene\t") || strings.Contains(line, "\ttranscript\t") {
+			continue
+		}
+		if err := w.Write(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := openGeneModel(path); err == nil || !strings.Contains(err.Error(), "no gene or transcript rows") {
+		t.Errorf("err = %v, want a no-gene-rows refusal", err)
+	}
+}
