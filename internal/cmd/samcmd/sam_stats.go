@@ -198,7 +198,7 @@ func openGeneModel(path string) (geneModel, func() error, error) {
 	}
 	src, err := gtf.NewIndexedAnnotationSource(path, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("--gtf %s: %w", path, err)
+		return nil, nil, fmt.Errorf("--gtf: %w", err) // cghts's error names the file
 	}
 	return src, src.Close, nil
 }
