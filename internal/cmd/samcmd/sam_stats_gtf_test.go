@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/compgenlab/cghts/htsio"
+	"github.com/compgenlab/cghts/htsio/tabix"
 )
 
 // gtfFixture is one + strand coding gene, 0-based:
@@ -44,8 +45,14 @@ var gtfReads = []string{
 func writeGtfFixture(t *testing.T) (gtfPath, samPath string) {
 	t.Helper()
 	dir := t.TempDir()
-	gtfPath = filepath.Join(dir, "genes.gtf")
-	if err := os.WriteFile(gtfPath, []byte(gtfFixture), 0o644); err != nil {
+	gtfPath = filepath.Join(dir, "genes.gtf.gz")
+	w := tabix.NewWriter(gtfPath, tabix.NewWriterOpts().GFF().AutoIndex())
+	for _, line := range strings.Split(strings.TrimSuffix(gtfFixture, "\n"), "\n") {
+		if err := w.Write(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
 	var b strings.Builder
@@ -62,7 +69,7 @@ func writeGtfFixture(t *testing.T) (gtfPath, samPath string) {
 
 func TestSamStatsGtf(t *testing.T) {
 	gtfPath, samPath := writeGtfFixture(t)
-	genes, closeGenes, err := openGeneModel(io.Discard, gtfPath)
+	genes, closeGenes, err := openGeneModel(gtfPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,3 +133,14 @@ const wantGeneSection = "[Gene regions]\n" +
 	"Exonic/intronic ratio      \t5.00\n" +
 	"Exonic/genomic ratio       \t5.00\n" +
 	"Non-junction/junction ratio\t4.00\n"
+
+// A GTF with no index is refused rather than loaded whole.
+func TestSamStatsGtfNeedsAnIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "genes.gtf")
+	if err := os.WriteFile(path, []byte(gtfFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := openGeneModel(path); err == nil || !strings.Contains(err.Error(), "no tabix index") {
+		t.Errorf("err = %v, want a missing-index refusal", err)
+	}
+}
