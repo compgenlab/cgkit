@@ -97,7 +97,7 @@ out.bed` cannot proceed with help text as its input.
 |---------|-------------|
 | `sam-export` | Export columns and tags from a SAM/BAM/CRAM file as tab-delimited text |
 | `sam-filter` | Filter SAM/BAM/CRAM reads and write to a new file |
-| `sam-stats` | Summary statistics for a SAM/BAM/CRAM file |
+| `sam-stats` | Summary statistics for a SAM/BAM/CRAM file (drop-in for ngsutilsj `bam-stats`, including `--gtf`) |
 | `sam-tofasta` | Convert SAM/BAM/CRAM reads to FASTA |
 | `sam-tofastq` | Convert SAM/BAM/CRAM reads to FASTQ |
 | `sam-vcfcount` | Count reference and alternate reads for each VCF variant in a SAM/BAM/CRAM |
