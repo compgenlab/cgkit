@@ -78,31 +78,26 @@ func TestSamStatsTagTally(t *testing.T) {
 	opt := statsOpts{tags: []tagSpec{{name: "NM", numeric: true}}}
 	res := loadStats(t, "testdata/test_tags.bam", opt)
 
-	nm := res.tagCounts["NM"]
-	for _, val := range []string{"0", "1", "2", "3"} {
-		if nm[val] != 1 {
-			t.Errorf("NM[%s] = %d, want 1", val, nm[val])
+	nm := res.intTags["NM"]
+	for _, val := range []int{0, 1, 2, 3} {
+		if nm.counts[val] != 1 {
+			t.Errorf("NM[%d] = %d, want 1", val, nm.counts[val])
 		}
 	}
 	// 5 mapped reads reaching the tag step lack an NM tag.
-	if res.tagMissing["NM"] != 5 {
-		t.Errorf("NM missing = %d, want 5", res.tagMissing["NM"])
+	if nm.missing != 5 {
+		t.Errorf("NM missing = %d, want 5", nm.missing)
 	}
 }
 
+// --rgid matches through the header, as ngsutilsj's htsjdk getReadGroup()
+// does: test_tags.bam tags reads RG:Z:sample1 but declares no @RG line, so
+// none of them belong to a read group and nothing is counted. (ngsutilsj
+// bam-stats --lenient --rgid sample1 on this file also reports 0.)
 func TestSamStatsRgidFilter(t *testing.T) {
 	res := loadStats(t, "testdata/test_tags.bam", statsOpts{rgid: "sample1"})
-
-	// sample1 reads: multi_tags, paired_1, paired_2 (skipped, 2nd of pair),
-	// chr2, unmapped → total 4, of which one is unmapped.
-	if res.total != 4 {
-		t.Errorf("total = %d, want 4 for rgid=sample1", res.total)
-	}
-	if res.mapped != 3 {
-		t.Errorf("mapped = %d, want 3 for rgid=sample1", res.mapped)
-	}
-	if res.unmapped != 1 {
-		t.Errorf("unmapped = %d, want 1 for rgid=sample1", res.unmapped)
+	if res.total != 0 {
+		t.Errorf("total = %d, want 0: sample1 is not declared by an @RG header line", res.total)
 	}
 }
 
