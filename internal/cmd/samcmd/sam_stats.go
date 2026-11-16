@@ -5,7 +5,6 @@ import (
 	"io"
 	"math"
 	"math/big"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,15 +61,14 @@ the other. Only the first read of a pair is profiled.
 --gtf classifies each counted read (unpaired, or the first read of a proper
 pair) by the gene region at its 5' end, and from the sense/anti-sense balance
 reports the library orientation (FR, RF or unstranded), exonic, intronic and
-junction counts and their ratios. A tabix-indexed GTF (.tbi or .csi beside it)
-is read through its index, parsing only the genes reads land in; otherwise the
-whole file is loaded into memory, as ngsutilsj does.
+junction counts and their ratios. The GTF is loaded whole into memory, as
+ngsutilsj does: a few GB for GENCODE.
 
-Gene regions can differ from ngsutilsj's at a small fraction of reads (about 2%
-of positions in GENCODE gene bodies). ngsutilsj's classification depends on the
-order it happens to visit a gene's transcripts and overlapping genes -- the
-latter set by JVM hash codes -- and cghts classifies the same position the same
-way whatever that order.`,
+Gene-region counts can differ slightly from ngsutilsj's. Where a position's
+transcripts or overlapping genes disagree, ngsutilsj's answer depends on the
+order it visits them (Java hash order, partly JVM identity hashes); cghts
+classifies a position the same way whatever that order. Everything else in the
+report matches ngsutilsj exactly.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		tags, err := parseTagSpecs(samStatsTags)
@@ -180,20 +178,12 @@ func parseTagSpecs(s string) ([]tagSpec, error) {
 	return specs, nil
 }
 
-// openGeneModel opens the --gtf annotation: through its tabix index when a
-// .tbi or .csi sits beside it, so only the genes reads land in are ever parsed,
-// and otherwise by loading the whole file, as ngsutilsj does. The two classify
-// identically; the whole-file form of GENCODE takes gigabytes of memory.
+// openGeneModel loads the --gtf annotation whole into memory, as ngsutilsj
+// does. cghts can also classify through a tabix-indexed GTF without loading it,
+// but that path costs tens of milliseconds a read today -- its region reads scan
+// forward from the first index chunk -- which on a BAM of millions of reads is
+// hours. Revisit when that is fixed; the classification is identical.
 func openGeneModel(warnw io.Writer, path string) (geneModel, func() error, error) {
-	for _, ext := range []string{".tbi", ".csi"} {
-		if st, err := os.Stat(path + ext); err == nil && !st.IsDir() {
-			src, err := gtf.NewIndexedAnnotationSource(path, nil)
-			if err != nil {
-				return nil, nil, err
-			}
-			return src, src.Close, nil
-		}
-	}
 	fmt.Fprint(warnw, "Loading GTF annotation: "+path+"...")
 	src, err := gtf.NewAnnotationSource(path, nil)
 	if err != nil {
