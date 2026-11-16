@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -250,5 +251,33 @@ func TestBgzfCheckConcatenatedStreams(t *testing.T) {
 	}
 	if strings.Contains(got, "reading stopped") {
 		t.Errorf("must read through the mid-file marker:\n%s", got)
+	}
+
+	// The header ends its block exactly, so the first record's chunk starts at
+	// the next block -- the header stream's EOF marker. That is where htslib's
+	// bgzf_tell puts it, and since cghts v0.12.4 where cghts does too; an
+	// offset at a mid-file marker is valid, and was once reported as a
+	// mismatched index.
+	if !strings.Contains(got, "Chunks not on a block boundary:\t0") {
+		t.Errorf("an offset at a mid-file EOF marker must be accepted:\n%s", got)
+	}
+	bin, err := exec.LookPath("tabix")
+	if err != nil {
+		return
+	}
+	htsIdx := filepath.Join(dir, "hts")
+	if err := os.MkdirAll(htsIdx, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cp := filepath.Join(htsIdx, "concat.bed.gz")
+	if err := os.WriteFile(cp, append(a, b...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(bin, "-p", "bed", cp).CombinedOutput(); err != nil {
+		t.Fatalf("tabix: %v\n%s", err, out)
+	}
+	got, err = check(t, path, cp+".tbi", false)
+	if err != nil || !strings.Contains(got, "Chunks not on a block boundary:\t0") {
+		t.Errorf("htslib's index of the same file should check clean: %v\n%s", err, got)
 	}
 }
