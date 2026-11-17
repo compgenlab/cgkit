@@ -27,7 +27,7 @@ import (
 //
 // None of these markers is *evidence* of reference blocks, only of a file whose
 // header has at some point described them, so this is far too weak a basis for a
-// refusal (varstore's converter refuses on a reference block *record* instead). A
+// refusal (gtstore's converter refuses on a reference block *record* instead). A
 // DRAGEN msVCF, which is a joint-genotyped cohort callset, keeps the
 // ##ALT=<ID=NON_REF> line it inherited from the gVCFs it was built from. VCF 4.5
 // makes the <*> case worse than incidental: the gVCF unspecified allele and the
