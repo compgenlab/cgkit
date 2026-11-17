@@ -45,12 +45,17 @@ against the blocks just read:
     fails here, and silently returns wrong or no records when queried.
   - the largest chunk, in compressed bytes: roughly the most a single query can
     be made to read
+  - the number of records on each reference, as the index records them (htslib
+    and cghts v0.12.9+ store it), checked against the records actually in the
+    file. An index whose count disagrees was built for a different version of
+    the file.
 
 --blocks writes one row per block instead (block, coffset, csize, uoffset,
 usize) for deeper digging.
 
-Exits non-zero when it finds a problem: not BGZF, no EOF marker, or index
-offsets that do not fit the file. Small blocks and an index older than the data
+Exits non-zero when it finds a problem: not BGZF, no EOF marker, index
+offsets that do not fit the file, or an index record count that does not match
+it. Small blocks and an index older than the data
 are reported as warnings only.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -94,6 +99,7 @@ type bgzfScan struct {
 	blocks []bgzfBlock
 	total  int64 // uncompressed bytes
 	hasEOF bool
+	lines  lineCounter
 
 	// stoppedAt is the offset just past the last block read when that is
 	// before the end of the data, or -1. See scanBgzf.
@@ -130,7 +136,7 @@ func scanBgzf(path string) (*bgzfScan, error) {
 	}
 
 	ir := bgzf.NewIndexingReader(f)
-	n, err := io.Copy(io.Discard, ir)
+	n, err := io.Copy(&s.lines, ir)
 	if err != nil {
 		return nil, fmt.Errorf("%s is not a valid BGZF file: %w", path, err)
 	}
@@ -346,6 +352,65 @@ const (
 type tabixIndex interface {
 	Query(refID int, start, end int) []tabix.Chunk
 	RefNames() []string
+	RefStats(refID int) (tabix.RefStats, bool)
+}
+
+// lineCounter counts the lines of the decompressed data as it streams past, so
+// the records in the file can be checked against the count in the index
+// without a second pass. What a record is depends on the index's skip and
+// comment settings, which are not known until the index is read, so it keeps
+// what that needs: lines by their first byte, and the first bytes of the first
+// few lines (for skip).
+type lineCounter struct {
+	midLine bool       // the next byte continues a line already counted
+	lines   int64      // lines started, empty ones included
+	byFirst [256]int64 // lines by first byte; an empty line's is '\n'
+	heads   []byte     // first byte of each of the first maxHeads lines
+}
+
+// maxHeads bounds the lines remembered for skip; tabix skip is normally 0.
+const maxHeads = 1024
+
+func (c *lineCounter) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		if !c.midLine {
+			c.lines++
+			c.byFirst[p[0]]++
+			if len(c.heads) < maxHeads {
+				c.heads = append(c.heads, p[0])
+			}
+		}
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			c.midLine = true
+			break
+		}
+		c.midLine = false
+		p = p[i+1:]
+	}
+	return n, nil
+}
+
+// records is the number of lines an index with these settings indexes: not
+// among the first skip lines, not empty, and not starting with the comment
+// character -- the rule htslib's tabix and cghts's index writer both apply.
+// ok is false if skip reaches past the lines remembered.
+func (c *lineCounter) records(meta int32, skip int32) (n int64, ok bool) {
+	if int64(skip) > int64(len(c.heads)) && c.lines > int64(len(c.heads)) {
+		return 0, false
+	}
+	isMeta := func(b byte) bool { return meta > 0 && meta < 256 && b == byte(meta) }
+	n = c.lines - c.byFirst['\n']
+	if meta > 0 && meta < 256 && meta != '\n' {
+		n -= c.byFirst[byte(meta)]
+	}
+	for i := 0; i < int(skip) && i < len(c.heads); i++ {
+		if h := c.heads[i]; h != '\n' && !isMeta(h) {
+			n-- // a skipped line not already excluded as empty or a comment
+		}
+	}
+	return n, true
 }
 
 type indexHeader struct {
@@ -401,6 +466,35 @@ func checkIndex(out io.Writer, s *bgzfScan, dataPath, idxPath string) (problems,
 	fmt.Fprintf(out, "Zero-based:\t%v\n", h.zeroBased)
 	names := idx.RefNames()
 	fmt.Fprintf(out, "References:\t%d\n", len(names))
+
+	// Record counts: the index's pseudo-bin, checked against the lines in the
+	// file. An index without one is older cghts, and says nothing either way.
+	perRef := make([]uint64, len(names))
+	var indexed uint64
+	counted := true
+	for i := range names {
+		st, ok := idx.RefStats(i)
+		if !ok {
+			counted = false
+			break
+		}
+		perRef[i] = st.Mapped
+		indexed += st.Mapped
+	}
+	inFile, comparable := s.lines.records(h.meta, h.sk)
+	switch {
+	case !counted:
+		fmt.Fprintf(out, "Records:\tnot recorded in the index (written by an older cgkit or cghts, before cghts v0.12.9); rebuilding it with cgkit tabix-index or htslib tabix records them\n")
+	case !comparable:
+		fmt.Fprintf(out, "Records:\t%d (from the index; not compared with the file: skip=%d is past the lines this check keeps)\n", indexed, h.sk)
+	case uint64(inFile) == indexed:
+		fmt.Fprintf(out, "Records:\t%d (from the index; matches the file)\n", indexed)
+	default:
+		fmt.Fprintf(out, "Records:\t%d in the index, %d in the file\n", indexed, inFile)
+		problems = append(problems, fmt.Sprintf(
+			"the index counts %d records but the file has %d; the index was built for a different version of this file",
+			indexed, inFile))
+	}
 
 	// A virtual offset names a block start plus a byte within that block. The
 	// byte may equal the block's size -- "just past its last byte", the same
@@ -468,6 +562,13 @@ func checkIndex(out io.Writer, s *bgzfScan, dataPath, idxPath string) (problems,
 		problems = append(problems, fmt.Sprintf(
 			"%d of %d index chunks point at offsets that are not block boundaries of this file; the index was built for a different file (or a different version of this one). Examples: %s",
 			bad, chunks, strings.Join(examples, "; ")))
+	}
+
+	if counted && len(names) > 0 {
+		fmt.Fprintf(out, "\n[Records per reference]\n")
+		for i, name := range names {
+			fmt.Fprintf(out, "%s\t%d\n", name, perRef[i])
+		}
 	}
 	return problems, warnings, nil
 }
