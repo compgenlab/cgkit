@@ -26,7 +26,7 @@ import (
 // chain-valued flags, mostly -- still have to clear those by hand afterwards.
 //
 // It walks the whole tree, not only root's children: a subcommand of a
-// subcommand -- vcf-varstore attach-refblocks -- shares its flag objects across
+// subcommand -- gtstore refblock-attach (formerly here) -- shares its flag objects across
 // runs exactly as a top-level command does, and a --rebuild left set by one
 // test changed what the next one meant.
 func ResetFlags(root *cobra.Command) {

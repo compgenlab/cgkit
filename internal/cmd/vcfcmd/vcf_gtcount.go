@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/compgenlab/cghts/varstore"
+	"github.com/compgenlab/cghts/gtstore"
 	"github.com/compgenlab/cghts/vcf"
 	"github.com/compgenlab/cgkit/internal/buildinfo"
 	"github.com/spf13/cobra"
@@ -122,11 +122,11 @@ type gtRow struct {
 }
 
 // collectGtSites resolves the positional loci and any --sites files into concrete
-// sites, through the same target grammar `varstore query --variant` uses (cghts's
-// varstore.ParseTargets) -- so one file works with both tools, and a VCF or a colon-delimited list works here
+// sites, through the same target grammar `gtstore query --variant` uses (cghts's
+// gtstore.ParseTargets) -- so one file works with both tools, and a VCF or a colon-delimited list works here
 // too. One grammar, one parser, nothing to drift.
 func collectGtSites(ctx context.Context, loci []string, sitesFiles []string) ([]gtSite, error) {
-	t, err := varstore.ParseTargets(ctx, append(append([]string{}, loci...), sitesFiles...))
+	t, err := gtstore.ParseTargets(ctx, append(append([]string{}, loci...), sitesFiles...))
 	if err != nil {
 		return nil, err
 	}
