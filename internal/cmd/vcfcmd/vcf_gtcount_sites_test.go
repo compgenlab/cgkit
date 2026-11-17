@@ -2,7 +2,7 @@ package vcfcmd
 
 import (
 	"context"
-	"github.com/compgenlab/cghts/varstore"
+	"github.com/compgenlab/cghts/gtstore"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,7 +27,7 @@ func TestSiteListWorksForBothCommands(t *testing.T) {
 	list := writeFile(t, "shared.txt",
 		"# shared site list\nchr1 100 A G\nchr1 500 A T\nchr2:300:G:C\n")
 
-	targets, err := varstore.ParseTargets(context.Background(), []string{list})
+	targets, err := gtstore.ParseTargets(context.Background(), []string{list})
 	if err != nil {
 		t.Fatalf("target parser: %v", err)
 	}

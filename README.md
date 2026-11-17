@@ -4,7 +4,7 @@ CLI commands for computational genomics: sequence and alignment analysis, VCF
 manipulation, BED/tabix wrangling, and NGS data operations.
 
 The sparse genotype store (formerly `vcf-tovarstore`, `vcf-varquery` and
-friends) is its own tool, [`varstore`](https://github.com/compgenlab/varstore).
+friends) is its own tool, [`gtstore`](https://github.com/compgenlab/gtstore).
 
 Oxford Nanopore UMI and poly(A) tooling lives in
 [`nupa`](https://github.com/compgenlab/nupa), a focused toolkit built on the same
