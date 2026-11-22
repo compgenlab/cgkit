@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 cgkit is a Go CLI toolkit for computational genomics research. It provides commands for sequence analysis, NGS data wrangling, and bioinformatics operations. The underlying library (sequence I/O, alignment, SAM/BAM/CRAM handling) lives in the separate `cghts` module (`github.com/compgenlab/cghts`).
 
-**The genotype store is not here.** Pendium (`github.com/compgenlab/pendium`, binary `pendium-gt`; formerly `gtstore`, before that `varstore`) is its own binary for creating, manipulating and querying genotype stores: `vcf-tovarstore`, `vcf-varstore create`, `vcf-refblocks`, `vcf-varstore attach-refblocks`, `vcf-varquery` and `vcf-varsummary` moved there (now `convert`, `bind`, `gvcf-extract`, `gvcf-attach`, `query`, `summary`) and were removed from cgkit; do not re-add them. The store format itself is `cghts/gtstore`. `vcf-gtcount` stays here and shares the store's site-selector grammar through `gtstore.ParseTargets`.
+**The genotype store is not here.** `gtset` (`github.com/compgenlab/gtset`; formerly `gtstore`, briefly Pendium/`pendium-gt`, before that `varstore`) is its own binary for creating, manipulating and querying genotype stores: `vcf-tovarstore`, `vcf-varstore create`, `vcf-refblocks`, `vcf-varstore attach-refblocks`, `vcf-varquery` and `vcf-varsummary` moved there (now `convert`, `bind`, `gvcf-extract`, `gvcf-attach`, `query`, `summary`) and were removed from cgkit; do not re-add them. The store format itself is `cghts/gtstore`. `vcf-gtcount` stays here and shares the store's site-selector grammar through `gtstore.ParseTargets`.
 
 **Oxford Nanopore UMI and poly(A) tooling is not here.** It lives in `nupa` (`github.com/compgenlab/nupa`, private), built on the same library. The `ont-*` commands were removed from cgkit; do not re-add them. `ont-umi-lookup` was withdrawn rather than migrated and exists in neither repo.
 
@@ -73,7 +73,7 @@ are cobra/pflag; everything genomics-related is delegated to `cghts`.
 ### Remote inputs
 
 Inputs may be local paths, `http(s)://` URLs or `s3://` objects; **outputs are
-local** (writing a store to S3 is `pendium-gt convert`'s, not cgkit's). Dispatch is cghts's `iosource`, and index sidecars resolve over
+local** (writing a store to S3 is `gtset convert`'s, not cgkit's). Dispatch is cghts's `iosource`, and index sidecars resolve over
 the same transport as the data, so an indexed region query still seeks.
 
 - The `s3://` blank import lives in **`internal/locator`**, a leaf package, not in
